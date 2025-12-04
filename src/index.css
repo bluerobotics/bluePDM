@@ -196,7 +196,16 @@ input::placeholder {
   background: var(--pdm-highlight);
 }
 
-/* Disable row hover during box selection */
+/* Disable row hover and native drag during box selection */
+.file-table.selecting {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-table.selecting tr {
+  pointer-events: none;
+}
+
 .file-table.selecting tr:hover {
   background: transparent;
 }

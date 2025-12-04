@@ -30,7 +30,9 @@ import {
   Copy,
   Scissors,
   ClipboardPaste,
-  ExternalLink
+  ExternalLink,
+  Star,
+  Search
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileType, formatFileSize, STATE_INFO } from '../types/pdm'
@@ -71,8 +73,19 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     startSync,
     updateSyncProgress,
     endSync,
-    vaultName
+    vaultName,
+    activeVaultId,
+    connectedVaults,
+    pinnedFolders,
+    pinFolder,
+    unpinFolder,
+    renameFileInStore,
+    searchQuery,
+    searchType
   } = usePDMStore()
+  
+  // Get current vault ID (from activeVaultId or first connected vault)
+  const currentVaultId = activeVaultId || connectedVaults[0]?.id
   
   const displayVaultName = vaultName || vaultPath?.split(/[/\\]/).pop() || 'Vault'
 
@@ -106,35 +119,124 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
   // Use store's currentFolder instead of local state
   const currentPath = currentFolder
+  
+  // Check if we're in search mode
+  const isSearching = searchQuery && searchQuery.trim().length > 0
 
   // Get files in current folder (direct children only)
   // First filter out any invalid/undefined files
   const validFiles = files.filter(f => f && f.relativePath && f.name)
   
-  const currentFolderFiles = validFiles.filter(file => {
-    const fileParts = file.relativePath.split('/')
+  // Fuzzy search helper - checks if query matches any part of the text
+  const fuzzyMatch = (text: string | undefined | null, query: string): boolean => {
+    if (!text) return false
+    const lowerText = text.toLowerCase()
+    const lowerQuery = query.toLowerCase()
     
-    if (currentPath === '') {
-      // Root level - show only top-level items
-      return fileParts.length === 1
-    } else {
-      // In a subfolder - show direct children
-      const currentParts = currentPath.split('/')
-      
-      // File must be exactly one level deeper than current path
-      if (fileParts.length !== currentParts.length + 1) return false
-      
-      // File must start with current path
-      for (let i = 0; i < currentParts.length; i++) {
-        if (fileParts[i] !== currentParts[i]) return false
+    // Simple fuzzy: check if all characters in query appear in order
+    let queryIndex = 0
+    for (let i = 0; i < lowerText.length && queryIndex < lowerQuery.length; i++) {
+      if (lowerText[i] === lowerQuery[queryIndex]) {
+        queryIndex++
       }
-      
-      return true
     }
-  })
+    return queryIndex === lowerQuery.length
+  }
+  
+  // Search score - higher = better match, prioritizes filename > description > other
+  const getSearchScore = (file: LocalFile, query: string): number => {
+    const q = query.toLowerCase().trim()
+    let score = 0
+    
+    // Priority 1: Filename matches (highest scores)
+    const nameLower = file.name.toLowerCase()
+    if (nameLower === q) {
+      score = 1000 // Exact match
+    } else if (nameLower.startsWith(q)) {
+      score = 900 // Starts with query
+    } else if (nameLower.includes(q)) {
+      score = 800 // Contains query
+    } else if (fuzzyMatch(file.name, q)) {
+      score = 700 // Fuzzy match on name
+    }
+    
+    // Priority 2: Description matches
+    if (file.pdmData?.description) {
+      const descLower = file.pdmData.description.toLowerCase()
+      if (descLower.includes(q)) {
+        score = Math.max(score, 500)
+      }
+    }
+    
+    // Priority 3: Part number matches
+    if (file.pdmData?.part_number?.toLowerCase().includes(q)) {
+      score = Math.max(score, 400)
+    }
+    
+    // Priority 4: Path matches
+    if (file.relativePath.toLowerCase().includes(q)) {
+      score = Math.max(score, 300)
+    }
+    
+    // Priority 5: Other metadata matches
+    if (file.pdmData) {
+      if (file.pdmData.revision?.toLowerCase().includes(q)) score = Math.max(score, 200)
+      if ((file.pdmData as any).material?.toLowerCase().includes(q)) score = Math.max(score, 200)
+      if ((file.pdmData as any).vendor?.toLowerCase().includes(q)) score = Math.max(score, 200)
+      if ((file.pdmData as any).project?.toLowerCase().includes(q)) score = Math.max(score, 200)
+    }
+    
+    // Extension match (lowest priority)
+    if (file.extension?.toLowerCase().includes(q)) {
+      score = Math.max(score, 100)
+    }
+    
+    return score
+  }
+  
+  // Search across all metadata - returns true if any match
+  const matchesSearch = (file: LocalFile, query: string): boolean => {
+    return getSearchScore(file, query) > 0
+  }
+  
+  const currentFolderFiles = isSearching 
+    ? validFiles
+        .filter(file => {
+          // Filter by search type
+          if (searchType === 'files' && file.isDirectory) return false
+          if (searchType === 'folders' && !file.isDirectory) return false
+          return matchesSearch(file, searchQuery)
+        })
+        .sort((a, b) => getSearchScore(b, searchQuery) - getSearchScore(a, searchQuery))
+    : validFiles.filter(file => {
+        const fileParts = file.relativePath.split('/')
+        
+        if (currentPath === '') {
+          // Root level - show only top-level items
+          return fileParts.length === 1
+        } else {
+          // In a subfolder - show direct children
+          const currentParts = currentPath.split('/')
+          
+          // File must be exactly one level deeper than current path
+          if (fileParts.length !== currentParts.length + 1) return false
+          
+          // File must start with current path
+          for (let i = 0; i < currentParts.length; i++) {
+            if (fileParts[i] !== currentParts[i]) return false
+          }
+          
+          return true
+        }
+      })
 
-  // Sort: folders first, then by selected column
+  // Sort: folders first, then by selected column (but preserve search relevance when searching)
   const sortedFiles = [...currentFolderFiles].filter(f => f && f.name).sort((a, b) => {
+    // When searching, preserve the relevance order (already sorted by score)
+    if (isSearching) {
+      return 0 // Keep the order from search scoring
+    }
+    
     // Folders always first
     if (a.isDirectory && !b.isDirectory) return -1
     if (!a.isDirectory && b.isDirectory) return 1
@@ -420,7 +522,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       const result = await window.electronAPI.renameItem(renamingFile.path, newPath)
       if (result.success) {
         addToast('success', `Renamed to "${newName}"`)
-        onRefresh()
+        // Update file in store directly instead of full refresh
+        renameFileInStore(renamingFile.path, newPath, newName)
       } else {
         addToast('error', `Failed to rename: ${result.error}`)
       }
@@ -841,7 +944,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       let errorCount = 0
 
       for (const file of result.files) {
-        const destPath = `${vaultPath}\\${file.name}`
+        // Use relativePath if available (preserves folder structure), otherwise just the filename
+        const targetPath = (file as any).relativePath || file.name
+        const destPath = `${vaultPath}\\${targetPath.replace(/\//g, '\\')}`
         console.log('[AddFiles] Copying:', file.path, '->', destPath)
 
         const copyResult = await window.electronAPI.copyFile(file.path, destPath)
@@ -1165,34 +1270,46 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           <ChevronLeft size={18} />
         </button>
 
-        {/* Breadcrumb */}
+        {/* Breadcrumb / Search indicator */}
         <div className="flex items-center gap-1 flex-1 min-w-0 text-sm">
-          <button
-            onClick={navigateToRoot}
-            className="flex items-center gap-1.5 text-pdm-fg-dim hover:text-pdm-fg transition-colors px-1"
-            title="Go to vault root"
-          >
-            <Home size={14} />
-            <span>{displayVaultName}</span>
-          </button>
-          {currentPath && currentPath.split('/').map((part, i, arr) => {
-            const pathUpToHere = arr.slice(0, i + 1).join('/')
-            return (
-              <div key={pathUpToHere} className="flex items-center gap-1">
-                <ChevronRight size={14} className="text-pdm-fg-muted" />
-                <button
-                  onClick={() => navigateToFolder(pathUpToHere)}
-                  className={`px-1 truncate ${
-                    i === arr.length - 1 
-                      ? 'text-pdm-fg font-medium' 
-                      : 'text-pdm-fg-dim hover:text-pdm-fg'
-                  } transition-colors`}
-                >
-                  {part}
-                </button>
-              </div>
-            )
-          })}
+          {isSearching ? (
+            <div className="flex items-center gap-2 text-pdm-fg-dim">
+              <Search size={14} className="text-pdm-accent" />
+              <span>
+                {searchType === 'files' ? 'Files' : searchType === 'folders' ? 'Folders' : 'Results'} for "<span className="text-pdm-fg font-medium">{searchQuery}</span>"
+              </span>
+              <span className="text-pdm-fg-muted">({sortedFiles.length} matches)</span>
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={navigateToRoot}
+                className="flex items-center gap-1.5 text-pdm-fg-dim hover:text-pdm-fg transition-colors px-1"
+                title="Go to vault root"
+              >
+                <Home size={14} />
+                <span>{displayVaultName}</span>
+              </button>
+              {currentPath && currentPath.split('/').map((part, i, arr) => {
+                const pathUpToHere = arr.slice(0, i + 1).join('/')
+                return (
+                  <div key={pathUpToHere} className="flex items-center gap-1">
+                    <ChevronRight size={14} className="text-pdm-fg-muted" />
+                    <button
+                      onClick={() => navigateToFolder(pathUpToHere)}
+                      className={`px-1 truncate ${
+                        i === arr.length - 1 
+                          ? 'text-pdm-fg font-medium' 
+                          : 'text-pdm-fg-dim hover:text-pdm-fg'
+                      } transition-colors`}
+                    >
+                      {part}
+                    </button>
+                  </div>
+                )
+              })}
+            </>
+          )}
         </div>
         
         {/* Path actions */}
@@ -1421,8 +1538,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}
-                draggable
-                onDragStart={(e) => handleDragStart(e, file)}
+                draggable={!selectionBox}
+                onDragStart={(e) => {
+                  if (selectionBox) {
+                    e.preventDefault()
+                    return
+                  }
+                  handleDragStart(e, file)
+                }}
               >
                 {visibleColumns.map(column => (
                   <td key={column.id} style={{ width: column.width }}>
@@ -1546,13 +1669,36 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         const anyCheckedOut = syncedFilesInSelection.some(f => f.pdmData?.checked_out_by)
         const anyCheckedIn = syncedFilesInSelection.some(f => !f.pdmData?.checked_out_by)
         
+        // Count files that can be checked out/in (for folder labels)
+        const checkoutableCount = syncedFilesInSelection.filter(f => !f.pdmData?.checked_out_by).length
+        const checkinableCount = syncedFilesInSelection.filter(f => f.pdmData?.checked_out_by === user?.id).length
+        
         const countLabel = multiSelect 
           ? `(${fileCount > 0 ? `${fileCount} file${fileCount > 1 ? 's' : ''}` : ''}${fileCount > 0 && folderCount > 0 ? ', ' : ''}${folderCount > 0 ? `${folderCount} folder${folderCount > 1 ? 's' : ''}` : ''})`
           : ''
         
         // Check if any files are cloud-only (exist on server but not locally)
-        const anyCloudOnly = contextFiles.some(f => f.diffStatus === 'cloud')
         const allCloudOnly = contextFiles.every(f => f.diffStatus === 'cloud')
+        
+        // Count cloud-only files (for download count) - includes files inside folders
+        const getCloudOnlyFilesCount = (): number => {
+          let count = 0
+          for (const item of contextFiles) {
+            if (item.isDirectory) {
+              const folderPrefix = item.relativePath + '/'
+              count += files.filter(f => 
+                !f.isDirectory && 
+                f.diffStatus === 'cloud' &&
+                f.relativePath.startsWith(folderPrefix)
+              ).length
+            } else if (item.diffStatus === 'cloud') {
+              count++
+            }
+          }
+          return count
+        }
+        const cloudOnlyCount = getCloudOnlyFilesCount()
+        const anyCloudOnly = cloudOnlyCount > 0 || contextFiles.some(f => f.diffStatus === 'cloud')
         
         // Check for locally synced files (can be unsynced)
         const anyLocalSynced = contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'added')
@@ -1618,12 +1764,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       setContextMenu(null)
                       
                       // Collect all cloud-only files to download
-                      // For folders, get all files inside them recursively
+                      // For folders, get all cloud-only files inside them recursively
                       const filesToDownload: LocalFile[] = []
                       
                       for (const item of contextFiles) {
-                        if (item.diffStatus !== 'cloud') continue
-                        
                         if (item.isDirectory) {
                           // Get all cloud-only files inside this folder
                           const folderPath = item.relativePath.replace(/\\/g, '/')
@@ -1634,7 +1778,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                             return filePath.startsWith(folderPath + '/')
                           })
                           filesToDownload.push(...filesInFolder)
-                        } else {
+                        } else if (item.diffStatus === 'cloud') {
                           filesToDownload.push(item)
                         }
                       }
@@ -1753,7 +1897,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                     }}
                   >
                     <ArrowDown size={14} className="text-pdm-success" />
-                    Download {multiSelect ? countLabel : ''}
+                    Download {cloudOnlyCount > 0 ? `${cloudOnlyCount} files` : (multiSelect ? countLabel : '')}
                   </div>
                 </>
               )}
@@ -1787,14 +1931,55 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 </>
               )}
               
+              {/* Pin/Unpin */}
+              {!multiSelect && activeVaultId && (
+                (() => {
+                  const isPinned = pinnedFolders.some(p => p.path === firstFile.relativePath && p.vaultId === activeVaultId)
+                  const currentVault = connectedVaults.find(v => v.id === activeVaultId)
+                  return (
+                    <div 
+                      className="context-menu-item"
+                      onClick={() => {
+                        if (isPinned) {
+                          unpinFolder(firstFile.relativePath)
+                          addToast('info', `Unpinned ${firstFile.name}`)
+                        } else {
+                          pinFolder(firstFile.relativePath, activeVaultId, currentVault?.name || 'Vault', firstFile.isDirectory)
+                          addToast('success', `Pinned ${firstFile.name}`)
+                        }
+                        setContextMenu(null)
+                      }}
+                    >
+                      <Star size={14} className={isPinned ? 'fill-pdm-warning text-pdm-warning' : ''} />
+                      {isPinned ? 'Unpin' : `Pin ${isFolder ? 'Folder' : 'File'}`}
+                    </div>
+                  )
+                })()
+              )}
+              
               {!multiSelect && !allCloudOnly && (
-                <div 
-                  className="context-menu-item"
-                  onClick={() => startRenaming(firstFile)}
-                >
-                  <Pencil size={14} />
-                  Rename
-                </div>
+                (() => {
+                  // Synced files require checkout to rename
+                  const isSynced = !!firstFile.pdmData
+                  const isCheckedOutByMe = firstFile.pdmData?.checked_out_by === user?.id
+                  const canRename = !isSynced || isCheckedOutByMe
+                  
+                  return (
+                    <div 
+                      className={`context-menu-item ${!canRename ? 'disabled' : ''}`}
+                      onClick={() => {
+                        if (canRename) {
+                          startRenaming(firstFile)
+                        }
+                      }}
+                      title={!canRename ? 'Check out file first to rename' : ''}
+                    >
+                      <Pencil size={14} />
+                      Rename
+                      {!canRename && <span className="text-xs text-pdm-fg-muted ml-auto">(checkout required)</span>}
+                    </div>
+                  )
+                })()
               )}
               
               <div className="context-menu-separator" />
@@ -1837,8 +2022,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               
               <div className="context-menu-separator" />
               
-              {/* Sync option - only for unsynced items */}
-              {anyUnsynced && (
+              {/* First Check In - only for unsynced items when no synced content */}
+              {anyUnsynced && !anySynced && (
                 <div 
                   className="context-menu-item"
                   onClick={async () => {
@@ -1923,6 +2108,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                         
                         const { error, file: syncedFile } = await syncFile(
                           organization.id,
+                          currentVaultId!,
                           user.id,
                           f.relativePath,
                           f.name,
@@ -2013,14 +2199,18 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               {/* Check Out - for synced files or folders with synced content */}
               {allFolders && !multiSelect ? (
                 <div 
-                  className="context-menu-item"
+                  className={`context-menu-item ${!anySynced || checkoutableCount === 0 ? 'disabled' : ''}`}
                   onClick={() => {
+                    if (!anySynced || checkoutableCount === 0) return
                     handleCheckoutFolder(firstFile)
                     setContextMenu(null)
                   }}
+                  title={!anySynced ? 'Check in files first to enable checkout' : checkoutableCount === 0 ? 'All files already checked out' : ''}
                 >
-                  <ArrowDown size={14} className="text-pdm-error" />
-                  Check Out Folder
+                  <ArrowDown size={14} className={!anySynced || checkoutableCount === 0 ? 'text-pdm-fg-muted' : 'text-pdm-warning'} />
+                  Check Out {checkoutableCount > 0 ? `${checkoutableCount} files` : ''}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(check in first)</span>}
+                  {anySynced && checkoutableCount === 0 && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
                 </div>
               ) : (
                 <div 
@@ -2095,121 +2285,125 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                     }
                     onRefresh(true) // Silent refresh after checkout
                   }}
-                  title={!anySynced ? 'Files must be synced first' : allCheckedOut ? 'Already checked out' : ''}
+                  title={!anySynced ? 'Check in files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
                 >
-                  <ArrowDown size={14} className="text-pdm-error" />
+                  <ArrowDown size={14} className={!anySynced ? 'text-pdm-fg-muted' : 'text-pdm-warning'} />
                   Check Out {multiSelect ? countLabel : ''}
-                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(download first)</span>}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(check in first)</span>}
                   {anySynced && allCheckedOut && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
                 </div>
               )}
               
-              {/* Check In - for synced files or folders with synced content */}
-              {allFolders && !multiSelect ? (
-                <div 
-                  className="context-menu-item"
-                  onClick={() => {
-                    handleCheckinFolder(firstFile)
-                    setContextMenu(null)
-                  }}
-                >
-                  <ArrowUp size={14} className="text-pdm-success" />
-                  Check In Folder
-                </div>
-              ) : (
-                <div 
-                  className={`context-menu-item ${!anySynced || allCheckedIn ? 'disabled' : ''}`}
-                  onClick={async () => {
-                    if (!anySynced || allCheckedIn || !user) return
-                    setContextMenu(null)
-                    
-                    // Get all files to checkin - including files inside selected folders
-                    const getFilesToCheckin = (): LocalFile[] => {
-                      const result: LocalFile[] = []
-                      for (const item of contextFiles) {
-                        if (item.isDirectory) {
-                          // Get files inside folder that are checked out
-                          const folderPrefix = item.relativePath + '/'
-                          const filesInFolder = files.filter(f => 
-                            !f.isDirectory && 
-                            f.pdmData?.id &&
-                            f.pdmData.checked_out_by &&
-                            f.diffStatus !== 'cloud' &&
-                            (f.relativePath.startsWith(folderPrefix) || 
-                             f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
-                          )
-                          result.push(...filesInFolder)
-                        } else if (item.pdmData?.id && item.pdmData.checked_out_by && item.diffStatus !== 'cloud') {
-                          result.push(item)
+              {/* Check In - only for synced files or folders with synced content */}
+              {anySynced && (
+                allFolders && !multiSelect ? (
+                  <div 
+                    className={`context-menu-item ${checkinableCount === 0 ? 'disabled' : ''}`}
+                    onClick={() => {
+                      if (checkinableCount === 0) return
+                      handleCheckinFolder(firstFile)
+                      setContextMenu(null)
+                    }}
+                    title={checkinableCount === 0 ? 'No files checked out by you' : ''}
+                  >
+                    <ArrowUp size={14} className={checkinableCount === 0 ? 'text-pdm-fg-muted' : 'text-pdm-success'} />
+                    Check In {checkinableCount > 0 ? `${checkinableCount} files` : ''}
+                    {checkinableCount === 0 && <span className="text-xs text-pdm-fg-muted ml-auto">(none checked out)</span>}
+                  </div>
+                ) : (
+                  <div 
+                    className={`context-menu-item ${allCheckedIn ? 'disabled' : ''}`}
+                    onClick={async () => {
+                      if (allCheckedIn || !user) return
+                      setContextMenu(null)
+                      
+                      // Get all files to checkin - including files inside selected folders
+                      const getFilesToCheckin = (): LocalFile[] => {
+                        const result: LocalFile[] = []
+                        for (const item of contextFiles) {
+                          if (item.isDirectory) {
+                            // Get files inside folder that are checked out
+                            const folderPrefix = item.relativePath + '/'
+                            const filesInFolder = files.filter(f => 
+                              !f.isDirectory && 
+                              f.pdmData?.id &&
+                              f.pdmData.checked_out_by &&
+                              f.diffStatus !== 'cloud' &&
+                              (f.relativePath.startsWith(folderPrefix) || 
+                               f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
+                            )
+                            result.push(...filesInFolder)
+                          } else if (item.pdmData?.id && item.pdmData.checked_out_by && item.diffStatus !== 'cloud') {
+                            result.push(item)
+                          }
                         }
+                        return result
                       }
-                      return result
-                    }
-                    const filesToCheckin = getFilesToCheckin()
-                    if (filesToCheckin.length === 0) {
-                      addToast('info', 'No files are checked out')
-                      return
-                    }
-                    
-                    let succeeded = 0
-                    let failed = 0
-                    const CONCURRENCY = 8
-                    
-                    const checkinOneFile = async (file: LocalFile): Promise<boolean> => {
-                      try {
-                        const readResult = await window.electronAPI?.readFile(file.path)
-                        
-                        if (readResult?.success && readResult.data && readResult.hash) {
-                          const result = await checkinFile(file.pdmData!.id, user.id, {
-                            newContentHash: readResult.hash,
-                            newFileSize: file.size
-                          })
+                      const filesToCheckin = getFilesToCheckin()
+                      if (filesToCheckin.length === 0) {
+                        addToast('info', 'No files are checked out')
+                        return
+                      }
+                      
+                      let succeeded = 0
+                      let failed = 0
+                      const CONCURRENCY = 8
+                      
+                      const checkinOneFile = async (file: LocalFile): Promise<boolean> => {
+                        try {
+                          const readResult = await window.electronAPI?.readFile(file.path)
                           
-                          if (result.success) {
-                            await window.electronAPI?.setReadonly(file.path, true)
-                            return true
+                          if (readResult?.success && readResult.data && readResult.hash) {
+                            const result = await checkinFile(file.pdmData!.id, user.id, {
+                              newContentHash: readResult.hash,
+                              newFileSize: file.size
+                            })
+                            
+                            if (result.success) {
+                              await window.electronAPI?.setReadonly(file.path, true)
+                              return true
+                            }
+                          } else {
+                            const result = await checkinFile(file.pdmData!.id, user.id)
+                            if (result.success) {
+                              await window.electronAPI?.setReadonly(file.path, true)
+                              return true
+                            }
                           }
-                        } else {
-                          const result = await checkinFile(file.pdmData!.id, user.id)
-                          if (result.success) {
-                            await window.electronAPI?.setReadonly(file.path, true)
-                            return true
-                          }
+                          return false
+                        } catch {
+                          return false
                         }
-                        return false
-                      } catch {
-                        return false
                       }
-                    }
-                    
-                    // Process in parallel batches
-                    for (let i = 0; i < filesToCheckin.length; i += CONCURRENCY) {
-                      const batch = filesToCheckin.slice(i, i + CONCURRENCY)
-                      setStatusMessage(`Checking in ${i + 1}-${Math.min(i + CONCURRENCY, filesToCheckin.length)}/${filesToCheckin.length}...`)
                       
-                      const results = await Promise.all(batch.map(f => checkinOneFile(f)))
-                      
-                      for (const success of results) {
-                        if (success) succeeded++
-                        else failed++
+                      // Process in parallel batches
+                      for (let i = 0; i < filesToCheckin.length; i += CONCURRENCY) {
+                        const batch = filesToCheckin.slice(i, i + CONCURRENCY)
+                        setStatusMessage(`Checking in ${i + 1}-${Math.min(i + CONCURRENCY, filesToCheckin.length)}/${filesToCheckin.length}...`)
+                        
+                        const results = await Promise.all(batch.map(f => checkinOneFile(f)))
+                        
+                        for (const success of results) {
+                          if (success) succeeded++
+                          else failed++
+                        }
                       }
-                    }
-                    
-                    setStatusMessage('')
-                    if (failed > 0) {
-                      addToast('warning', `Checked in ${succeeded}/${filesToCheckin.length} files`)
-                    } else {
-                      addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
-                    }
-                    onRefresh(true) // Silent refresh after checkin
-                  }}
-                  title={!anySynced ? 'Files must be synced first' : allCheckedIn ? 'Already checked in' : ''}
-                >
-                  <ArrowUp size={14} className="text-pdm-success" />
-                  Check In {multiSelect ? countLabel : ''}
-                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(download first)</span>}
-                  {anySynced && allCheckedIn && <span className="text-xs text-pdm-fg-muted ml-auto">(already in)</span>}
-                </div>
+                      
+                      setStatusMessage('')
+                      if (failed > 0) {
+                        addToast('warning', `Checked in ${succeeded}/${filesToCheckin.length} files`)
+                      } else {
+                        addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+                      }
+                      onRefresh(true) // Silent refresh after checkin
+                    }}
+                    title={allCheckedIn ? 'Already checked in' : ''}
+                  >
+                    <ArrowUp size={14} className="text-pdm-success" />
+                    Check In {multiSelect ? countLabel : ''}
+                    {allCheckedIn && <span className="text-xs text-pdm-fg-muted ml-auto">(already in)</span>}
+                  </div>
+                )
               )}
               
               <div className="context-menu-separator" />
@@ -2251,12 +2445,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 
                 const allFilesInSelection = getAllFilesFromSelection()
                 const syncedFilesInSelection = allFilesInSelection.filter(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'added')
+                const unsyncedFilesInSelection = allFilesInSelection.filter(f => !f.pdmData || f.diffStatus === 'added')
                 const hasLocalFiles = contextFiles.some(f => f.diffStatus !== 'cloud')
                 const hasSyncedFiles = syncedFilesInSelection.length > 0 || contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud')
+                const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0 || contextFiles.some(f => (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud')
                 
                 return (
                   <>
-                    {/* Delete Locally - removes local copy, keeps server */}
+                    {/* Remove Local Copy - removes local copy of synced files, keeps server */}
                     {hasLocalFiles && hasSyncedFiles && (
                       <div 
                         className="context-menu-item"
@@ -2290,10 +2486,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           const storedContextFiles = [...contextFiles]
                           
                           setCustomConfirm({
-                            title: `Delete ${filesToProcess.length} Item${filesToProcess.length > 1 ? 's' : ''} Locally?`,
+                            title: `Remove ${filesToProcess.length} Local Cop${filesToProcess.length > 1 ? 'ies' : 'y'}?`,
                             message: `${filesToProcess.length} file${filesToProcess.length > 1 ? 's' : ''} will be removed locally but remain on the server.`,
                             warning: warningText,
-                            confirmText: 'Delete Locally',
+                            confirmText: 'Remove Local Copy',
                             confirmDanger: false,
                             onConfirm: async () => {
                               const total = storedFilesToProcess.length
@@ -2348,105 +2544,133 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                         }}
                       >
                         <Trash2 size={14} />
+                        Remove Local Copy {countLabel}
+                      </div>
+                    )}
+                    
+                    {/* Delete Locally - for unsynced local files only (not when there are synced files too) */}
+                    {hasUnsyncedLocalFiles && !hasSyncedFiles && !allCloudOnly && (
+                      <div 
+                        className="context-menu-item danger"
+                        onClick={async () => {
+                          setContextMenu(null)
+                          
+                          // Get all unsynced files to delete
+                          const filesToDelete = unsyncedFilesInSelection.length > 0 
+                            ? unsyncedFilesInSelection 
+                            : contextFiles.filter(f => !f.pdmData || f.diffStatus === 'added')
+                          
+                          if (filesToDelete.length === 0) {
+                            addToast('info', 'No local files to delete')
+                            return
+                          }
+                          
+                          // Use delete confirm dialog for local files
+                          setDeleteConfirm(firstFile)
+                        }}
+                      >
+                        <Trash2 size={14} />
                         Delete Locally {countLabel}
                       </div>
                     )}
                     
-                    {/* Delete Everywhere - deletes from local AND server */}
-                    <div 
-                      className="context-menu-item danger"
-                      onClick={async () => {
-                        if (allCloudOnly) {
-                          // Cloud-only: just delete from server
-                          setContextMenu(null)
-                          
-                          const cloudFiles = contextFiles.filter(f => f.diffStatus === 'cloud')
-                          // Also get files inside cloud folders
-                          const allCloudFiles: LocalFile[] = []
-                          for (const item of cloudFiles) {
-                            if (item.isDirectory) {
-                              const folderPath = item.relativePath.replace(/\\/g, '/')
-                              const filesInFolder = files.filter(f => {
-                                if (f.isDirectory) return false
-                                if (f.diffStatus !== 'cloud') return false
-                                const filePath = f.relativePath.replace(/\\/g, '/')
-                                return filePath.startsWith(folderPath + '/')
-                              })
-                              allCloudFiles.push(...filesInFolder)
-                            } else if (item.pdmData?.id) {
-                              allCloudFiles.push(item)
+                    {/* Delete Everywhere - deletes from local AND server (only when synced files exist) */}
+                    {(hasSyncedFiles || allCloudOnly) && (
+                      <div 
+                        className="context-menu-item danger"
+                        onClick={async () => {
+                          if (allCloudOnly) {
+                            // Cloud-only: just delete from server
+                            setContextMenu(null)
+                            
+                            const cloudFiles = contextFiles.filter(f => f.diffStatus === 'cloud')
+                            // Also get files inside cloud folders
+                            const allCloudFiles: LocalFile[] = []
+                            for (const item of cloudFiles) {
+                              if (item.isDirectory) {
+                                const folderPath = item.relativePath.replace(/\\/g, '/')
+                                const filesInFolder = files.filter(f => {
+                                  if (f.isDirectory) return false
+                                  if (f.diffStatus !== 'cloud') return false
+                                  const filePath = f.relativePath.replace(/\\/g, '/')
+                                  return filePath.startsWith(folderPath + '/')
+                                })
+                                allCloudFiles.push(...filesInFolder)
+                              } else if (item.pdmData?.id) {
+                                allCloudFiles.push(item)
+                              }
                             }
-                          }
-                          const uniqueCloudFiles = [...new Map(allCloudFiles.map(f => [f.path, f])).values()]
-                          
-                          if (uniqueCloudFiles.length === 0) {
-                            addToast('warning', 'No files to delete from server')
-                            return
-                          }
-                          
-                          // Store files for the confirm action
-                          const storedCloudFiles = [...uniqueCloudFiles]
-                          
-                          setCustomConfirm({
-                            title: `Delete ${uniqueCloudFiles.length} Item${uniqueCloudFiles.length > 1 ? 's' : ''} from Server?`,
-                            message: `${uniqueCloudFiles.length} file${uniqueCloudFiles.length > 1 ? 's' : ''} will be permanently deleted from the server.`,
-                            warning: 'This action cannot be undone.',
-                            confirmText: 'Delete from Server',
-                            confirmDanger: true,
-                            onConfirm: async () => {
-                              const total = storedCloudFiles.length
-                              startSync(total, 'upload') // Use upload type for server operations
-                              
-                              let deleted = 0
-                              let failed = 0
-                              
-                              for (const file of storedCloudFiles) {
-                                // Check for cancellation
-                                if (usePDMStore.getState().syncProgress.cancelRequested) {
-                                  break
-                                }
+                            const uniqueCloudFiles = [...new Map(allCloudFiles.map(f => [f.path, f])).values()]
+                            
+                            if (uniqueCloudFiles.length === 0) {
+                              addToast('warning', 'No files to delete from server')
+                              return
+                            }
+                            
+                            // Store files for the confirm action
+                            const storedCloudFiles = [...uniqueCloudFiles]
+                            
+                            setCustomConfirm({
+                              title: `Delete ${uniqueCloudFiles.length} Item${uniqueCloudFiles.length > 1 ? 's' : ''} from Server?`,
+                              message: `${uniqueCloudFiles.length} file${uniqueCloudFiles.length > 1 ? 's' : ''} will be permanently deleted from the server.`,
+                              warning: 'This action cannot be undone.',
+                              confirmText: 'Delete from Server',
+                              confirmDanger: true,
+                              onConfirm: async () => {
+                                const total = storedCloudFiles.length
+                                startSync(total, 'upload') // Use upload type for server operations
                                 
-                                if (!file.pdmData?.id) {
-                                  failed++
-                                  continue
-                                }
-                                try {
-                                  const { supabase } = await import('../lib/supabase')
-                                  const { error } = await supabase
-                                    .from('files')
-                                    .delete()
-                                    .eq('id', file.pdmData.id)
+                                let deleted = 0
+                                let failed = 0
+                                
+                                for (const file of storedCloudFiles) {
+                                  // Check for cancellation
+                                  if (usePDMStore.getState().syncProgress.cancelRequested) {
+                                    break
+                                  }
                                   
-                                  if (!error) deleted++
-                                  else failed++
-                                } catch (err) {
-                                  console.error('Failed to delete file from server:', file.name, err)
-                                  failed++
+                                  if (!file.pdmData?.id) {
+                                    failed++
+                                    continue
+                                  }
+                                  try {
+                                    const { supabase } = await import('../lib/supabase')
+                                    const { error } = await supabase
+                                      .from('files')
+                                      .delete()
+                                      .eq('id', file.pdmData.id)
+                                    
+                                    if (!error) deleted++
+                                    else failed++
+                                  } catch (err) {
+                                    console.error('Failed to delete file from server:', file.name, err)
+                                    failed++
+                                  }
+                                  
+                                  // Update progress
+                                  const percent = Math.round(((deleted + failed) / total) * 100)
+                                  updateSyncProgress(deleted + failed, percent, '')
                                 }
                                 
-                                // Update progress
-                                const percent = Math.round(((deleted + failed) / total) * 100)
-                                updateSyncProgress(deleted + failed, percent, '')
+                                endSync()
+                                
+                                if (deleted > 0) {
+                                  addToast('success', `Deleted ${deleted} file${deleted > 1 ? 's' : ''} from server`)
+                                  onRefresh(true) // Silent refresh after delete
+                                }
                               }
-                              
-                              endSync()
-                              
-                              if (deleted > 0) {
-                                addToast('success', `Deleted ${deleted} file${deleted > 1 ? 's' : ''} from server`)
-                                onRefresh(true) // Silent refresh after delete
-                              }
-                            }
-                          })
-                        } else {
-                          // Has local files: use delete confirm dialog
-                          setDeleteConfirm(firstFile)
-                          setContextMenu(null)
-                        }
-                      }}
-                    >
-                      <CloudOff size={14} />
-                      {allCloudOnly ? 'Delete from Server' : 'Delete Everywhere'} {countLabel}
-                    </div>
+                            })
+                          } else {
+                            // Has local synced files: use delete confirm dialog
+                            setDeleteConfirm(firstFile)
+                            setContextMenu(null)
+                          }
+                        }}
+                      >
+                        <CloudOff size={14} />
+                        {allCloudOnly ? 'Delete from Server' : 'Delete Everywhere'} {countLabel}
+                      </div>
+                    )}
                   </>
                 )
               })()}

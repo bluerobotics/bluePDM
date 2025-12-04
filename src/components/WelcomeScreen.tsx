@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Cloud, Shield, Zap, Clock, Users, FolderPlus, Loader2, HardDrive, RefreshCw, WifiOff, LogIn, Check, Settings, Database, Link, Plus } from 'lucide-react'
+import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Database, Link } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
-import { getFiles, signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
+import { signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
+
+interface VaultStats {
+  fileCount: number
+  totalSize: number
+}
 
 interface Vault {
   id: string
@@ -9,11 +14,21 @@ interface Vault {
   slug: string
   description: string | null
   is_default: boolean
+  stats?: VaultStats
 }
 
 interface WelcomeScreenProps {
   onOpenVault: () => void
   onOpenRecentVault: (path: string) => void
+}
+
+// Format bytes to human-readable size
+function formatSize(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
 export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenProps) {
@@ -23,49 +38,67 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     organization, 
     setStatusMessage, 
     isOfflineMode, 
-    setOfflineMode, 
-    autoConnect, 
-    setAutoConnect,
+    setOfflineMode,
     connectedVaults,
     addConnectedVault,
-    addToast
+    addToast,
+    vaultsRefreshKey
   } = usePDMStore()
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
-  const [cloudFileCount, setCloudFileCount] = useState(0)
-  const [loadingCloud, setLoadingCloud] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
   const [isLoadingVaults, setIsLoadingVaults] = useState(false)
   const [connectingVaultId, setConnectingVaultId] = useState<string | null>(null)
 
-  // Auto-connect on mount if enabled and we have connected vaults
+  // Auto-connect on mount if we have connected vaults
   useEffect(() => {
-    if (autoConnect && connectedVaults.length > 0 && (user || isOfflineMode)) {
+    if (connectedVaults.length > 0 && (user || isOfflineMode)) {
       // Auto-connect to first connected vault
       const vault = connectedVaults[0]
       onOpenRecentVault(vault.localPath)
     }
   }, [user, isOfflineMode, connectedVaults.length])
 
-  // Load organization vaults
+  // Load organization vaults with stats
   useEffect(() => {
     const loadOrgVaults = async () => {
       if (!organization?.id) return
       
       setIsLoadingVaults(true)
       try {
-        const { data, error } = await supabase
+        // Load vaults
+        const { data: vaultsData, error: vaultsError } = await supabase
           .from('vaults')
           .select('id, name, slug, description, is_default')
           .eq('org_id', organization.id)
           .order('is_default', { ascending: false })
           .order('name')
         
-        if (!error && data) {
-          setOrgVaults(data)
+        if (vaultsError || !vaultsData) {
+          console.error('Error loading vaults:', vaultsError)
+          return
         }
+        
+        // Load stats for each vault
+        const vaultsWithStats = await Promise.all(
+          vaultsData.map(async (vault) => {
+            const { data: statsData } = await supabase
+              .from('files')
+              .select('size')
+              .eq('vault_id', vault.id)
+            
+            const stats: VaultStats = {
+              fileCount: statsData?.length || 0,
+              totalSize: statsData?.reduce((acc, f) => acc + (f.size || 0), 0) || 0
+            }
+            
+            return { ...vault, stats }
+          })
+        )
+        
+        setOrgVaults(vaultsWithStats)
       } catch (err) {
         console.error('Error loading vaults:', err)
       } finally {
@@ -74,28 +107,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     }
     
     loadOrgVaults()
-  }, [organization?.id])
-
-  // Load cloud vault file count when user/org is available
-  useEffect(() => {
-    const loadCloudFiles = async () => {
-      if (!organization?.id) return
-      
-      setLoadingCloud(true)
-      try {
-        const { files, error } = await getFiles(organization.id)
-        if (!error && files) {
-          setCloudFileCount(files.length)
-        }
-      } catch (err) {
-        console.error('Error loading cloud files:', err)
-      } finally {
-        setLoadingCloud(false)
-      }
-    }
-    
-    loadCloudFiles()
-  }, [organization?.id])
+  }, [organization?.id, vaultsRefreshKey]) // Refresh when vaultsRefreshKey changes
 
   const handleSignIn = async () => {
     if (!isSupabaseConfigured) {
@@ -128,8 +140,8 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     setConnectingVaultId(vault.id)
     
     try {
-      // Create vault folder in C:\ (use slug directly as folder name)
-      const vaultPath = `C:\\${vault.slug}`
+      // Create vault folder in C:\BluePDM\ to avoid conflicts with other software
+      const vaultPath = `C:\\BluePDM\\${vault.slug}`
       const result = await window.electronAPI.createWorkingDir(vaultPath)
       
       if (result.success && result.path) {
@@ -167,9 +179,9 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
       if (recentVaults.length > 0) {
         vaultPath = recentVaults[0]
       } else if (organization) {
-        vaultPath = `C:\\${organization.slug}`
+        vaultPath = `C:\\BluePDM\\${organization.slug}`
       } else {
-        vaultPath = `C:\\pdm-vault`
+        vaultPath = `C:\\BluePDM\\local-vault`
       }
       
       const result = await window.electronAPI.createWorkingDir(vaultPath)
@@ -286,15 +298,6 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   // ============================================
   // VAULT CONNECTION SCREEN (shown when authenticated or offline)
   // ============================================
-  const features = [
-    { icon: <RefreshCw size={18} />, title: 'Folder Sync', description: 'Folders sync instantly' },
-    { icon: <Shield size={18} />, title: 'Check In/Out', description: 'Lock files while editing' },
-    { icon: <Users size={18} />, title: 'Team Status', description: 'Real-time lock status' },
-    { icon: <Zap size={18} />, title: 'CAD Optimized', description: 'Built for large files' },
-    { icon: <Clock size={18} />, title: 'History', description: 'Full version tracking' },
-    { icon: <Cloud size={18} />, title: 'Cloud Sync', description: 'Access anywhere' }
-  ]
-
   return (
     <div className="flex-1 flex items-center justify-center bg-pdm-bg overflow-auto">
       <div className="max-w-lg w-full p-8">
@@ -398,11 +401,21 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                             <Check size={14} className="text-pdm-success" />
                           )}
                         </div>
-                        {vault.description && (
-                          <p className="text-xs text-pdm-fg-muted truncate">
-                            {vault.description}
-                          </p>
-                        )}
+                        <div className="flex items-center gap-3 text-xs text-pdm-fg-muted">
+                          {vault.stats && (
+                            <>
+                              <span>{vault.stats.fileCount} file{vault.stats.fileCount !== 1 ? 's' : ''}</span>
+                              <span>•</span>
+                              <span>{formatSize(vault.stats.totalSize)}</span>
+                            </>
+                          )}
+                          {vault.description && (
+                            <>
+                              {vault.stats && <span>•</span>}
+                              <span className="truncate">{vault.description}</span>
+                            </>
+                          )}
+                        </div>
                       </div>
                       
                       {connected ? (
@@ -434,20 +447,6 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                   </div>
                 )
               })}
-            </div>
-            
-            {/* Cloud status */}
-            <div className="flex items-center gap-2 text-xs text-pdm-fg-dim mt-3 px-1">
-              <Cloud size={14} className="text-pdm-accent" />
-              {loadingCloud ? (
-                <span>Loading...</span>
-              ) : (
-                <span>
-                  {cloudFileCount > 0 
-                    ? `${cloudFileCount} file${cloudFileCount !== 1 ? 's' : ''} in cloud`
-                    : 'No files synced yet'}
-                </span>
-              )}
             </div>
           </div>
         )}
@@ -505,36 +504,17 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           </div>
         )}
 
-        {/* Auto-connect toggle */}
-        {(connectedVaults.length > 0 || recentVaults.length > 0) && (
-          <label className="flex items-center gap-2 cursor-pointer justify-center mb-6">
-            <div 
-              onClick={() => setAutoConnect(!autoConnect)}
-              className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
-                autoConnect 
-                  ? 'bg-pdm-accent border-pdm-accent' 
-                  : 'border-pdm-border hover:border-pdm-fg-muted'
-              }`}
-            >
-              {autoConnect && <Check size={12} className="text-white" />}
-            </div>
-            <span className="text-xs text-pdm-fg-muted">
-              Auto-connect on startup
-            </span>
-          </label>
-        )}
-
-        {/* Advanced Options */}
+        {/* Settings Button */}
         <div className="mb-6">
           <button
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors mx-auto"
+            onClick={() => setShowSettings(!showSettings)}
+            className="w-full btn btn-secondary gap-2 justify-center py-3"
           >
-            <Settings size={14} />
-            {showAdvanced ? 'Hide options' : 'Advanced options'}
+            <Settings size={18} />
+            Settings
           </button>
           
-          {showAdvanced && (
+          {showSettings && (
             <div className="mt-4 space-y-2">
               <button
                 onClick={onOpenVault}
@@ -560,25 +540,6 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
             </div>
           )}
         </div>
-
-        {/* Features Grid */}
-        {!isOfflineMode && (
-          <div className="grid grid-cols-3 gap-2">
-            {features.map((feature, i) => (
-              <div 
-                key={i}
-                className="p-2 bg-pdm-bg-light border border-pdm-border rounded-lg text-center"
-              >
-                <div className="text-pdm-accent mb-1 flex justify-center">
-                  {feature.icon}
-                </div>
-                <div className="font-medium text-pdm-fg text-[10px]">
-                  {feature.title}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* Footer */}
         <div className="text-center mt-6 text-xs text-pdm-fg-muted">

@@ -8,17 +8,18 @@ import { SettingsView } from './sidebar/SettingsView'
 interface SidebarProps {
   onOpenVault: () => void
   onOpenRecentVault: (path: string) => void
+  onRefresh: (silent?: boolean) => void
 }
 
-export function Sidebar({ onOpenVault, onOpenRecentVault }: SidebarProps) {
-  const { activeView, sidebarWidth } = usePDMStore()
+export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarProps) {
+  const { activeView, sidebarWidth, connectedVaults } = usePDMStore()
 
   const renderView = () => {
     switch (activeView) {
       case 'explorer':
-        return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} />
+        return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} onRefresh={onRefresh} />
       case 'checkout':
-        return <CheckoutView />
+        return <CheckoutView onRefresh={onRefresh} />
       case 'history':
         return <HistoryView />
       case 'search':
@@ -35,7 +36,7 @@ export function Sidebar({ onOpenVault, onOpenRecentVault }: SidebarProps) {
       case 'explorer':
         return 'EXPLORER'
       case 'checkout':
-        return 'CHECK OUT / CHECK IN'
+        return 'PENDING'
       case 'history':
         return 'HISTORY'
       case 'search':
@@ -52,8 +53,13 @@ export function Sidebar({ onOpenVault, onOpenRecentVault }: SidebarProps) {
       className="bg-pdm-sidebar flex flex-col overflow-hidden"
       style={{ width: sidebarWidth }}
     >
-      <div className="h-9 flex items-center px-4 text-[11px] font-semibold text-pdm-fg-dim tracking-wide border-b border-pdm-border">
-        {getTitle()}
+      <div className="h-9 flex items-center justify-between px-4 text-[11px] font-semibold text-pdm-fg-dim tracking-wide border-b border-pdm-border">
+        <span>{getTitle()}</span>
+        {activeView === 'explorer' && connectedVaults.length > 0 && (
+          <span className="text-pdm-fg-muted font-normal">
+            {connectedVaults.length} vault{connectedVaults.length > 1 ? 's' : ''}
+          </span>
+        )}
       </div>
       <div className="flex-1 overflow-auto">
         {renderView()}

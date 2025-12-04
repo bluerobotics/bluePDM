@@ -1,0 +1,20 @@
+solidworks integration
+- previews
+- solidworks metadata
+- configurations
+
+
+
+
+tab system for navigating with multiple tabs
+- pinning tabs
+- basic tab functions
+- split tab into a split window
+- drag tabs between split windows
+- drag files between split windows
+
+left menu bar for an item number database
+- settings for serialization
+- item number sort with badges for source file, release files, revisions
+- dropdown with previous revisions and their source files
+- navigate to...

@@ -74,6 +74,7 @@ interface PDMState {
   // Connected vaults (multi-vault support)
   connectedVaults: ConnectedVault[]
   activeVaultId: string | null  // Currently selected vault for file browser
+  vaultsRefreshKey: number  // Increment to trigger vault list refresh
   
   // File Browser
   files: LocalFile[]
@@ -86,6 +87,7 @@ interface PDMState {
   
   // Search
   searchQuery: string
+  searchType: 'files' | 'folders' | 'all'
   searchResults: LocalFile[]
   isSearching: boolean
   
@@ -128,6 +130,10 @@ interface PDMState {
   recentVaults: string[]
   autoConnect: boolean
   
+  // Pinned items (quick access)
+  pinnedFolders: { path: string; vaultId: string; vaultName: string; isDirectory: boolean }[]
+  pinnedSectionExpanded: boolean
+  
   // Actions - Toasts
   addToast: (type: ToastType, message: string, duration?: number) => void
   removeToast: (id: string) => void
@@ -145,6 +151,12 @@ interface PDMState {
   addRecentVault: (path: string) => void
   setAutoConnect: (auto: boolean) => void
   
+  // Actions - Pinned items
+  pinFolder: (path: string, vaultId: string, vaultName: string, isDirectory: boolean) => void
+  unpinFolder: (path: string) => void
+  togglePinnedSection: () => void
+  reorderPinnedFolders: (fromIndex: number, toIndex: number) => void
+  
   // Actions - Connected Vaults
   setConnectedVaults: (vaults: ConnectedVault[]) => void
   addConnectedVault: (vault: ConnectedVault) => void
@@ -152,10 +164,12 @@ interface PDMState {
   toggleVaultExpanded: (vaultId: string) => void
   setActiveVault: (vaultId: string | null) => void
   updateConnectedVault: (vaultId: string, updates: Partial<ConnectedVault>) => void
+  triggerVaultsRefresh: () => void
   
   // Actions - Files
   setFiles: (files: LocalFile[]) => void
   setServerFiles: (files: ServerFile[]) => void
+  renameFileInStore: (oldPath: string, newPath: string, newName: string) => void
   setSelectedFiles: (paths: string[]) => void
   toggleFileSelection: (path: string, multiSelect?: boolean) => void
   selectAllFiles: () => void
@@ -165,6 +179,7 @@ interface PDMState {
   
   // Actions - Search
   setSearchQuery: (query: string) => void
+  setSearchType: (type: 'files' | 'folders' | 'all') => void
   setSearchResults: (results: LocalFile[]) => void
   setIsSearching: (searching: boolean) => void
   
@@ -237,6 +252,7 @@ export const usePDMStore = create<PDMState>()(
       isVaultConnected: false,
       connectedVaults: [],
       activeVaultId: null,
+      vaultsRefreshKey: 0,
       
       files: [],
       serverFiles: [],
@@ -247,6 +263,7 @@ export const usePDMStore = create<PDMState>()(
       sortDirection: 'asc',
       
       searchQuery: '',
+      searchType: 'all',
       searchResults: [],
       isSearching: false,
       
@@ -281,6 +298,8 @@ export const usePDMStore = create<PDMState>()(
       
       recentVaults: [],
       autoConnect: true,
+      pinnedFolders: [],
+      pinnedSectionExpanded: true,
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
@@ -308,13 +327,40 @@ export const usePDMStore = create<PDMState>()(
       },
       setAutoConnect: (autoConnect) => set({ autoConnect }),
       
+      // Actions - Pinned items
+      pinFolder: (path, vaultId, vaultName, isDirectory) => {
+        const { pinnedFolders } = get()
+        // Don't add duplicates
+        if (pinnedFolders.some(p => p.path === path && p.vaultId === vaultId)) return
+        set({ pinnedFolders: [...pinnedFolders, { path, vaultId, vaultName, isDirectory }] })
+      },
+      unpinFolder: (path) => {
+        const { pinnedFolders } = get()
+        set({ pinnedFolders: pinnedFolders.filter(p => p.path !== path) })
+      },
+      togglePinnedSection: () => {
+        const { pinnedSectionExpanded } = get()
+        set({ pinnedSectionExpanded: !pinnedSectionExpanded })
+      },
+      reorderPinnedFolders: (fromIndex, toIndex) => {
+        const { pinnedFolders } = get()
+        const newPinned = [...pinnedFolders]
+        const [removed] = newPinned.splice(fromIndex, 1)
+        newPinned.splice(toIndex, 0, removed)
+        set({ pinnedFolders: newPinned })
+      },
+      
       // Actions - Connected Vaults
       setConnectedVaults: (connectedVaults) => set({ connectedVaults }),
       addConnectedVault: (vault) => {
         const { connectedVaults } = get()
         // Don't add duplicates
         if (connectedVaults.some(v => v.id === vault.id)) return
-        set({ connectedVaults: [...connectedVaults, vault] })
+        // Add vault and set it as active
+        set({ 
+          connectedVaults: [...connectedVaults, vault],
+          activeVaultId: vault.id
+        })
       },
       removeConnectedVault: (vaultId) => {
         const { connectedVaults, activeVaultId } = get()
@@ -341,10 +387,44 @@ export const usePDMStore = create<PDMState>()(
           )
         })
       },
+      triggerVaultsRefresh: () => {
+        set({ vaultsRefreshKey: get().vaultsRefreshKey + 1 })
+      },
       
       // Actions - Files
       setFiles: (files) => set({ files }),
       setServerFiles: (serverFiles) => set({ serverFiles }),
+      renameFileInStore: (oldPath, newPath, newName) => {
+        const { files, selectedFiles, expandedFolders } = get()
+        
+        // Update file in the files array
+        const updatedFiles = files.map(f => {
+          if (f.path === oldPath) {
+            // Calculate new relative path
+            const oldRelativePath = f.relativePath
+            const pathParts = oldRelativePath.split('/')
+            pathParts[pathParts.length - 1] = newName
+            const newRelativePath = pathParts.join('/')
+            
+            return {
+              ...f,
+              path: newPath,
+              name: newName,
+              relativePath: newRelativePath,
+              extension: newName.includes('.') ? newName.split('.').pop()?.toLowerCase() || '' : ''
+            }
+          }
+          return f
+        })
+        
+        // Update selected files if the renamed file was selected
+        const updatedSelectedFiles = selectedFiles.map(p => p === oldPath ? newPath : p)
+        
+        set({ 
+          files: updatedFiles,
+          selectedFiles: updatedSelectedFiles
+        })
+      },
       setSelectedFiles: (selectedFiles) => set({ selectedFiles }),
       toggleFileSelection: (path, multiSelect = false) => {
         const { selectedFiles } = get()
@@ -377,6 +457,7 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Search
       setSearchQuery: (searchQuery) => set({ searchQuery }),
+      setSearchType: (searchType) => set({ searchType }),
       setSearchResults: (searchResults) => set({ searchResults }),
       setIsSearching: (isSearching) => set({ isSearching }),
       
@@ -557,6 +638,8 @@ export const usePDMStore = create<PDMState>()(
         vaultName: state.vaultName,
         recentVaults: state.recentVaults,
         autoConnect: state.autoConnect,
+        pinnedFolders: state.pinnedFolders,
+        pinnedSectionExpanded: state.pinnedSectionExpanded,
         connectedVaults: state.connectedVaults,
         activeVaultId: state.activeVaultId,
         sidebarVisible: state.sidebarVisible,

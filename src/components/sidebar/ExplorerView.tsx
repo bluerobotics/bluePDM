@@ -8,17 +8,22 @@ import {
   FileText,
   Layers,
   Database,
-  Unlink
+  Lock,
+  Cloud,
+  Star,
+  X
 } from 'lucide-react'
 import { usePDMStore, LocalFile, ConnectedVault } from '../../stores/pdmStore'
-import { isCADFile, getFileType } from '../../types/pdm'
+import { getFileType } from '../../types/pdm'
+import { FileContextMenu } from '../FileContextMenu'
 
 interface ExplorerViewProps {
   onOpenVault: () => void
   onOpenRecentVault: (path: string) => void
+  onRefresh?: (silent?: boolean) => void
 }
 
-export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewProps) {
+export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: ExplorerViewProps) {
   const { 
     files, 
     expandedFolders, 
@@ -33,17 +38,169 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
     toggleVaultExpanded,
     activeVaultId,
     setActiveVault,
-    setVaultConnected,
-    setVaultPath,
-    setFiles,
-    addToast
+    addToast,
+    pinnedFolders,
+    unpinFolder,
+    pinnedSectionExpanded,
+    togglePinnedSection,
+    reorderPinnedFolders,
+    renameFileInStore,
+    user,
   } = usePDMStore()
   
-  const handleDisconnectLegacyVault = () => {
-    setVaultConnected(false)
-    setVaultPath(null)
-    setFiles([])
-    addToast('info', 'Vault disconnected')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: LocalFile } | null>(null)
+  const [clipboard, setClipboard] = useState<{ files: LocalFile[]; operation: 'copy' | 'cut' } | null>(null)
+  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [lastClickTime, setLastClickTime] = useState<number>(0)
+  const [lastClickPath, setLastClickPath] = useState<string | null>(null)
+  const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [draggingPinIndex, setDraggingPinIndex] = useState<number | null>(null)
+  const [dragOverPinIndex, setDragOverPinIndex] = useState<number | null>(null)
+  const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
+  
+  const handleDelete = async (file: LocalFile) => {
+    const result = await window.electronAPI?.deleteItem(file.path)
+    if (result?.success) {
+      addToast('success', `Deleted ${file.name}`)
+      onRefresh?.(true)
+    } else {
+      addToast('error', 'Failed to delete')
+    }
+  }
+  
+  // Handle slow double click for rename
+  const handleSlowDoubleClick = (file: LocalFile) => {
+    const now = Date.now()
+    const timeDiff = now - lastClickTime
+    const isSameFile = lastClickPath === file.relativePath
+    
+    // Check if file can be renamed (unsynced files can always be renamed, synced files need checkout)
+    const isSynced = !!file.pdmData
+    const isCheckedOutByMe = file.pdmData?.checked_out_by === user?.id
+    const canRename = !isSynced || isCheckedOutByMe
+    
+    // Slow double click: 400-1500ms between clicks on same file
+    if (isSameFile && timeDiff > 400 && timeDiff < 1500 && !file.isDirectory && canRename) {
+      // Start rename
+      setRenamingFile(file)
+      setRenameValue(file.name)
+      setLastClickTime(0)
+      setLastClickPath(null)
+    } else {
+      setLastClickTime(now)
+      setLastClickPath(file.relativePath)
+    }
+  }
+  
+  const handleRenameSubmit = async () => {
+    if (!renamingFile || !renameValue.trim()) {
+      setRenamingFile(null)
+      return
+    }
+    
+    const oldPath = renamingFile.path
+    const newName = renameValue.trim()
+    
+    if (newName === renamingFile.name) {
+      setRenamingFile(null)
+      return
+    }
+    
+    // Build new path
+    const pathParts = oldPath.split(/[/\\]/)
+    pathParts[pathParts.length - 1] = newName
+    const newPath = pathParts.join('\\')
+    
+    const result = await window.electronAPI?.moveFile(oldPath, newPath)
+    if (result?.success) {
+      addToast('success', `Renamed to ${newName}`)
+      // Update file in store directly instead of full refresh
+      renameFileInStore(oldPath, newPath, newName)
+    } else {
+      addToast('error', result?.error || 'Failed to rename')
+    }
+    setRenamingFile(null)
+  }
+  
+  const handleCopy = () => {
+    if (!contextMenu?.file) return
+    setClipboard({ files: [contextMenu.file], operation: 'copy' })
+    addToast('info', `Copied ${contextMenu.file.name}`)
+  }
+  
+  const handleCut = () => {
+    if (!contextMenu?.file) return
+    setClipboard({ files: [contextMenu.file], operation: 'cut' })
+    addToast('info', `Cut ${contextMenu.file.name}`)
+  }
+  
+  const handlePaste = async () => {
+    if (!clipboard || !contextMenu?.file || !vaultPath) return
+    
+    // Handle both Windows (\) and Unix (/) path separators
+    const lastSepIndex = Math.max(contextMenu.file.path.lastIndexOf('/'), contextMenu.file.path.lastIndexOf('\\'))
+    const targetFolder = contextMenu.file.isDirectory 
+      ? contextMenu.file.path 
+      : contextMenu.file.path.substring(0, lastSepIndex)
+    
+    for (const file of clipboard.files) {
+      const destPath = `${targetFolder}/${file.name}`
+      
+      if (clipboard.operation === 'copy') {
+        await window.electronAPI?.copyFile(file.path, destPath)
+      } else {
+        await window.electronAPI?.moveFile(file.path, destPath)
+      }
+    }
+    
+    if (clipboard.operation === 'cut') {
+      setClipboard(null)
+    }
+    
+    addToast('success', `${clipboard.operation === 'copy' ? 'Copied' : 'Moved'} ${clipboard.files.length} item(s)`)
+    onRefresh?.(true)
+  }
+  
+  const handleRename = (file: LocalFile) => {
+    // Use a simple prompt for rename
+    const newName = window.prompt('Enter new name:', file.name)
+    if (newName && newName !== file.name) {
+      // Handle both Windows (\) and Unix (/) path separators
+      const lastSepIndex = Math.max(file.path.lastIndexOf('/'), file.path.lastIndexOf('\\'))
+      const newPath = file.path.substring(0, lastSepIndex + 1) + newName
+      window.electronAPI?.moveFile(file.path, newPath).then(result => {
+        if (result?.success) {
+          addToast('success', `Renamed to ${newName}`)
+          // Update file in store directly instead of full refresh
+          renameFileInStore(file.path, newPath, newName)
+        } else {
+          addToast('error', 'Failed to rename')
+        }
+      })
+    }
+  }
+  
+  const handleNewFolder = async () => {
+    if (!contextMenu?.file || !vaultPath) return
+    
+    // Handle both Windows (\) and Unix (/) path separators
+    const lastSepIndex = Math.max(contextMenu.file.path.lastIndexOf('/'), contextMenu.file.path.lastIndexOf('\\'))
+    const targetFolder = contextMenu.file.isDirectory 
+      ? contextMenu.file.path 
+      : contextMenu.file.path.substring(0, lastSepIndex)
+    
+    const folderName = window.prompt('Enter folder name:', 'New Folder')
+    if (folderName) {
+      const newPath = `${targetFolder}/${folderName}`
+      const result = await window.electronAPI?.ensureDir(newPath)
+      if (result?.success) {
+        addToast('success', `Created folder ${folderName}`)
+        onRefresh?.(true)
+      } else {
+        addToast('error', 'Failed to create folder')
+      }
+    }
   }
 
   // Build folder tree structure
@@ -116,6 +273,40 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
         return <File size={16} className="text-pdm-fg-muted" />
     }
   }
+  
+  // Get status icon for files (lock, green cloud, grey cloud)
+  const getStatusIcon = (file: LocalFile) => {
+    const { user } = usePDMStore.getState()
+    
+    // No status icons for folders - diff counts already show this info
+    if (file.isDirectory) {
+      return null
+    }
+    
+    // For files:
+    // Checked out by me - yellow lock
+    if (file.pdmData?.checked_out_by === user?.id) {
+      return <Lock size={12} className="text-pdm-warning flex-shrink-0" />
+    }
+    
+    // Checked out by someone else - red lock
+    if (file.pdmData?.checked_out_by) {
+      return <Lock size={12} className="text-pdm-error flex-shrink-0" />
+    }
+    
+    // Cloud-only (not downloaded) - grey cloud
+    if (file.diffStatus === 'cloud') {
+      return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
+    }
+    
+    // Synced (has pdmData and downloaded locally) - green cloud
+    if (file.pdmData) {
+      return <Cloud size={12} className="text-pdm-success flex-shrink-0" />
+    }
+    
+    // Not synced - no icon
+    return null
+  }
 
   const renderTreeItem = (file: LocalFile, depth: number = 0) => {
     const isExpanded = expandedFolders.has(file.relativePath)
@@ -130,12 +321,20 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
     const diffClass = file.diffStatus 
       ? `sidebar-diff-${file.diffStatus}` : ''
 
+    const isSelected = selectedFile === file.relativePath
+    const isRenaming = renamingFile?.relativePath === file.relativePath
+
     return (
       <div key={file.path}>
         <div
-          className={`tree-item ${isCurrentFolder ? 'current-folder' : ''} ${diffClass}`}
+          className={`tree-item ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${diffClass}`}
           style={{ paddingLeft: 8 + depth * 16 }}
           onClick={(e) => {
+            if (isRenaming) return
+            
+            // Select the file
+            setSelectedFile(file.relativePath)
+            
             if (file.isDirectory) {
               // Navigate main pane to this folder
               setCurrentFolder(file.relativePath)
@@ -143,16 +342,30 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
               if (!expandedFolders.has(file.relativePath)) {
                 toggleFolder(file.relativePath)
               }
-            } else if (window.electronAPI) {
-              // Single click on file opens it
-              window.electronAPI.openFile(file.path)
+            } else {
+              // Check for slow double click (for rename)
+              handleSlowDoubleClick(file)
             }
           }}
           onDoubleClick={() => {
+            if (isRenaming) return
+            
             if (file.isDirectory) {
               // Toggle expand/collapse on double click
               toggleFolder(file.relativePath)
+            } else if (window.electronAPI) {
+              // Double click on file opens it
+              window.electronAPI.openFile(file.path)
+              // Reset slow double click tracking
+              setLastClickTime(0)
+              setLastClickPath(null)
             }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setSelectedFile(file.relativePath)
+            setContextMenu({ x: e.clientX, y: e.clientY, file })
           }}
         >
           {file.isDirectory && (
@@ -171,10 +384,31 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
           )}
           {!file.isDirectory && <span className="w-[14px] mr-1" />}
           <span className="tree-item-icon">{getFileIcon(file)}</span>
-          <span className="truncate text-sm flex-1">{file.name}</span>
+          
+          {/* File name - editable when renaming */}
+          {isRenaming ? (
+            <input
+              type="text"
+              className="flex-1 text-sm bg-pdm-bg border border-pdm-accent rounded px-1 py-0.5 outline-none"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onBlur={handleRenameSubmit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameSubmit()
+                if (e.key === 'Escape') setRenamingFile(null)
+              }}
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span className="truncate text-sm flex-1">{file.name}</span>
+          )}
+          
+          {/* Status icon (lock, cloud) */}
+          {!isRenaming && getStatusIcon(file)}
           
           {/* Diff counts for folders */}
-          {file.isDirectory && hasDiffs && (
+          {!isRenaming && file.isDirectory && hasDiffs && (
             <span className="flex items-center gap-1 ml-2 text-xs">
               {diffCounts.added > 0 && (
                 <span className="text-pdm-success font-medium">+{diffCounts.added}</span>
@@ -189,7 +423,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
                 <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
               )}
               {diffCounts.cloud > 0 && (
-                <span className="text-pdm-fg-muted font-medium">☁ {diffCounts.cloud}</span>
+                <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5">
+                  <Cloud size={10} />
+                  {diffCounts.cloud}
+                </span>
               )}
             </span>
           )}
@@ -279,26 +516,17 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
       const rootItems = tree[''] || []
       
       return (
-        <div className="py-2">
-          {/* Vault header with disconnect */}
-          <div className="px-3 py-2 border-b border-pdm-border flex items-center justify-between group">
-            <div 
-              className={`flex items-center gap-2 cursor-pointer transition-colors flex-1 min-w-0 ${
-                currentFolder === '' ? 'text-pdm-accent font-medium' : 'text-pdm-fg-muted hover:text-pdm-fg'
-              }`}
-              onClick={() => setCurrentFolder('')}
-              title="Go to vault root"
-            >
-              <Database size={14} />
-              <span className="truncate text-sm">{displayName}</span>
-            </div>
-            <button
-              onClick={handleDisconnectLegacyVault}
-              className="p-1 hover:bg-pdm-warning/20 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-              title="Disconnect vault"
-            >
-              <Unlink size={14} className="text-pdm-warning" />
-            </button>
+        <div className="py-2 relative">
+          {/* Vault header */}
+          <div 
+            className={`px-3 py-2 border-b border-pdm-border flex items-center gap-2 cursor-pointer transition-colors ${
+              currentFolder === '' ? 'text-pdm-accent font-medium' : 'text-pdm-fg-muted hover:text-pdm-fg'
+            }`}
+            onClick={() => setCurrentFolder('')}
+            title="Go to vault root"
+          >
+            <Database size={14} />
+            <span className="truncate text-sm">{displayName}</span>
           </div>
           
           {/* Tree */}
@@ -316,6 +544,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
             <div className="px-4 py-8 text-center text-pdm-fg-muted text-sm">
               No files in vault
             </div>
+          )}
+          
+          {/* Context Menu */}
+          {contextMenu && (
+            <FileContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              files={files}
+              contextFiles={[contextMenu.file]}
+              onClose={() => setContextMenu(null)}
+              onRefresh={onRefresh || (() => {})}
+              clipboard={clipboard}
+              onCopy={handleCopy}
+              onCut={handleCut}
+              onPaste={handlePaste}
+              onRename={handleRename}
+              onNewFolder={handleNewFolder}
+              onDelete={handleDelete}
+            />
           )}
         </div>
       )
@@ -358,15 +605,300 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
   // Multiple vaults mode
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-3 py-2 text-xs text-pdm-fg-muted uppercase tracking-wide border-b border-pdm-border">
-        Connected Vaults ({connectedVaults.length})
-      </div>
+      {/* Pinned section - only show if there are pinned items */}
+      {pinnedFolders.length > 0 && (
+        <div className="border-b border-pdm-border">
+          {/* Pinned header - collapsible */}
+          <div 
+            className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-pdm-highlight/30"
+            onClick={() => togglePinnedSection()}
+          >
+            <span className="cursor-pointer">
+              {pinnedSectionExpanded 
+                ? <ChevronDown size={14} className="text-pdm-fg-muted" /> 
+                : <ChevronRight size={14} className="text-pdm-fg-muted" />
+              }
+            </span>
+            <Star size={14} className="text-pdm-accent fill-pdm-accent" />
+            <span className="text-sm font-medium flex-1">Pinned</span>
+            <span className="text-xs text-pdm-fg-muted">{pinnedFolders.length}</span>
+          </div>
+          
+          {/* Pinned items */}
+          {pinnedSectionExpanded && (
+            <div className="pb-1">
+              {pinnedFolders.map((pinned, index) => {
+                const vault = connectedVaults.find(v => v.id === pinned.vaultId)
+                // Find the actual file from the vault's files if this vault is active
+                const actualFile = pinned.vaultId === activeVaultId 
+                  ? files.find(f => f.relativePath === pinned.path)
+                  : null
+                const fileName = pinned.path.split('/').pop() || pinned.path
+                
+                // Get diff counts for pinned folders
+                const diffCounts = pinned.isDirectory && pinned.vaultId === activeVaultId
+                  ? getFolderDiffCounts(pinned.path)
+                  : null
+                const hasDiffs = diffCounts && (diffCounts.added > 0 || diffCounts.modified > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0 || diffCounts.cloud > 0)
+                
+                // Get status icon for pinned file
+                const getPinnedStatusIcon = () => {
+                  if (!actualFile) return null
+                  if (actualFile.isDirectory) return null
+                  const { user } = usePDMStore.getState()
+                  if (actualFile.pdmData?.checked_out_by === user?.id) {
+                    return <Lock size={12} className="text-pdm-warning flex-shrink-0" />
+                  }
+                  if (actualFile.pdmData?.checked_out_by) {
+                    return <Lock size={12} className="text-pdm-error flex-shrink-0" />
+                  }
+                  if (actualFile.diffStatus === 'cloud') {
+                    return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
+                  }
+                  if (actualFile.pdmData) {
+                    return <Cloud size={12} className="text-pdm-success flex-shrink-0" />
+                  }
+                  return null
+                }
+                
+                // Get file icon with proper folder color scheme - use same logic as getFileIcon
+                const getPinnedFileIcon = () => {
+                  if (pinned.isDirectory) {
+                    // Check folder status for color - only if this vault is active
+                    if (pinned.vaultId === activeVaultId) {
+                      // Cloud-only folder
+                      if (actualFile?.diffStatus === 'cloud') {
+                        return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
+                      }
+                      // Has checked out files - orange
+                      if (hasFolderCheckedOutFiles(pinned.path)) {
+                        return <FolderOpen size={16} className="text-pdm-warning" />
+                      }
+                      // All synced - green
+                      if (isFolderSynced(pinned.path)) {
+                        return <FolderOpen size={16} className="text-pdm-success" />
+                      }
+                    }
+                    // Default - grey
+                    return <FolderOpen size={16} className="text-pdm-fg-muted" />
+                  }
+                  // For files, use actualFile.extension if available, otherwise parse from name
+                  const ext = actualFile?.extension || fileName.split('.').pop()?.toLowerCase() || ''
+                  const fileType = getFileType(ext)
+                  switch (fileType) {
+                    case 'part':
+                      return <FileBox size={16} className="text-pdm-accent" />
+                    case 'assembly':
+                      return <Layers size={16} className="text-pdm-success" />
+                    case 'drawing':
+                      return <FileText size={16} className="text-pdm-info" />
+                    default:
+                      return <File size={16} className="text-pdm-fg-muted" />
+                  }
+                }
+                
+                // Diff class for files
+                const diffClass = actualFile?.diffStatus 
+                  ? `sidebar-diff-${actualFile.diffStatus}` : ''
+                
+                const isDragging = draggingPinIndex === index
+                const isDragOver = dragOverPinIndex === index && draggingPinIndex !== index
+                
+                // For folders, check if expanded in pinned section
+                const isPinnedFolderExpanded = pinned.isDirectory && expandedPinnedFolders.has(`${pinned.vaultId}-${pinned.path}`)
+                
+                // Get children for expanded pinned folders
+                const pinnedFolderChildren = pinned.isDirectory && isPinnedFolderExpanded && pinned.vaultId === activeVaultId
+                  ? (tree[pinned.path] || []).sort((a, b) => {
+                      if (a.isDirectory && !b.isDirectory) return -1
+                      if (!a.isDirectory && b.isDirectory) return 1
+                      return a.name.localeCompare(b.name)
+                    })
+                  : []
+                
+                return (
+                  <div key={`${pinned.vaultId}-${pinned.path}`}>
+                    <div
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggingPinIndex(index)
+                        e.dataTransfer.effectAllowed = 'move'
+                      }}
+                      onDragEnd={() => {
+                        if (draggingPinIndex !== null && dragOverPinIndex !== null && draggingPinIndex !== dragOverPinIndex) {
+                          reorderPinnedFolders(draggingPinIndex, dragOverPinIndex)
+                        }
+                        setDraggingPinIndex(null)
+                        setDragOverPinIndex(null)
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault()
+                        setDragOverPinIndex(index)
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverPinIndex === index) {
+                          setDragOverPinIndex(null)
+                        }
+                      }}
+                      className={`tree-item group ${diffClass} ${isDragging ? 'opacity-50' : ''} ${isDragOver ? 'border-t-2 border-pdm-accent' : ''}`}
+                      style={{ paddingLeft: pinned.isDirectory ? 8 : 24, cursor: 'grab' }}
+                      onClick={() => {
+                        // Switch to the vault and navigate
+                        if (pinned.vaultId !== activeVaultId) {
+                          setActiveVault(pinned.vaultId)
+                        }
+                        // Always set current folder (for files, navigate to parent)
+                        if (pinned.isDirectory) {
+                          setCurrentFolder(pinned.path)
+                        } else {
+                          const parentPath = pinned.path.split('/').slice(0, -1).join('/') || ''
+                          setCurrentFolder(parentPath)
+                        }
+                        // Expand the vault if not expanded
+                        if (vault && !vault.isExpanded) {
+                          toggleVaultExpanded(pinned.vaultId)
+                        }
+                      }}
+                      onDoubleClick={() => {
+                        // Double click on files opens them
+                        if (!pinned.isDirectory && actualFile && window.electronAPI) {
+                          window.electronAPI.openFile(actualFile.path)
+                        }
+                        // Double click on folders toggles expand
+                        if (pinned.isDirectory) {
+                          const key = `${pinned.vaultId}-${pinned.path}`
+                          setExpandedPinnedFolders(prev => {
+                            const next = new Set(prev)
+                            if (next.has(key)) {
+                              next.delete(key)
+                            } else {
+                              next.add(key)
+                            }
+                            return next
+                          })
+                        }
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        if (actualFile) {
+                          setContextMenu({ x: e.clientX, y: e.clientY, file: actualFile })
+                        }
+                      }}
+                    >
+                      {/* Expand/collapse chevron for folders */}
+                      {pinned.isDirectory && (
+                        <span 
+                          className="mr-1 cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const key = `${pinned.vaultId}-${pinned.path}`
+                            setExpandedPinnedFolders(prev => {
+                              const next = new Set(prev)
+                              if (next.has(key)) {
+                                next.delete(key)
+                              } else {
+                                next.add(key)
+                              }
+                              return next
+                            })
+                          }}
+                        >
+                          {isPinnedFolderExpanded 
+                            ? <ChevronDown size={14} className="text-pdm-fg-muted" /> 
+                            : <ChevronRight size={14} className="text-pdm-fg-muted" />
+                          }
+                        </span>
+                      )}
+                      <span className="tree-item-icon">{getPinnedFileIcon()}</span>
+                      {/* Show full path for folders, just filename for files */}
+                      <span className="truncate text-sm flex-1" title={pinned.path}>
+                        {pinned.isDirectory ? pinned.path : fileName}
+                      </span>
+                      
+                      {/* Vault label if from different vault */}
+                      {pinned.vaultId !== activeVaultId && (
+                        <span className="text-[10px] text-pdm-fg-muted truncate max-w-[60px]" title={pinned.vaultName}>
+                          {pinned.vaultName}
+                        </span>
+                      )}
+                      
+                      {/* Status icon */}
+                      {getPinnedStatusIcon()}
+                      
+                      {/* Diff counts for folders */}
+                      {pinned.isDirectory && hasDiffs && (
+                        <span className="flex items-center gap-1 ml-1 text-xs">
+                          {diffCounts.added > 0 && (
+                            <span className="text-pdm-success font-medium">+{diffCounts.added}</span>
+                          )}
+                          {diffCounts.modified > 0 && (
+                            <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
+                          )}
+                          {diffCounts.deleted > 0 && (
+                            <span className="text-pdm-error font-medium">-{diffCounts.deleted}</span>
+                          )}
+                          {diffCounts.outdated > 0 && (
+                            <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
+                          )}
+                          {diffCounts.cloud > 0 && (
+                            <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5">
+                              <Cloud size={10} />
+                              {diffCounts.cloud}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      
+                      {/* Unpin button */}
+                      <button
+                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-pdm-bg rounded transition-opacity ml-1"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          unpinFolder(pinned.path)
+                          addToast('info', `Unpinned ${fileName}`)
+                        }}
+                        title="Unpin"
+                      >
+                        <X size={12} className="text-pdm-fg-muted" />
+                      </button>
+                    </div>
+                    
+                    {/* Expanded pinned folder children */}
+                    {isPinnedFolderExpanded && pinnedFolderChildren.map(child => 
+                      renderTreeItem(child, 1)
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       
       {/* Vault list */}
       <div className="flex-1 overflow-y-auto">
         {connectedVaults.map(vault => renderVaultSection(vault))}
       </div>
+      
+      {/* Context Menu */}
+      {contextMenu && (
+        <FileContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          files={files}
+          contextFiles={[contextMenu.file]}
+          onClose={() => setContextMenu(null)}
+          onRefresh={onRefresh || (() => {})}
+          clipboard={clipboard}
+          onCopy={handleCopy}
+          onCut={handleCut}
+          onPaste={handlePaste}
+          onRename={handleRename}
+          onNewFolder={handleNewFolder}
+          onDelete={handleDelete}
+        />
+      )}
     </div>
   )
 }

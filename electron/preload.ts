@@ -66,6 +66,9 @@ interface TitleBarOverlayRect {
 contextBridge.exposeInMainWorld('electronAPI', {
   // App info
   getVersion: () => ipcRenderer.invoke('app:get-version'),
+  
+  // OAuth
+  openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:open-oauth-window', url),
   getPlatform: () => ipcRenderer.invoke('app:get-platform'),
   getTitleBarOverlayRect: (): Promise<TitleBarOverlayRect> => ipcRenderer.invoke('app:get-titlebar-overlay-rect'),
   
@@ -150,6 +153,9 @@ declare global {
       getPlatform: () => Promise<string>
       getTitleBarOverlayRect: () => Promise<{ x: number; y: number; width: number; height: number }>
       getPathForFile: (file: File) => string
+      
+      // OAuth
+      openOAuthWindow: (url: string) => Promise<{ success: boolean; canceled?: boolean }>
       
       // Window controls
       minimize: () => void

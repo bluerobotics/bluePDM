@@ -47,7 +47,7 @@ export function StatusBar() {
 
   return (
     <>
-      <div className="h-6 bg-pdm-activitybar border-t border-pdm-border flex items-center justify-between px-3 text-xs text-pdm-fg-dim select-none flex-shrink-0">
+      <div className="bg-pdm-activitybar border-t border-pdm-border flex items-center justify-between px-3 py-[2px] text-xs text-pdm-fg-dim select-none flex-shrink-0">
         <div className="flex items-center gap-4 flex-1 min-w-0">
           {/* Vault status */}
           <div className="flex items-center gap-1.5 flex-shrink-0">

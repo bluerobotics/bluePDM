@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, dialog, screen, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog, screen, nativeImage, nativeTheme } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -74,6 +74,9 @@ const log = (...args: unknown[]) => {
 }
 
 log('BluePDM starting...', { isDev, dirname: __dirname })
+
+// Follow system dark/light mode for web content (like Google sign-in)
+nativeTheme.themeSource = 'system'
 
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer')
 
@@ -304,6 +307,79 @@ function createAppMenu() {
   const menu = Menu.buildFromTemplate(template)
   Menu.setApplicationMenu(menu)
 }
+
+// ============================================
+// IPC Handlers - OAuth Popup Window
+// ============================================
+ipcMain.handle('auth:open-oauth-window', async (_, url: string) => {
+  return new Promise((resolve) => {
+    const authWindow = new BrowserWindow({
+      width: 450,
+      height: 600,
+      parent: mainWindow || undefined,
+      modal: true,
+      show: false,
+      backgroundColor: '#1a1a1a',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    })
+    
+    // Center on parent window
+    if (mainWindow) {
+      const parentBounds = mainWindow.getBounds()
+      const x = Math.round(parentBounds.x + (parentBounds.width - 450) / 2)
+      const y = Math.round(parentBounds.y + (parentBounds.height - 600) / 2)
+      authWindow.setPosition(x, y)
+    }
+    
+    authWindow.once('ready-to-show', () => {
+      authWindow.show()
+    })
+    
+    // Listen for redirect back to our app with auth tokens
+    const handleAuthRedirect = (redirectUrl: string) => {
+      // Check if this is our callback URL (contains access_token or code)
+      if (redirectUrl.startsWith('http://localhost') && 
+          (redirectUrl.includes('access_token') || redirectUrl.includes('code=') || redirectUrl.includes('#'))) {
+        log('OAuth redirect detected:', redirectUrl.substring(0, 100) + '...')
+        // Load the callback URL in main window so Supabase can process the tokens
+        mainWindow?.loadURL(redirectUrl)
+        authWindow.close()
+        resolve({ success: true })
+        return true
+      }
+      return false
+    }
+    
+    // Check URL changes
+    authWindow.webContents.on('will-redirect', (event, redirectUrl) => {
+      handleAuthRedirect(redirectUrl)
+    })
+    
+    authWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (handleAuthRedirect(navUrl)) {
+        event.preventDefault()
+      }
+    })
+    
+    // Also check after page loads (for hash-based redirects)
+    authWindow.webContents.on('did-navigate', (event, navUrl) => {
+      handleAuthRedirect(navUrl)
+    })
+    
+    authWindow.webContents.on('did-navigate-in-page', (event, navUrl) => {
+      handleAuthRedirect(navUrl)
+    })
+    
+    authWindow.on('closed', () => {
+      resolve({ success: false, canceled: true })
+    })
+    
+    authWindow.loadURL(url)
+  })
+})
 
 // ============================================
 // IPC Handlers - App Info
@@ -741,11 +817,49 @@ ipcMain.handle('fs:is-readonly', async (_, filePath: string) => {
   }
 })
 
-// Select files to add (returns file paths)
+// Helper to recursively get all files in a directory with relative paths
+function getAllFilesInDir(dirPath: string, baseFolder: string): Array<{ name: string; path: string; relativePath: string; extension: string; size: number; modifiedTime: string }> {
+  const files: Array<{ name: string; path: string; relativePath: string; extension: string; size: number; modifiedTime: string }> = []
+  
+  function walkDir(currentPath: string) {
+    try {
+      const items = fs.readdirSync(currentPath, { withFileTypes: true })
+      for (const item of items) {
+        // Skip hidden files/folders
+        if (item.name.startsWith('.')) continue
+        
+        const fullPath = path.join(currentPath, item.name)
+        
+        if (item.isDirectory()) {
+          walkDir(fullPath)
+        } else {
+          const stats = fs.statSync(fullPath)
+          // Compute relative path from the base folder (includes the folder name itself)
+          const relativePath = path.relative(path.dirname(dirPath), fullPath).replace(/\\/g, '/')
+          files.push({
+            name: item.name,
+            path: fullPath,
+            relativePath,
+            extension: path.extname(item.name).toLowerCase(),
+            size: stats.size,
+            modifiedTime: stats.mtime.toISOString()
+          })
+        }
+      }
+    } catch (err) {
+      log('Error walking directory:', err)
+    }
+  }
+  
+  walkDir(dirPath)
+  return files
+}
+
+// Select files to add (returns file paths) - supports both files and folders
 ipcMain.handle('dialog:select-files', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
-    title: 'Select Files to Add',
-    properties: ['openFile', 'multiSelections'],
+    title: 'Select Files or Folders to Add',
+    properties: ['openFile', 'openDirectory', 'multiSelections'],
     filters: [
       { name: 'CAD Files', extensions: ['sldprt', 'sldasm', 'slddrw', 'step', 'stp', 'iges', 'igs', 'stl', 'pdf'] },
       { name: 'SolidWorks Parts', extensions: ['sldprt'] },
@@ -756,18 +870,28 @@ ipcMain.handle('dialog:select-files', async () => {
   })
   
   if (!result.canceled && result.filePaths.length > 0) {
-    // Get info for each file
-    const files = result.filePaths.map(filePath => {
+    const allFiles: Array<{ name: string; path: string; relativePath?: string; extension: string; size: number; modifiedTime: string }> = []
+    
+    for (const filePath of result.filePaths) {
       const stats = fs.statSync(filePath)
-      return {
-        name: path.basename(filePath),
-        path: filePath,
-        extension: path.extname(filePath).toLowerCase(),
-        size: stats.size,
-        modifiedTime: stats.mtime.toISOString()
+      
+      if (stats.isDirectory()) {
+        // Recursively get all files in the folder, preserving folder structure
+        const filesInDir = getAllFilesInDir(filePath, filePath)
+        allFiles.push(...filesInDir)
+      } else {
+        // Single file - just use the filename
+        allFiles.push({
+          name: path.basename(filePath),
+          path: filePath,
+          extension: path.extname(filePath).toLowerCase(),
+          size: stats.size,
+          modifiedTime: stats.mtime.toISOString()
+        })
       }
-    })
-    return { success: true, files }
+    }
+    
+    return { success: true, files: allFiles }
   }
   return { success: false, canceled: true }
 })

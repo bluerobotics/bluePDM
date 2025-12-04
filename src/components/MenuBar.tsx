@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { LogOut, ChevronDown, Building2, Settings } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Settings, Search, File, Folder, LayoutGrid } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
 import { SettingsModal } from './SettingsModal'
@@ -7,16 +7,19 @@ import { SettingsModal } from './SettingsModal'
 interface MenuBarProps {
   onOpenVault: () => void
   onRefresh: () => void
+  minimal?: boolean  // Hide Sign In and Settings on welcome/signin screens
 }
 
-export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
-  const { user, organization, setUser, setOrganization, addToast } = usePDMStore()
+export function MenuBar({ onOpenVault, onRefresh, minimal = false }: MenuBarProps) {
+  const { user, organization, setUser, setOrganization, addToast, setSearchQuery, searchQuery, searchType, setSearchType } = usePDMStore()
   const [appVersion, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
+  const [localSearch, setLocalSearch] = useState(searchQuery || '')
   const menuRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -75,9 +78,9 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
   }
 
   return (
-    <div className="h-[38px] bg-pdm-activitybar flex items-center justify-between border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region">
+    <div className="h-[38px] bg-pdm-activitybar border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region relative">
       {/* Left side - App name */}
-      <div className="flex items-center h-full">
+      <div className="absolute left-0 top-0 h-full flex items-center">
         <div className="flex items-center gap-2 px-4 titlebar-no-drag">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
             <path 
@@ -109,24 +112,101 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
         </div>
       </div>
 
-      {/* Center - Title (optional) */}
-      <div className="flex-1" />
+      {/* Center - Search bar (absolutely positioned to be truly centered) */}
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg px-4">
+        {!minimal && (
+          <div className="flex items-center gap-1 w-full titlebar-no-drag">
+            {/* Search type toggle */}
+            <div className="flex items-center bg-pdm-bg border border-pdm-border rounded-md h-7">
+              <button
+                onClick={() => setSearchType('all')}
+                className={`px-2 h-full flex items-center gap-1 text-xs rounded-l-md transition-colors ${
+                  searchType === 'all' 
+                    ? 'bg-pdm-accent/20 text-pdm-accent' 
+                    : 'text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="Search all"
+              >
+                <LayoutGrid size={12} />
+              </button>
+              <button
+                onClick={() => setSearchType('folders')}
+                className={`px-2 h-full flex items-center gap-1 text-xs border-l border-pdm-border transition-colors ${
+                  searchType === 'folders' 
+                    ? 'bg-pdm-accent/20 text-pdm-accent' 
+                    : 'text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="Search folders"
+              >
+                <Folder size={12} />
+              </button>
+              <button
+                onClick={() => setSearchType('files')}
+                className={`px-2 h-full flex items-center gap-1 text-xs border-l border-pdm-border rounded-r-md transition-colors ${
+                  searchType === 'files' 
+                    ? 'bg-pdm-accent/20 text-pdm-accent' 
+                    : 'text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="Search files"
+              >
+                <File size={12} />
+              </button>
+            </div>
+            
+            {/* Search input */}
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-pdm-fg-muted" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder={searchType === 'all' ? 'Search...' : `Search ${searchType}...`}
+                value={localSearch}
+                onChange={(e) => {
+                  setLocalSearch(e.target.value)
+                  setSearchQuery(e.target.value)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setLocalSearch('')
+                    setSearchQuery('')
+                    searchInputRef.current?.blur()
+                  }
+                }}
+                className="w-full h-7 pl-9 pr-8 bg-pdm-bg border border-pdm-border rounded-md text-sm text-pdm-fg placeholder:text-pdm-fg-muted focus:outline-none focus:border-pdm-accent focus:ring-1 focus:ring-pdm-accent/50 transition-colors"
+              />
+              {localSearch && (
+                <button
+                  onClick={() => {
+                    setLocalSearch('')
+                    setSearchQuery('')
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-pdm-fg-muted hover:text-pdm-fg p-0.5"
+                >
+                  <span className="text-xs">✕</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Right side - Settings and User (with padding for window controls) */}
       <div 
-        className="flex items-center gap-2 h-full pl-4 titlebar-no-drag"
+        className="absolute right-0 top-0 h-full flex items-center gap-2 pl-4 titlebar-no-drag"
         style={{ paddingRight: titleBarPadding }}
       >
-        {/* Settings gear */}
-        <button
-          onClick={() => setShowSettings(true)}
-          className="p-1.5 rounded hover:bg-pdm-bg-lighter transition-colors text-pdm-fg-muted hover:text-pdm-fg"
-          title="Settings"
-        >
-          <Settings size={18} />
-        </button>
+        {/* Settings gear - hidden on welcome/signin screens */}
+        {!minimal && (
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-1.5 rounded hover:bg-pdm-bg-lighter transition-colors text-pdm-fg-muted hover:text-pdm-fg"
+            title="Settings"
+          >
+            <Settings size={18} />
+          </button>
+        )}
         
-        {user ? (
+        {user && !minimal ? (
           <div className="relative" ref={menuRef}>
             <button 
               onClick={() => setShowUserMenu(!showUserMenu)}
@@ -224,7 +304,7 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
               </div>
             )}
           </div>
-        ) : (
+        ) : !minimal ? (
           <button 
             onClick={handleSignIn}
             disabled={isSigningIn}
@@ -232,7 +312,7 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
           >
             {isSigningIn ? 'Signing in...' : 'Sign In with Google'}
           </button>
-        )}
+        ) : null}
       </div>
       
       {/* Settings Modal */}

@@ -86,6 +86,7 @@ CREATE INDEX idx_vaults_org_id ON vaults(org_id);
 CREATE TABLE files (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  vault_id UUID REFERENCES vaults(id) ON DELETE CASCADE,
   
   -- File identity
   file_path TEXT NOT NULL,           -- Virtual path in vault (e.g., "Parts/Enclosures/WTE4-M-FLAT.sldprt")
@@ -122,12 +123,13 @@ CREATE TABLE files (
   -- Custom properties (from SolidWorks or user-defined)
   custom_properties JSONB DEFAULT '{}'::jsonb,
   
-  -- Unique constraint: one file path per org
-  UNIQUE(org_id, file_path)
+  -- Unique constraint: one file path per vault
+  UNIQUE(vault_id, file_path)
 );
 
 -- Indexes for common queries
 CREATE INDEX idx_files_org_id ON files(org_id);
+CREATE INDEX idx_files_vault_id ON files(vault_id);
 CREATE INDEX idx_files_file_path ON files(file_path);
 CREATE INDEX idx_files_part_number ON files(part_number) WHERE part_number IS NOT NULL;
 CREATE INDEX idx_files_state ON files(state);

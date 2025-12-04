@@ -32,7 +32,7 @@ export async function signInWithGoogle() {
       redirectTo: window.location.origin,
       queryParams: {
         access_type: 'offline',
-        prompt: 'select_account'  // Only show account picker, not consent every time
+        prompt: 'select_account'
       }
     }
   })
@@ -152,6 +152,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
 // ============================================
 
 export async function getFiles(orgId: string, options?: {
+  vaultId?: string
   folder?: string
   state?: string[]
   search?: string
@@ -166,6 +167,11 @@ export async function getFiles(orgId: string, options?: {
     `)
     .eq('org_id', orgId)
     .order('file_path', { ascending: true })
+  
+  // Filter by vault if specified
+  if (options?.vaultId) {
+    query = query.eq('vault_id', options.vaultId)
+  }
   
   if (options?.folder) {
     query = query.ilike('file_path', `${options.folder}%`)
@@ -329,6 +335,7 @@ export async function getAllCheckedOutFiles(orgId: string) {
 
 export async function syncFile(
   orgId: string,
+  vaultId: string,
   userId: string,
   filePath: string,  // relative path in vault
   fileName: string,
@@ -372,11 +379,11 @@ export async function syncFile(
     // 2. Determine file type from extension
     const fileType = getFileTypeFromExtension(extension)
     
-    // 3. Check if file already exists in database
+    // 3. Check if file already exists in database (by vault and path)
     const { data: existingDbFile } = await supabase
       .from('files')
       .select('id, version')
-      .eq('org_id', orgId)
+      .eq('vault_id', vaultId)
       .eq('file_path', filePath)
       .single()
     
@@ -415,6 +422,7 @@ export async function syncFile(
         .from('files')
         .insert({
           org_id: orgId,
+          vault_id: vaultId,
           file_path: filePath,
           file_name: fileName,
           extension: extension,

@@ -58,7 +58,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     updateConnectedVault,
     setUser,
     setOrganization,
-    addToast
+    addToast,
+    triggerVaultsRefresh
   } = usePDMStore()
   
   const [activeTab, setActiveTab] = useState<SettingsTab>('account')
@@ -198,6 +199,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       setIsCreatingVault(false)
       setNewVaultName('')
       setNewVaultDescription('')
+      triggerVaultsRefresh() // Notify other components to refresh vault list
     } catch (err) {
       console.error('Failed to create vault:', err)
       addToast('error', 'Failed to create vault')
@@ -299,6 +301,20 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     setIsDeleting(true)
     
     try {
+      // Delete local folder if connected
+      const connectedVault = connectedVaults.find(v => v.id === deletingVault.id)
+      if (connectedVault?.localPath) {
+        const api = (window as any).electronAPI
+        if (api) {
+          try {
+            await api.deleteItem(connectedVault.localPath)
+          } catch (err) {
+            console.error('Failed to delete local folder:', err)
+            // Continue with database deletion even if local delete fails
+          }
+        }
+      }
+      
       const { error } = await supabase
         .from('vaults')
         .delete()
@@ -318,6 +334,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       addToast('success', `Vault "${deletingVault.name}" permanently deleted`)
       setDeletingVault(null)
       setDeleteConfirmText('')
+      triggerVaultsRefresh() // Notify other components to refresh vault list
     } catch (err) {
       console.error('Failed to delete vault:', err)
       addToast('error', 'Failed to delete vault')
@@ -370,9 +387,23 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
   }
   
-  const handleDisconnectVault = (vaultId: string) => {
+  const handleDisconnectVault = async (vaultId: string) => {
+    const connectedVault = connectedVaults.find(v => v.id === vaultId)
+    
+    // Delete local folder
+    if (connectedVault?.localPath) {
+      const api = (window as any).electronAPI
+      if (api) {
+        try {
+          await api.deleteItem(connectedVault.localPath)
+        } catch (err) {
+          console.error('Failed to delete local folder:', err)
+        }
+      }
+    }
+    
     removeConnectedVault(vaultId)
-    addToast('info', 'Vault disconnected (local files remain)')
+    addToast('info', 'Vault disconnected and local folder deleted')
   }
   
   const isVaultConnected = (vaultId: string) => {

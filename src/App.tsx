@@ -18,6 +18,7 @@ function App() {
     vaultPath,
     isVaultConnected,
     connectedVaults,
+    activeVaultId,
     sidebarVisible,
     setSidebarWidth,
     toggleSidebar,
@@ -33,6 +34,9 @@ function App() {
     setUser,
     setOrganization,
   } = usePDMStore()
+  
+  // Get current vault ID (from activeVaultId or first connected vault)
+  const currentVaultId = activeVaultId || connectedVaults[0]?.id
   
   // Consider vault connected if either legacy or new multi-vault system is connected
   const hasVaultConnected = isVaultConnected || connectedVaults.length > 0
@@ -155,8 +159,8 @@ function App() {
       }))
       
       // 2. If connected to Supabase, fetch PDM data and merge
-      if (organization && !isOfflineMode) {
-        const { files: pdmFiles, error: pdmError } = await getFiles(organization.id)
+      if (organization && !isOfflineMode && currentVaultId) {
+        const { files: pdmFiles, error: pdmError } = await getFiles(organization.id, { vaultId: currentVaultId })
         
         if (pdmError) {
           console.warn('Failed to fetch PDM data:', pdmError)
@@ -355,7 +359,7 @@ function App() {
         setTimeout(() => setStatusMessage(''), 3000)
       }
     }
-  }, [vaultPath, organization, isOfflineMode, setFiles, setIsLoading, setStatusMessage])
+  }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage])
 
   // Open working directory
   const handleOpenVault = useCallback(async () => {
@@ -530,23 +534,28 @@ function App() {
 
   // Determine if we should show the welcome screen
   const showWelcome = (!user && !isOfflineMode) || !hasVaultConnected
+  
+  // Only show minimal menu bar on the sign-in screen (not authenticated)
+  const isSignInScreen = !user && !isOfflineMode
 
   return (
     <div className="h-screen flex flex-col bg-pdm-bg overflow-hidden">
       <MenuBar
         onOpenVault={handleOpenVault}
         onRefresh={loadFiles}
+        minimal={isSignInScreen}
       />
 
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        <ActivityBar />
+        {!showWelcome && <ActivityBar />}
 
         {sidebarVisible && !showWelcome && (
           <>
             <Sidebar 
               onOpenVault={handleOpenVault}
               onOpenRecentVault={handleOpenRecentVault}
+              onRefresh={loadFiles}
             />
             <div
               className="w-1 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0"

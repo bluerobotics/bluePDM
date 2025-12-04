@@ -44,7 +44,7 @@ export function ActivityBar() {
         <ActivityItem
           icon={<ArrowDownUp size={24} />}
           view="checkout"
-          title="Check Out / Check In"
+          title="Pending"
         />
         <ActivityItem
           icon={<History size={24} />}
