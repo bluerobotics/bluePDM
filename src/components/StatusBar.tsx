@@ -45,29 +45,29 @@ export function StatusBar() {
     setShowCancelDialog(false)
   }
 
+  // Show minimal status bar when no vault connected (splash screens)
+  if (!hasVaultConnected) {
+    return (
+      <div className="bg-pdm-activitybar border-t border-pdm-border flex items-center justify-end px-3 py-[2px] text-xs text-pdm-fg-dim select-none flex-shrink-0">
+        <span className="text-pdm-fg-muted">v0.7.0</span>
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="bg-pdm-activitybar border-t border-pdm-border flex items-center justify-between px-3 py-[2px] text-xs text-pdm-fg-dim select-none flex-shrink-0">
         <div className="flex items-center gap-4 flex-1 min-w-0">
           {/* Vault status */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {hasVaultConnected ? (
-              <>
-                <Wifi size={12} className="text-pdm-success" />
-                <span className="text-pdm-fg-dim">
-                  Connected to {displayName}
-                </span>
-              </>
-            ) : (
-              <>
-                <WifiOff size={12} className="text-pdm-fg-muted" />
-                <span>No vault</span>
-              </>
-            )}
+            <Wifi size={12} className="text-pdm-success" />
+            <span className="text-pdm-fg-dim">
+              Connected to {displayName}
+            </span>
           </div>
 
           {/* Checked out status */}
-          {hasVaultConnected && checkedOutCount > 0 && (
+          {checkedOutCount > 0 && (
             <div className="flex items-center gap-1.5 text-pdm-warning flex-shrink-0">
               <Lock size={12} />
               <span>{checkedOutCount} checked out</span>
@@ -111,13 +111,11 @@ export function StatusBar() {
 
         <div className="flex items-center gap-4 flex-shrink-0">
           {/* File count */}
-          {hasVaultConnected && (
-            <span>
-              {fileCount} files, {folderCount} folders
-              {syncedCount > 0 && ` • ${syncedCount} synced`}
-              {selectedFiles.length > 0 && ` • ${selectedFiles.length} selected`}
-            </span>
-          )}
+          <span>
+            {fileCount} files, {folderCount} folders
+            {syncedCount > 0 && ` • ${syncedCount} synced`}
+            {selectedFiles.length > 0 && ` • ${selectedFiles.length} selected`}
+          </span>
 
           {/* Cloud status */}
           <div className="flex items-center gap-1.5">

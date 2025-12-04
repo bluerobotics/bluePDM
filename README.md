@@ -1,38 +1,41 @@
 # BluePDM
 
-Open-source Product Data Management for engineering teams. Built with Electron, React, TypeScript, and Supabase.
+Open source Product Data Management for engineering teams. Built with Electron, React, TypeScript, and Supabase.
 
-![BluePDM](https://img.shields.io/badge/version-0.1.0-blue)
+![BluePDM](https://img.shields.io/badge/version-0.7.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Features
 
 - 🔐 **Google OAuth** with automatic org assignment by email domain
-- 📁 **VS Code-style file browser** with rich metadata columns
+- 📁 **VS Code-style file browser** with customizable columns
 - 🔒 **Check In / Check Out** with exclusive file locks
 - 📊 **File state management** (WIP, In Review, Released, Obsolete)
-- 🔄 **Git-powered versioning** with LFS support for large CAD files
-- 📜 **Revision tracking** with instant rollback capability
+- 🔄 **Version tracking** with instant rollback capability
+- 👁️ **SolidWorks preview** with embedded thumbnail extraction
+- 📄 **PDF & image preview** directly in the app
 - 🔗 **Where-used analysis** for assembly references
-- ☁️ **Cloud sync** via Supabase for collaboration
+- ☁️ **Cloud sync** via Supabase for team collaboration
+- 🌐 **Offline mode** for local-only file management
 
-## Optimized for SolidWorks
+## Optimized for SolidWorks & CAD
 
-BluePDM is designed specifically for SolidWorks and other CAD file management:
+BluePDM is designed specifically for engineering file management:
 
-- `.sldprt` (Parts)
-- `.sldasm` (Assemblies)
-- `.slddrw` (Drawings)
-- STEP, IGES, Parasolid exports
-- STL, 3MF mesh files
-- PDF drawings
+| File Type | Extensions | Features |
+|-----------|------------|----------|
+| **SolidWorks** | `.sldprt`, `.sldasm`, `.slddrw` | Thumbnail preview, eDrawings integration |
+| **CAD Exchange** | `.step`, `.stp`, `.iges`, `.igs` | Universal format support |
+| **Mesh** | `.stl`, `.3mf`, `.obj` | 3D printing ready |
+| **Documents** | `.pdf`, `.xlsx`, `.csv` | In-app preview |
+| **Electronics** | `.sch`, `.brd`, `.kicad_pcb` | PCB design files |
+| **Archives** | `.zip`, `.rar`, `.7z` | Compressed packages |
 
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+
-- Git with LFS installed (`git lfs install`)
 - A Supabase project (free tier works great)
 
 ### Installation
@@ -72,6 +75,10 @@ npm run electron:dev
 npm run build
 ```
 
+## Screenshots
+
+*Coming soon*
+
 ## Architecture
 
 ### Technology Stack
@@ -79,21 +86,22 @@ npm run build
 - **Frontend**: React 18, TypeScript, Tailwind CSS
 - **Desktop**: Electron 28
 - **State**: Zustand with persistence
-- **Backend**: Supabase (PostgreSQL, Auth, Realtime)
-- **Version Control**: Git with LFS
+- **Backend**: Supabase (PostgreSQL, Auth, Storage)
+- **Icons**: Lucide React
 
-### File Storage Strategy
+### File Storage
 
-- **Git LFS**: Large CAD binaries are stored in Git LFS
-- **Local Vault**: Each user has a local clone of the vault
-- **Supabase**: Metadata, locks, and user data are synced via Supabase
-- **Real-time**: File locks and state changes sync instantly
+- **Local Vault**: Files are stored in `C:\BluePDM\{vault-name}`
+- **Cloud Sync**: File content synced to Supabase Storage
+- **Metadata**: File state, locks, and versions in PostgreSQL
+- **Real-time**: Instant sync of locks and state changes
 
 ### Database Schema
 
 ```
 organizations    - Companies/teams with email domain matching
-users           - Engineers with org membership and roles
+users           - Engineers with org membership and roles  
+vaults          - Isolated file repositories per team
 files           - File metadata, state, and checkout status
 file_versions   - Complete version history
 file_references - Assembly/part relationships (BOM)
@@ -104,26 +112,30 @@ activity        - Audit log of all actions
 
 ### Organization Setup
 
-Organizations are automatically assigned based on email domain. Add your org:
+Organizations are automatically assigned based on email domain:
 
 ```sql
 INSERT INTO organizations (name, slug, email_domains, revision_scheme)
 VALUES ('Your Company', 'yourcompany', ARRAY['yourcompany.com'], 'letter');
 ```
 
-### Revision Scheme
+### Preferences
 
-- `letter`: A → B → C → ... → Z → AA → AB (engineering standard)
-- `numeric`: 01 → 02 → 03 (simple incrementing)
+Access Settings → Preferences to configure:
+- **SolidWorks Preview**: Embedded thumbnail or external eDrawings
+- **Lowercase Extensions**: Display `.sldprt` instead of `.SLDPRT`
 
 ## Roadmap
 
+- [x] SolidWorks thumbnail preview
+- [x] PDF and image preview
+- [x] Multi-vault support
+- [x] Customizable file browser columns
 - [ ] SolidWorks add-in for direct integration
 - [ ] Automatic BOM extraction from assemblies
 - [ ] Approval workflows for releases
 - [ ] Email notifications
-- [ ] Custom property mapping
-- [ ] Thumbnail preview generation
+- [ ] Embedded eDrawings 3D viewer
 - [ ] Batch operations
 - [ ] Advanced search with filters
 
@@ -137,4 +149,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-Built with ❤️ by [Blue Robotics](https://bluerobotics.com)
+Made with 💙 by [Blue Robotics](https://bluerobotics.com)

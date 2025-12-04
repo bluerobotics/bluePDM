@@ -212,36 +212,34 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
         <div className="max-w-md w-full p-8">
           {/* Logo and Title */}
           <div className="text-center mb-10">
-            <div className="flex justify-center mb-4">
-              <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-pdm-accent to-pdm-accent-dim flex items-center justify-center shadow-lg shadow-pdm-accent/20">
-                <svg width="56" height="56" viewBox="0 0 24 24" fill="none" className="text-white">
-                  <path 
-                    d="M12 2L2 7L12 12L22 7L12 2Z" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round"
-                  />
-                  <path 
-                    d="M2 17L12 22L22 17" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round"
-                  />
-                  <path 
-                    d="M2 12L12 17L22 12" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </div>
+            <div className="flex justify-center items-center gap-3 mb-4">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
+                <path 
+                  d="M12 2L2 7L12 12L22 7L12 2Z" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                />
+                <path 
+                  d="M2 17L12 22L22 17" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                />
+                <path 
+                  d="M2 12L12 17L22 12" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <h1 className="text-3xl font-bold text-pdm-fg">BluePDM</h1>
             </div>
-            <h1 className="text-3xl font-bold text-pdm-fg mb-2">BluePDM</h1>
             <p className="text-pdm-fg-dim">
-              Product Data Management for engineering teams
+              Open source Product Data Management for engineering teams
             </p>
           </div>
 
@@ -278,17 +276,9 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
             </button>
           </div>
 
-          {/* Info */}
-          <div className="mt-8 text-center">
-            <p className="text-xs text-pdm-fg-muted">
-              Sign in to sync with your team's vault.<br />
-              Offline mode allows local-only file management.
-            </p>
-          </div>
-
           {/* Footer */}
           <div className="text-center mt-12 text-xs text-pdm-fg-muted">
-            Open source PDM • SolidWorks & CAD files
+            Made with 💙 by Blue Robotics
           </div>
         </div>
       </div>
@@ -303,32 +293,31 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
       <div className="max-w-lg w-full p-8">
         {/* Logo and Title */}
         <div className="text-center mb-8">
-          <div className="flex justify-center mb-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-pdm-accent to-pdm-accent-dim flex items-center justify-center">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" className="text-white">
-                <path 
-                  d="M12 2L2 7L12 12L22 7L12 2Z" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round"
-                />
-                <path 
-                  d="M2 17L12 22L22 17" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round"
-                />
-                <path 
-                  d="M2 12L12 17L22 12" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
+          <div className="flex justify-center items-center gap-3 mb-4">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
+              <path 
+                d="M12 2L2 7L12 12L22 7L12 2Z" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+              <path 
+                d="M2 17L12 22L22 17" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+              <path 
+                d="M2 12L12 17L22 12" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+            </svg>
+            <h1 className="text-2xl font-bold text-pdm-fg">BluePDM</h1>
           </div>
           
           {/* User & Org Info or Offline Badge */}
@@ -543,7 +532,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
 
         {/* Footer */}
         <div className="text-center mt-6 text-xs text-pdm-fg-muted">
-          Open source PDM
+          Made with 💙 by Blue Robotics
         </div>
       </div>
     </div>
