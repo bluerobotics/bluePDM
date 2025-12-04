@@ -20,7 +20,7 @@ export function SearchView() {
         return (
           f.name.toLowerCase().includes(query) ||
           f.relativePath.toLowerCase().includes(query) ||
-          f.pdmData?.partNumber?.toLowerCase().includes(query) ||
+          f.pdmData?.part_number?.toLowerCase().includes(query) ||
           f.pdmData?.description?.toLowerCase().includes(query)
         )
       })

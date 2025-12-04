@@ -20,8 +20,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
     files, 
     expandedFolders, 
     toggleFolder, 
-    selectedFiles,
-    toggleFileSelection,
     vaultPath,
     isVaultConnected,
     recentVaults,
@@ -34,7 +32,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
   const buildTree = () => {
     const tree: { [key: string]: LocalFile[] } = { '': [] }
     
-    files.forEach(file => {
+    // Filter out any undefined or invalid files
+    const validFiles = files.filter(f => f && f.relativePath && f.name)
+    
+    validFiles.forEach(file => {
       const parts = file.relativePath.split('/')
       if (parts.length === 1) {
         tree[''].push(file)
@@ -62,8 +63,21 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
     return folderFiles.every(f => !!f.pdmData)
   }
 
+  // Check if any files in a folder are checked out
+  const hasFolderCheckedOutFiles = (folderPath: string): boolean => {
+    const folderFiles = files.filter(f => 
+      !f.isDirectory && 
+      f.relativePath.startsWith(folderPath + '/')
+    )
+    return folderFiles.some(f => f.pdmData?.checked_out_by)
+  }
+
   const getFileIcon = (file: LocalFile) => {
     if (file.isDirectory) {
+      const hasCheckedOut = hasFolderCheckedOutFiles(file.relativePath)
+      if (hasCheckedOut) {
+        return <FolderOpen size={16} className="text-pdm-warning" />
+      }
       const synced = isFolderSynced(file.relativePath)
       return <FolderOpen size={16} className={synced ? 'text-pdm-success' : 'text-pdm-fg-muted'} />
     }
@@ -83,13 +97,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
 
   const renderTreeItem = (file: LocalFile, depth: number = 0) => {
     const isExpanded = expandedFolders.has(file.relativePath)
-    const isSelected = selectedFiles.includes(file.path)
     const isCurrentFolder = file.isDirectory && file.relativePath === currentFolder
     const children = tree[file.relativePath] || []
     
     // Get diff counts for folders
     const diffCounts = file.isDirectory ? getFolderDiffCounts(file.relativePath) : null
-    const hasDiffs = diffCounts && (diffCounts.added > 0 || diffCounts.modified > 0 || diffCounts.deleted > 0)
+    const hasDiffs = diffCounts && (diffCounts.added > 0 || diffCounts.modified > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0)
     
     // Diff class for files
     const diffClass = !file.isDirectory && file.diffStatus 
@@ -98,7 +111,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
     return (
       <div key={file.path}>
         <div
-          className={`tree-item ${isSelected ? 'selected' : ''} ${isCurrentFolder ? 'current-folder' : ''} ${diffClass}`}
+          className={`tree-item ${isCurrentFolder ? 'current-folder' : ''} ${diffClass}`}
           style={{ paddingLeft: 8 + depth * 16 }}
           onClick={(e) => {
             if (file.isDirectory) {
@@ -108,16 +121,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
               if (!expandedFolders.has(file.relativePath)) {
                 toggleFolder(file.relativePath)
               }
-            } else {
-              toggleFileSelection(file.path, e.ctrlKey || e.metaKey)
+            } else if (window.electronAPI) {
+              // Single click on file opens it
+              window.electronAPI.openFile(file.path)
             }
           }}
           onDoubleClick={() => {
             if (file.isDirectory) {
               // Toggle expand/collapse on double click
               toggleFolder(file.relativePath)
-            } else if (window.electronAPI) {
-              window.electronAPI.openFile(file.path)
             }
           }}
         >
@@ -151,19 +163,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
               {diffCounts.deleted > 0 && (
                 <span className="text-pdm-error font-medium">-{diffCounts.deleted}</span>
               )}
+              {diffCounts.outdated > 0 && (
+                <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
+              )}
             </span>
           )}
           
-          {file.gitStatus && file.gitStatus !== 'committed' && (
-            <span className={`ml-2 text-xs git-status ${file.gitStatus}`}>
-              {file.gitStatus === 'modified' && 'M'}
-              {file.gitStatus === 'untracked' && 'U'}
-              {file.gitStatus === 'staged' && 'S'}
-              {file.gitStatus === 'deleted' && 'D'}
-            </span>
-          )}
         </div>
         {file.isDirectory && isExpanded && children
+          .filter(child => child && child.name)
           .sort((a, b) => {
             // Folders first, then alphabetically
             if (a.isDirectory && !b.isDirectory) return -1
@@ -227,6 +235,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault }: ExplorerViewPro
       
       {/* Tree */}
       {rootItems
+        .filter(item => item && item.name)
         .sort((a, b) => {
           if (a.isDirectory && !b.isDirectory) return -1
           if (!a.isDirectory && b.isDirectory) return 1

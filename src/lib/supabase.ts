@@ -458,3 +458,175 @@ function getFileTypeFromExtension(ext: string): 'part' | 'assembly' | 'drawing' 
   if (['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt'].includes(lowerExt)) return 'document'
   return 'other'
 }
+
+// ============================================
+// Check Out / Check In Operations
+// ============================================
+
+export async function checkoutFile(fileId: string, userId: string, message?: string) {
+  // First check if file is already checked out
+  const { data: file, error: fetchError } = await supabase
+    .from('files')
+    .select('id, file_name, checked_out_by, checked_out_user:users!checked_out_by(email, full_name)')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (file.checked_out_by && file.checked_out_by !== userId) {
+    const checkedOutUser = file.checked_out_user as { email: string; full_name: string } | null
+    return { 
+      success: false, 
+      error: `File is already checked out by ${checkedOutUser?.full_name || checkedOutUser?.email || 'another user'}` 
+    }
+  }
+  
+  // Check out the file
+  const { data, error } = await supabase
+    .from('files')
+    .update({
+      checked_out_by: userId,
+      checked_out_at: new Date().toISOString(),
+      lock_message: message || null
+    })
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log activity
+  await supabase.from('activity').insert({
+    org_id: data.org_id,
+    file_id: fileId,
+    user_id: userId,
+    action: 'checkout',
+    details: message ? { message } : {}
+  })
+  
+  return { success: true, file: data, error: null }
+}
+
+export async function checkinFile(
+  fileId: string, 
+  userId: string, 
+  options?: {
+    newContentHash?: string
+    newFileSize?: number
+    comment?: string
+  }
+) {
+  // First verify the user has the file checked out
+  const { data: file, error: fetchError } = await supabase
+    .from('files')
+    .select('*')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (file.checked_out_by !== userId) {
+    return { success: false, error: 'You do not have this file checked out' }
+  }
+  
+  // Prepare update data
+  const updateData: Record<string, any> = {
+    checked_out_by: null,
+    checked_out_at: null,
+    lock_message: null,
+    updated_at: new Date().toISOString(),
+    updated_by: userId
+  }
+  
+  // Only increment version if content actually changed
+  const contentChanged = options?.newContentHash && options.newContentHash !== file.content_hash
+  
+  if (contentChanged) {
+    const newVersion = file.version + 1
+    updateData.content_hash = options.newContentHash
+    updateData.version = newVersion
+    if (options.newFileSize !== undefined) {
+      updateData.file_size = options.newFileSize
+    }
+    
+    // Create version record only for actual changes
+    await supabase.from('file_versions').insert({
+      file_id: fileId,
+      version: newVersion,
+      revision: file.revision,
+      content_hash: options.newContentHash,
+      file_size: options.newFileSize || file.file_size,
+      state: file.state,
+      created_by: userId,
+      comment: options.comment || null
+    })
+  }
+  
+  // Update the file
+  const { data, error } = await supabase
+    .from('files')
+    .update(updateData)
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log activity
+  await supabase.from('activity').insert({
+    org_id: data.org_id,
+    file_id: fileId,
+    user_id: userId,
+    action: 'checkin',
+    details: { 
+      ...(options?.comment ? { comment: options.comment } : {}),
+      contentChanged 
+    }
+  })
+  
+  return { success: true, file: data, error: null, contentChanged }
+}
+
+export async function undoCheckout(fileId: string, userId: string) {
+  // Verify the user has the file checked out (or is admin)
+  const { data: file, error: fetchError } = await supabase
+    .from('files')
+    .select('*, org_id')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (file.checked_out_by !== userId) {
+    // TODO: Allow admins to undo anyone's checkout
+    return { success: false, error: 'You do not have this file checked out' }
+  }
+  
+  // Release the checkout without saving changes
+  const { data, error } = await supabase
+    .from('files')
+    .update({
+      checked_out_by: null,
+      checked_out_at: null,
+      lock_message: null
+    })
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true, file: data, error: null }
+}

@@ -1,6 +1,6 @@
 import { 
   FolderTree, 
-  GitBranch, 
+  ArrowDownUp, 
   History, 
   Search,
   Settings
@@ -42,7 +42,7 @@ export function ActivityBar() {
           title="Explorer"
         />
         <ActivityItem
-          icon={<GitBranch size={24} />}
+          icon={<ArrowDownUp size={24} />}
           view="checkout"
           title="Check Out / Check In"
         />

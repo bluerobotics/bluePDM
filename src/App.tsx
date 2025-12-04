@@ -141,7 +141,11 @@ function App() {
         return
       }
       
-      let localFiles = result.files
+      // Map hash to localHash for comparison
+      let localFiles = result.files.map(f => ({
+        ...f,
+        localHash: f.hash
+      }))
       
       // 2. If connected to Supabase, fetch PDM data and merge
       if (organization && !isOfflineMode) {
@@ -159,7 +163,7 @@ function App() {
             file_path: f.file_path,
             name: f.name,
             extension: f.extension,
-            content_hash: f.latest_version?.content_hash || ''
+            content_hash: f.content_hash || ''
           }))
           setServerFiles(serverFilesList)
           
@@ -173,15 +177,28 @@ function App() {
             const pdmData = pdmMap.get(localFile.relativePath)
             
             // Determine diff status
-            let diffStatus: 'added' | 'modified' | undefined
+            let diffStatus: 'added' | 'modified' | 'outdated' | undefined
             if (!pdmData) {
               // File exists locally but not on server = added
               diffStatus = 'added'
-            } else if (pdmData.latest_version?.content_hash && localFile.localHash) {
-              // File exists both places - check if modified
-              if (pdmData.latest_version.content_hash !== localFile.localHash) {
-                diffStatus = 'modified'
+            } else if (pdmData.content_hash && localFile.localHash) {
+              // File exists both places - check if modified or outdated
+              if (pdmData.content_hash !== localFile.localHash) {
+                // Hashes differ - determine if local is newer or cloud is newer
+                const localModTime = new Date(localFile.modifiedTime).getTime()
+                const cloudUpdateTime = pdmData.updated_at ? new Date(pdmData.updated_at).getTime() : 0
+                
+                if (localModTime > cloudUpdateTime) {
+                  // Local file was modified more recently - local changes
+                  diffStatus = 'modified'
+                } else {
+                  // Cloud was updated more recently - need to pull
+                  diffStatus = 'outdated'
+                }
               }
+            } else if (pdmData.content_hash && !localFile.localHash) {
+              // Cloud has content but we couldn't hash local file - might be outdated
+              diffStatus = 'outdated'
             }
             
             return {
@@ -222,6 +239,18 @@ function App() {
       const syncedCount = localFiles.filter(f => f.pdmData).length
       const totalFiles = localFiles.filter(f => !f.isDirectory).length
       setStatusMessage(`Loaded ${localFiles.length} items (${syncedCount}/${totalFiles} synced)`)
+      
+      // Set read-only status on synced files
+      // Files should be read-only unless checked out by current user
+      if (user && window.electronAPI) {
+        for (const file of localFiles) {
+          if (file.isDirectory || !file.pdmData) continue
+          
+          const isCheckedOutByMe = file.pdmData.checked_out_by === user.id
+          // Make file writable if checked out by me, read-only otherwise
+          window.electronAPI.setReadonly(file.path, !isCheckedOutByMe)
+        }
+      }
     } catch (err) {
       setStatusMessage('Error loading files')
       console.error(err)
@@ -339,6 +368,19 @@ function App() {
 
     return cleanup
   }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles])
+
+  // File change watcher - auto-refresh when files change externally
+  useEffect(() => {
+    if (!window.electronAPI || !vaultPath) return
+    
+    const cleanup = window.electronAPI.onFilesChanged((changedFiles) => {
+      console.log('[FileWatcher] Files changed:', changedFiles)
+      // Refresh the file list to update hashes and detect modifications
+      loadFiles()
+    })
+    
+    return cleanup
+  }, [vaultPath, loadFiles])
 
   // Keyboard shortcuts
   useEffect(() => {

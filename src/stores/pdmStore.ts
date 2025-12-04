@@ -5,7 +5,7 @@ import type { PDMFile, FileState, Organization, User } from '../types/pdm'
 export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search'
 export type DetailsPanelTab = 'properties' | 'whereused' | 'contains' | 'history'
 export type ToastType = 'error' | 'success' | 'info' | 'warning'
-export type DiffStatus = 'added' | 'modified' | 'deleted'
+export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated'
 
 export interface ToastMessage {
   id: string
@@ -23,7 +23,6 @@ export interface LocalFile {
   extension: string
   size: number
   modifiedTime: string
-  gitStatus?: string
   // PDM metadata (from Supabase when connected)
   pdmData?: PDMFile
   // Sync status
@@ -167,21 +166,20 @@ interface PDMState {
   getVisibleFiles: () => LocalFile[]
   getFileByPath: (path: string) => LocalFile | undefined
   getDeletedFiles: () => LocalFile[]  // Files on server but not locally
-  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; deleted: number }
+  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; deleted: number; outdated: number }
 }
 
 const defaultColumns: ColumnConfig[] = [
   { id: 'name', label: 'Name', width: 280, visible: true, sortable: true },
-  { id: 'state', label: 'State', width: 90, visible: true, sortable: true },
-  { id: 'revision', label: 'Rev', width: 50, visible: true, sortable: true },
-  { id: 'version', label: 'Ver', width: 50, visible: true, sortable: true },
-  { id: 'partNumber', label: 'Part Number', width: 120, visible: true, sortable: true },
+  { id: 'fileStatus', label: 'File Status', width: 120, visible: true, sortable: true },
+  { id: 'version', label: 'Ver', width: 60, visible: true, sortable: true },
+  { id: 'itemNumber', label: 'Item Number', width: 120, visible: true, sortable: true },
   { id: 'description', label: 'Description', width: 200, visible: true, sortable: true },
-  { id: 'checkedOutBy', label: 'Checked Out', width: 120, visible: true, sortable: true },
+  { id: 'revision', label: 'Rev', width: 50, visible: true, sortable: true },
+  { id: 'state', label: 'State', width: 90, visible: true, sortable: true },
   { id: 'extension', label: 'Type', width: 70, visible: true, sortable: true },
   { id: 'size', label: 'Size', width: 80, visible: true, sortable: true },
   { id: 'modifiedTime', label: 'Modified', width: 140, visible: true, sortable: true },
-  { id: 'gitStatus', label: 'Git', width: 70, visible: true, sortable: true },
 ]
 
 export const usePDMStore = create<PDMState>()(
@@ -423,6 +421,7 @@ export const usePDMStore = create<PDMState>()(
         let added = 0
         let modified = 0
         let deleted = 0
+        let outdated = 0
         
         // Count all files (including deleted ghost entries) recursively
         const prefix = folderPath ? folderPath + '/' : ''
@@ -437,9 +436,10 @@ export const usePDMStore = create<PDMState>()(
           if (file.diffStatus === 'added') added++
           else if (file.diffStatus === 'modified') modified++
           else if (file.diffStatus === 'deleted') deleted++
+          else if (file.diffStatus === 'outdated') outdated++
         }
         
-        return { added, modified, deleted }
+        return { added, modified, deleted, outdated }
       }
     }),
     {

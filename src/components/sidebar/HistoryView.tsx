@@ -1,49 +1,78 @@
 import { useEffect, useState } from 'react'
-import { GitCommit, User, Clock } from 'lucide-react'
+import { FileText, User, Clock, ArrowUp, ArrowDown, Trash2, Edit, RefreshCw, FolderPlus, MoveRight } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
+import { getRecentActivity } from '../../lib/supabase'
 import { formatDistanceToNow } from 'date-fns'
 
-interface CommitEntry {
-  hash: string
-  date: string
-  message: string
-  author_name: string
-  author_email: string
+interface ActivityEntry {
+  id: string
+  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+  user_email: string
+  details: Record<string, unknown>
+  created_at: string
+  file?: {
+    file_name: string
+    file_path: string
+  } | null
+}
+
+const ACTION_INFO: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+  checkout: { icon: <ArrowDown size={14} />, label: 'Checked out', color: 'text-pdm-error' },
+  checkin: { icon: <ArrowUp size={14} />, label: 'Checked in', color: 'text-pdm-success' },
+  create: { icon: <FolderPlus size={14} />, label: 'Created', color: 'text-pdm-accent' },
+  delete: { icon: <Trash2 size={14} />, label: 'Deleted', color: 'text-pdm-error' },
+  state_change: { icon: <RefreshCw size={14} />, label: 'State changed', color: 'text-pdm-warning' },
+  revision_change: { icon: <Edit size={14} />, label: 'Revision changed', color: 'text-pdm-info' },
+  rename: { icon: <Edit size={14} />, label: 'Renamed', color: 'text-pdm-fg-dim' },
+  move: { icon: <MoveRight size={14} />, label: 'Moved', color: 'text-pdm-fg-dim' },
 }
 
 export function HistoryView() {
-  const { selectedFiles, isVaultConnected } = usePDMStore()
-  const [commits, setCommits] = useState<CommitEntry[]>([])
+  const { organization, isVaultConnected } = usePDMStore()
+  const [activity, setActivity] = useState<ActivityEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
 
-  // Load git history
+  // Load vault-wide activity
   useEffect(() => {
-    const loadHistory = async () => {
-      if (!window.electronAPI || !isVaultConnected) return
+    const loadActivity = async () => {
+      if (!isVaultConnected || !organization) {
+        setActivity([])
+        return
+      }
       
       setIsLoading(true)
+      
       try {
-        // If a single file is selected, show its history
-        const filePath = selectedFiles.length === 1 ? selectedFiles[0] : undefined
-        const result = await window.electronAPI.gitLog(filePath)
-        
-        if (result.success && result.log) {
-          setCommits(result.log.all || [])
+        const { activity: recentActivity, error } = await getRecentActivity(organization.id, 100)
+        if (!error && recentActivity) {
+          setActivity(recentActivity as ActivityEntry[])
         }
       } catch (err) {
-        console.error('Failed to load history:', err)
+        console.error('Failed to load activity:', err)
       } finally {
         setIsLoading(false)
       }
     }
 
-    loadHistory()
-  }, [isVaultConnected, selectedFiles])
+    loadActivity()
+    
+    // Refresh every 30 seconds
+    const interval = setInterval(loadActivity, 30000)
+    return () => clearInterval(interval)
+  }, [isVaultConnected, organization])
 
   if (!isVaultConnected) {
     return (
       <div className="p-4 text-sm text-pdm-fg-muted text-center">
-        Open a vault to view history
+        Open a vault to view activity
+      </div>
+    )
+  }
+
+  if (!organization) {
+    return (
+      <div className="p-4 text-sm text-pdm-fg-muted text-center">
+        Sign in to view vault activity
       </div>
     )
   }
@@ -51,52 +80,61 @@ export function HistoryView() {
   return (
     <div className="p-4">
       <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">
-        {selectedFiles.length === 1 ? 'File History' : 'Vault History'}
+        Vault Activity
       </div>
 
-      {isLoading ? (
+      {isLoading && activity.length === 0 ? (
         <div className="flex items-center justify-center py-8">
           <div className="spinner" />
         </div>
-      ) : commits.length === 0 ? (
+      ) : activity.length === 0 ? (
         <div className="text-sm text-pdm-fg-muted py-4 text-center">
-          No commits yet
+          No recent activity
         </div>
       ) : (
-        <div className="space-y-3">
-          {commits.map(commit => (
-            <div
-              key={commit.hash}
-              className="p-3 bg-pdm-bg-light rounded-lg border border-pdm-border hover:border-pdm-border-light transition-colors"
-            >
-              <div className="flex items-start gap-2 mb-2">
-                <GitCommit size={14} className="text-pdm-accent mt-0.5 flex-shrink-0" />
-                <span className="text-sm font-medium line-clamp-2">
-                  {commit.message}
-                </span>
-              </div>
-              
-              <div className="flex items-center gap-4 text-xs text-pdm-fg-muted">
-                <div className="flex items-center gap-1">
-                  <User size={12} />
-                  <span>{commit.author_name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Clock size={12} />
-                  <span>
-                    {formatDistanceToNow(new Date(commit.date), { addSuffix: true })}
+        <div className="space-y-2">
+          {activity.map((entry) => {
+            const actionInfo = ACTION_INFO[entry.action] || { 
+              icon: <FileText size={14} />, 
+              label: entry.action, 
+              color: 'text-pdm-fg-muted' 
+            }
+            
+            return (
+              <div
+                key={entry.id}
+                className="p-2 bg-pdm-bg-light rounded border border-pdm-border hover:border-pdm-border-light transition-colors"
+              >
+                <div className="flex items-start gap-2">
+                  <span className={`mt-0.5 ${actionInfo.color}`}>
+                    {actionInfo.icon}
                   </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm">
+                      <span className={actionInfo.color}>{actionInfo.label}</span>
+                      {entry.file && (
+                        <span className="text-pdm-fg ml-1 truncate">
+                          {entry.file.file_name}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-pdm-fg-muted mt-1">
+                      <span className="flex items-center gap-1">
+                        <User size={10} />
+                        {entry.user_email.split('@')[0]}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock size={10} />
+                        {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-              
-              <div className="mt-2 font-mono text-xs text-pdm-fg-muted">
-                {commit.hash.substring(0, 7)}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
   )
 }
-

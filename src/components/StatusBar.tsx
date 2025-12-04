@@ -1,5 +1,5 @@
 import { usePDMStore } from '../stores/pdmStore'
-import { GitBranch, Cloud, CloudOff, Wifi, WifiOff } from 'lucide-react'
+import { Cloud, CloudOff, Wifi, WifiOff, Lock } from 'lucide-react'
 
 export function StatusBar() {
   const { 
@@ -15,7 +15,8 @@ export function StatusBar() {
 
   const fileCount = files.filter(f => !f.isDirectory).length
   const folderCount = files.filter(f => f.isDirectory).length
-  const modifiedCount = files.filter(f => f.gitStatus === 'modified').length
+  const checkedOutCount = files.filter(f => f.pdmData?.checked_out_by).length
+  const syncedCount = files.filter(f => !f.isDirectory && f.pdmData).length
 
   return (
     <div className="h-6 bg-pdm-activitybar border-t border-pdm-border flex items-center justify-between px-3 text-xs text-pdm-fg-dim select-none flex-shrink-0">
@@ -37,16 +38,11 @@ export function StatusBar() {
           )}
         </div>
 
-        {/* Git status */}
-        {isVaultConnected && (
-          <div className="flex items-center gap-1.5">
-            <GitBranch size={12} />
-            <span>main</span>
-            {modifiedCount > 0 && (
-              <span className="text-pdm-warning">
-                ({modifiedCount} modified)
-              </span>
-            )}
+        {/* Checked out status */}
+        {isVaultConnected && checkedOutCount > 0 && (
+          <div className="flex items-center gap-1.5 text-pdm-warning">
+            <Lock size={12} />
+            <span>{checkedOutCount} checked out</span>
           </div>
         )}
 
@@ -63,6 +59,7 @@ export function StatusBar() {
         {isVaultConnected && (
           <span>
             {fileCount} files, {folderCount} folders
+            {syncedCount > 0 && ` • ${syncedCount} synced`}
             {selectedFiles.length > 0 && ` • ${selectedFiles.length} selected`}
           </span>
         )}

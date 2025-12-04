@@ -23,11 +23,17 @@ import {
   ArrowDown,
   ArrowUp,
   Undo2,
-  AlertTriangle
+  AlertTriangle,
+  Eye,
+  EyeOff,
+  GripVertical,
+  Copy,
+  Scissors,
+  ClipboardPaste
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileType, formatFileSize, STATE_INFO } from '../types/pdm'
-import { syncFile } from '../lib/supabase'
+import { syncFile, checkoutFile, checkinFile } from '../lib/supabase'
 import { format } from 'date-fns'
 
 interface FileBrowserProps {
@@ -38,11 +44,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const {
     files,
     selectedFiles,
+    setSelectedFiles,
     toggleFileSelection,
     selectAllFiles,
     clearSelection,
     columns,
     setColumnWidth,
+    reorderColumns,
+    toggleColumnVisibility,
     sortColumn,
     sortDirection,
     toggleSort,
@@ -69,6 +78,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const [renameValue, setRenameValue] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<LocalFile | null>(null)
   const [undoStack, setUndoStack] = useState<Array<{ type: 'delete'; file: LocalFile; originalPath: string }>>([])
+  const [columnContextMenu, setColumnContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [draggingColumn, setDraggingColumn] = useState<string | null>(null)
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null)
+  const [clipboard, setClipboard] = useState<{ files: LocalFile[]; operation: 'copy' | 'cut' } | null>(null)
+  const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
+  const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null)
   const tableRef = useRef<HTMLDivElement>(null)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -77,7 +92,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const currentPath = currentFolder
 
   // Get files in current folder (direct children only)
-  const currentFolderFiles = files.filter(file => {
+  // First filter out any invalid/undefined files
+  const validFiles = files.filter(f => f && f.relativePath && f.name)
+  
+  const currentFolderFiles = validFiles.filter(file => {
     const fileParts = file.relativePath.split('/')
     
     if (currentPath === '') {
@@ -100,7 +118,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   })
 
   // Sort: folders first, then by selected column
-  const sortedFiles = [...currentFolderFiles].sort((a, b) => {
+  const sortedFiles = [...currentFolderFiles].filter(f => f && f.name).sort((a, b) => {
     // Folders always first
     if (a.isDirectory && !b.isDirectory) return -1
     if (!a.isDirectory && b.isDirectory) return 1
@@ -136,8 +154,21 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     return folderFiles.every(f => !!f.pdmData)
   }
 
+  // Check if any files in a folder are checked out
+  const hasFolderCheckedOutFiles = (folderPath: string): boolean => {
+    const folderFiles = files.filter(f => 
+      !f.isDirectory && 
+      f.relativePath.startsWith(folderPath + '/')
+    )
+    return folderFiles.some(f => f.pdmData?.checked_out_by)
+  }
+
   const getFileIcon = (file: LocalFile) => {
     if (file.isDirectory) {
+      const hasCheckedOut = hasFolderCheckedOutFiles(file.relativePath)
+      if (hasCheckedOut) {
+        return <FolderOpen size={16} className="text-pdm-warning" />
+      }
       const synced = isFolderSynced(file.relativePath)
       return <FolderOpen size={16} className={synced ? 'text-pdm-success' : 'text-pdm-fg-muted'} />
     }
@@ -208,12 +239,84 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     document.addEventListener('mouseup', handleMouseUp)
   }, [columns, setColumnWidth])
 
+  // Column drag handlers
+  const handleColumnDragStart = (e: React.DragEvent, columnId: string) => {
+    setDraggingColumn(columnId)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', columnId)
+  }
+
+  const handleColumnDragOver = (e: React.DragEvent, columnId: string) => {
+    e.preventDefault()
+    if (draggingColumn && draggingColumn !== columnId) {
+      setDragOverColumn(columnId)
+    }
+  }
+
+  const handleColumnDragLeave = () => {
+    setDragOverColumn(null)
+  }
+
+  const handleColumnDrop = (e: React.DragEvent, targetColumnId: string) => {
+    e.preventDefault()
+    if (!draggingColumn || draggingColumn === targetColumnId) {
+      setDraggingColumn(null)
+      setDragOverColumn(null)
+      return
+    }
+
+    // Reorder columns
+    const newColumns = [...columns]
+    const dragIndex = newColumns.findIndex(c => c.id === draggingColumn)
+    const dropIndex = newColumns.findIndex(c => c.id === targetColumnId)
+    
+    if (dragIndex !== -1 && dropIndex !== -1) {
+      const [removed] = newColumns.splice(dragIndex, 1)
+      newColumns.splice(dropIndex, 0, removed)
+      reorderColumns(newColumns)
+    }
+
+    setDraggingColumn(null)
+    setDragOverColumn(null)
+  }
+
+  const handleColumnDragEnd = () => {
+    setDraggingColumn(null)
+    setDragOverColumn(null)
+  }
+
+  const handleColumnHeaderContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setColumnContextMenu({ x: e.clientX, y: e.clientY })
+  }
+
   const handleContextMenu = (e: React.MouseEvent, file: LocalFile) => {
     e.preventDefault()
     e.stopPropagation()
     setEmptyContextMenu(null)
+    
+    // If right-clicking on a file that's already selected, use all selected files
+    // Otherwise, select only the right-clicked file
+    if (!selectedFiles.includes(file.path)) {
+      setSelectedFiles([file.path])
+    }
+    
     // Move context menu to new position (works even if already open)
     setContextMenu({ x: e.clientX, y: e.clientY, file })
+  }
+  
+  // Get the files that the context menu should operate on
+  const getContextMenuFiles = (): LocalFile[] => {
+    if (!contextMenu) return []
+    
+    // If the right-clicked file is in selection, return all selected files
+    if (selectedFiles.includes(contextMenu.file.path)) {
+      return sortedFiles.filter(f => selectedFiles.includes(f.path))
+    }
+    
+    // Otherwise just the right-clicked file
+    return [contextMenu.file]
   }
 
   const handleEmptyContextMenu = (e: React.MouseEvent) => {
@@ -327,22 +430,47 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     }
 
     const folderFiles = getFilesInFolder(folder.relativePath)
-    const syncedFiles = folderFiles.filter(f => f.pdmData)
+    const syncedFiles = folderFiles.filter(f => f.pdmData?.id)
     
     if (syncedFiles.length === 0) {
       addToast('info', 'No synced files to check out in this folder')
       return
     }
 
-    setStatusMessage(`Checking out ${syncedFiles.length} files...`)
-    
-    // TODO: Implement actual checkout via Supabase
-    // For now, just show a message
-    addToast('info', `Would check out ${syncedFiles.length} files in ${folder.name}`)
+    let succeeded = 0
+    let failed = 0
+    const errors: string[] = []
+
+    for (let i = 0; i < syncedFiles.length; i++) {
+      const file = syncedFiles[i]
+      setStatusMessage(`Checking out ${i + 1}/${syncedFiles.length}: ${file.name}`)
+      
+      const result = await checkoutFile(file.pdmData!.id, user.id)
+      if (result.success) {
+        // Make file writable for editing
+        await window.electronAPI?.setReadonly(file.path, false)
+        succeeded++
+      } else {
+        failed++
+        errors.push(`${file.name}: ${result.error}`)
+      }
+    }
+
     setStatusMessage('')
+    
+    if (failed > 0) {
+      addToast('warning', `Checked out ${succeeded}/${syncedFiles.length} files. ${failed} failed.`)
+      if (errors.length <= 3) {
+        errors.forEach(e => addToast('error', e, 6000))
+      }
+    } else {
+      addToast('success', `Checked out ${succeeded} files in "${folder.name}"`)
+    }
+    
+    onRefresh()
   }
 
-  // Check in a folder (all checked-out files in it that we own)
+  // Check in a folder (all synced files, uploading any changes)
   const handleCheckinFolder = async (folder: LocalFile) => {
     if (!user || !organization) {
       addToast('error', 'Please sign in first')
@@ -350,20 +478,78 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     }
 
     const folderFiles = getFilesInFolder(folder.relativePath)
-    // Get files that are synced (checkin works even if not all are checked out)
-    const syncedFiles = folderFiles.filter(f => f.pdmData)
+    // Get files that are synced
+    const syncedFiles = folderFiles.filter(f => f.pdmData?.id)
     
     if (syncedFiles.length === 0) {
       addToast('info', 'No synced files to check in')
       return
     }
 
-    setStatusMessage(`Checking in ${syncedFiles.length} files...`)
-    
-    // TODO: Implement actual checkin via Supabase
-    // For now, just show a message
-    addToast('info', `Would check in ${syncedFiles.length} files in ${folder.name}`)
+    let succeeded = 0
+    let failed = 0
+    const errors: string[] = []
+
+    for (let i = 0; i < syncedFiles.length; i++) {
+      const file = syncedFiles[i]
+      setStatusMessage(`Checking in ${i + 1}/${syncedFiles.length}: ${file.name}`)
+      
+      try {
+        // Read file to get current hash
+        const readResult = await window.electronAPI?.readFile(file.path)
+        
+        if (readResult?.success && readResult.data && readResult.hash) {
+          const result = await checkinFile(file.pdmData!.id, user.id, {
+            newContentHash: readResult.hash,
+            newFileSize: file.size,
+            incrementVersion: true
+          })
+          
+          if (result.success) {
+            // Set file back to read-only after checkin
+            await window.electronAPI?.setReadonly(file.path, true)
+            succeeded++
+          } else {
+            // If error is "not checked out", that's ok for folder checkin
+            if (result.error?.includes('not have this file checked out')) {
+              succeeded++ // Count as success - file just wasn't checked out
+            } else {
+              failed++
+              errors.push(`${file.name}: ${result.error}`)
+            }
+          }
+        } else {
+          // Just release checkout
+          const result = await checkinFile(file.pdmData!.id, user.id)
+          if (result.success) {
+            // Set file back to read-only after checkin
+            await window.electronAPI?.setReadonly(file.path, true)
+            succeeded++
+          } else if (result.error?.includes('not have this file checked out')) {
+            succeeded++
+          } else {
+            failed++
+            errors.push(`${file.name}: ${result.error || 'Failed to read'}`)
+          }
+        }
+      } catch (err) {
+        failed++
+        errors.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     setStatusMessage('')
+    
+    if (failed > 0) {
+      addToast('warning', `Checked in ${succeeded}/${syncedFiles.length} files. ${failed} failed.`)
+      if (errors.length <= 3) {
+        errors.forEach(e => addToast('error', e, 6000))
+      }
+    } else {
+      addToast('success', `Checked in ${succeeded} files in "${folder.name}"`)
+    }
+    
+    onRefresh()
   }
 
   // Delete a file or folder (moves to trash/recycle bin)
@@ -409,13 +595,138 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     setUndoStack(prev => prev.slice(0, -1))
   }
 
+  // Copy files
+  const handleCopy = () => {
+    const selectedFileObjects = files.filter(f => selectedFiles.includes(f.path))
+    if (selectedFileObjects.length > 0) {
+      setClipboard({ files: selectedFileObjects, operation: 'copy' })
+      addToast('info', `Copied ${selectedFileObjects.length} item${selectedFileObjects.length > 1 ? 's' : ''}`)
+    }
+  }
+
+  // Cut files
+  const handleCut = () => {
+    const selectedFileObjects = files.filter(f => selectedFiles.includes(f.path))
+    if (selectedFileObjects.length > 0) {
+      setClipboard({ files: selectedFileObjects, operation: 'cut' })
+      addToast('info', `Cut ${selectedFileObjects.length} item${selectedFileObjects.length > 1 ? 's' : ''}`)
+    }
+  }
+
+  // Generate unique filename if file already exists
+  const getUniqueDestPath = async (basePath: string, fileName: string): Promise<string> => {
+    const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : ''
+    const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
+    
+    let destPath = `${basePath}\\${fileName}`
+    let counter = 1
+    
+    // Check if file exists
+    while (await window.electronAPI?.fileExists(destPath)) {
+      destPath = `${basePath}\\${nameWithoutExt} (${counter})${ext}`
+      counter++
+      if (counter > 100) break // Safety limit
+    }
+    
+    return destPath
+  }
+
+  // Paste files
+  const handlePaste = async () => {
+    if (!clipboard || !vaultPath || !window.electronAPI) {
+      addToast('info', 'Nothing to paste')
+      return
+    }
+
+    const destFolder = currentPath 
+      ? `${vaultPath}\\${currentPath.replace(/\//g, '\\')}`
+      : vaultPath
+
+    let succeeded = 0
+    let failed = 0
+    let skipped = 0
+
+    setStatusMessage(`Pasting ${clipboard.files.length} item${clipboard.files.length > 1 ? 's' : ''}...`)
+
+    for (const file of clipboard.files) {
+      try {
+        // Get parent folder of source file
+        const sourceFolder = file.path.substring(0, file.path.lastIndexOf('\\'))
+        
+        if (clipboard.operation === 'cut') {
+          // For cut: skip if pasting to same folder
+          if (sourceFolder.toLowerCase() === destFolder.toLowerCase()) {
+            skipped++
+            continue
+          }
+          
+          const destPath = `${destFolder}\\${file.name}`
+          const result = await window.electronAPI.renameItem(file.path, destPath)
+          if (result.success) succeeded++
+          else failed++
+        } else {
+          // For copy: generate unique name if needed
+          const destPath = await getUniqueDestPath(destFolder, file.name)
+          const result = await window.electronAPI.copyFile(file.path, destPath)
+          if (result.success) succeeded++
+          else failed++
+        }
+      } catch (err) {
+        failed++
+        console.error('Paste error:', err)
+      }
+    }
+
+    setStatusMessage('')
+
+    if (skipped > 0 && succeeded === 0 && failed === 0) {
+      addToast('info', 'Files already in this folder')
+    } else if (failed > 0) {
+      addToast('warning', `Pasted ${succeeded}, failed ${failed}${skipped > 0 ? `, skipped ${skipped}` : ''}`)
+    } else {
+      addToast('success', `Pasted ${succeeded} item${succeeded > 1 ? 's' : ''}${skipped > 0 ? ` (${skipped} skipped)` : ''}`)
+    }
+
+    // Clear clipboard after cut
+    if (clipboard.operation === 'cut') {
+      setClipboard(null)
+    }
+
+    onRefresh()
+  }
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle shortcuts when typing in input fields
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return
+      }
+
       // Ctrl+Z for undo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
         handleUndo()
+      }
+      // Ctrl+C for copy
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        e.preventDefault()
+        handleCopy()
+      }
+      // Ctrl+X for cut
+      if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+        e.preventDefault()
+        handleCut()
+      }
+      // Ctrl+V for paste
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        e.preventDefault()
+        handlePaste()
+      }
+      // Ctrl+A for select all
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault()
+        setSelectedFiles(sortedFiles.map(f => f.path))
       }
       // Delete key
       if (e.key === 'Delete' && selectedFiles.length > 0) {
@@ -424,15 +735,41 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           setDeleteConfirm(selectedFile)
         }
       }
+      // Escape to clear selection
+      if (e.key === 'Escape') {
+        clearSelection()
+        setClipboard(null)
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [undoStack, selectedFiles, files])
+  }, [undoStack, selectedFiles, files, clipboard, sortedFiles, currentPath, vaultPath])
 
-  const handleRowClick = (e: React.MouseEvent, file: LocalFile) => {
-    // Select the file/folder
-    toggleFileSelection(file.path, e.ctrlKey || e.metaKey || e.shiftKey)
+  const handleRowClick = (e: React.MouseEvent, file: LocalFile, index: number) => {
+    if (e.shiftKey && lastClickedIndex !== null) {
+      // Shift+click: select range
+      const start = Math.min(lastClickedIndex, index)
+      const end = Math.max(lastClickedIndex, index)
+      const rangePaths = sortedFiles.slice(start, end + 1).map(f => f.path)
+      
+      if (e.ctrlKey || e.metaKey) {
+        // Add range to existing selection
+        const newSelection = [...new Set([...selectedFiles, ...rangePaths])]
+        setSelectedFiles(newSelection)
+      } else {
+        // Replace selection with range
+        setSelectedFiles(rangePaths)
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      // Ctrl+click: toggle single item
+      toggleFileSelection(file.path, true)
+      setLastClickedIndex(index)
+    } else {
+      // Normal click: select single item
+      setSelectedFiles([file.path])
+      setLastClickedIndex(index)
+    }
   }
 
   const handleRowDoubleClick = (file: LocalFile) => {
@@ -614,11 +951,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           )
         }
         
+        const fileStatusColumnVisible = columns.find(c => c.id === 'fileStatus')?.visible
+        
         return (
           <div className="flex items-center gap-2">
             {getFileIcon(file)}
             <span className="truncate flex-1">{file.name}</span>
-            {!file.isDirectory && (
+            {!file.isDirectory && !fileStatusColumnVisible && (
               <span 
                 className={`flex-shrink-0 ${isSynced ? 'text-pdm-success' : 'text-pdm-fg-muted'}`}
                 title={isSynced ? 'Synced with cloud' : 'Local only - not synced'}
@@ -641,43 +980,73 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         return file.isDirectory ? '' : (file.pdmData?.revision || 'A')
       case 'version':
         if (file.isDirectory) return ''
-        const localVersion = 1 // TODO: track local version from file hash changes
         const cloudVersion = file.pdmData?.version || null
-        if (cloudVersion) {
-          return `${localVersion}/${cloudVersion}`
+        if (!cloudVersion) {
+          // Not synced yet
+          return <span className="text-pdm-fg-muted">-/-</span>
         }
-        return `${localVersion}/-`
-      case 'partNumber':
-        return file.pdmData?.part_number || ''
-      case 'description':
-        return file.pdmData?.description || ''
-      case 'checkedOutBy':
-        if (file.pdmData?.checked_out_by) {
+        
+        if (file.diffStatus === 'modified') {
+          // Local changes - local version is effectively cloud+1
           return (
-            <span className="checkout-indicator">
-              <Lock size={12} />
-              {file.pdmData.checked_out_by}
+            <span className="text-pdm-warning" title={`Local changes (will be version ${cloudVersion + 1})`}>
+              {cloudVersion + 1}/{cloudVersion}
+            </span>
+          )
+        } else if (file.diffStatus === 'outdated') {
+          // Cloud has newer version - local is behind
+          const localVer = cloudVersion - 1 // Simplified assumption
+          return (
+            <span className="text-purple-400" title="Newer version available on cloud">
+              {localVer > 0 ? localVer : '?'}/{cloudVersion}
             </span>
           )
         }
-        return ''
+        // In sync
+        return <span>{cloudVersion}/{cloudVersion}</span>
+      case 'itemNumber':
+        return file.pdmData?.part_number || ''
+      case 'description':
+        return file.pdmData?.description || ''
+      case 'fileStatus':
+        if (file.isDirectory) return ''
+        
+        if (!file.pdmData) {
+          // Not synced
+          return (
+            <span className="flex items-center gap-1 text-pdm-fg-muted">
+              <HardDrive size={12} />
+              Local
+            </span>
+          )
+        }
+        
+        if (file.pdmData.checked_out_by) {
+          // Checked out
+          const checkedOutUser = (file.pdmData as any).checked_out_user
+          const displayName = checkedOutUser?.full_name || checkedOutUser?.email || 'Someone'
+          const isMe = user?.id === file.pdmData.checked_out_by
+          return (
+            <span className={`flex items-center gap-1 ${isMe ? 'text-pdm-warning' : 'text-pdm-error'}`} title={displayName}>
+              <Lock size={12} />
+              {isMe ? 'Checked Out' : displayName}
+            </span>
+          )
+        }
+        
+        // Synced but not checked out
+        return (
+          <span className="flex items-center gap-1 text-pdm-success">
+            <Cloud size={12} />
+            Checked In
+          </span>
+        )
       case 'extension':
         return file.extension ? file.extension.replace('.', '').toUpperCase() : ''
       case 'size':
         return file.isDirectory ? '' : formatFileSize(file.size)
       case 'modifiedTime':
         return format(new Date(file.modifiedTime), 'MMM d, yyyy HH:mm')
-      case 'gitStatus':
-        if (!file.gitStatus || file.gitStatus === 'committed') return ''
-        return (
-          <span className={`git-status ${file.gitStatus}`}>
-            {file.gitStatus === 'modified' && 'M'}
-            {file.gitStatus === 'untracked' && 'U'}
-            {file.gitStatus === 'staged' && 'S'}
-            {file.gitStatus === 'deleted' && 'D'}
-            {file.gitStatus === 'added' && 'A'}
-          </span>
-        )
       default:
         return ''
     }
@@ -785,9 +1154,88 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       {/* Table */}
       <div 
         ref={tableRef} 
-        className="flex-1 overflow-auto"
+        className="flex-1 overflow-auto relative"
         onContextMenu={handleEmptyContextMenu}
+        onMouseDown={(e) => {
+          // Only start selection box on left click in empty area
+          if (e.button !== 0) return
+          const target = e.target as HTMLElement
+          if (target.closest('tr') || target.closest('th')) return
+          
+          const rect = tableRef.current?.getBoundingClientRect()
+          if (!rect) return
+          
+          const startX = e.clientX - rect.left + (tableRef.current?.scrollLeft || 0)
+          const startY = e.clientY - rect.top + (tableRef.current?.scrollTop || 0)
+          
+          setSelectionBox({ startX, startY, currentX: startX, currentY: startY })
+          
+          if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            clearSelection()
+          }
+        }}
+        onMouseMove={(e) => {
+          if (!selectionBox) return
+          
+          const rect = tableRef.current?.getBoundingClientRect()
+          if (!rect) return
+          
+          const currentX = e.clientX - rect.left + (tableRef.current?.scrollLeft || 0)
+          const currentY = e.clientY - rect.top + (tableRef.current?.scrollTop || 0)
+          
+          setSelectionBox(prev => prev ? { ...prev, currentX, currentY } : null)
+          
+          // Calculate selection box bounds
+          const left = Math.min(selectionBox.startX, currentX)
+          const right = Math.max(selectionBox.startX, currentX)
+          const top = Math.min(selectionBox.startY, currentY)
+          const bottom = Math.max(selectionBox.startY, currentY)
+          
+          // Find rows that intersect with selection box
+          const rows = tableRef.current?.querySelectorAll('tbody tr')
+          const selectedPaths: string[] = []
+          
+          rows?.forEach((row, index) => {
+            const rowRect = row.getBoundingClientRect()
+            const tableRect = tableRef.current?.getBoundingClientRect()
+            if (!tableRect) return
+            
+            const rowTop = rowRect.top - tableRect.top + (tableRef.current?.scrollTop || 0)
+            const rowBottom = rowTop + rowRect.height
+            
+            // Check if row intersects with selection box
+            if (rowBottom > top && rowTop < bottom) {
+              const file = sortedFiles[index]
+              if (file) {
+                selectedPaths.push(file.path)
+              }
+            }
+          })
+          
+          setSelectedFiles(selectedPaths)
+        }}
+        onMouseUp={() => {
+          setSelectionBox(null)
+        }}
+        onMouseLeave={() => {
+          if (selectionBox) {
+            setSelectionBox(null)
+          }
+        }}
       >
+        {/* Selection box overlay */}
+        {selectionBox && (
+          <div
+            className="absolute border border-pdm-accent bg-pdm-accent/10 pointer-events-none z-10"
+            style={{
+              left: Math.min(selectionBox.startX, selectionBox.currentX),
+              top: Math.min(selectionBox.startY, selectionBox.currentY),
+              width: Math.abs(selectionBox.currentX - selectionBox.startX),
+              height: Math.abs(selectionBox.currentY - selectionBox.startY),
+            }}
+          />
+        )}
+        
         <table className="file-table">
           <thead>
             <tr>
@@ -795,10 +1243,23 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 <th
                   key={column.id}
                   style={{ width: column.width }}
-                  className={column.sortable ? 'sortable' : ''}
+                  className={`${column.sortable ? 'sortable' : ''} ${draggingColumn === column.id ? 'dragging' : ''} ${dragOverColumn === column.id ? 'drag-over' : ''}`}
                   onClick={() => column.sortable && toggleSort(column.id)}
+                  onContextMenu={handleColumnHeaderContextMenu}
+                  onDragOver={(e) => handleColumnDragOver(e, column.id)}
+                  onDragLeave={handleColumnDragLeave}
+                  onDrop={(e) => handleColumnDrop(e, column.id)}
+                  onDragEnd={handleColumnDragEnd}
                 >
                   <div className="flex items-center gap-1">
+                    <span
+                      draggable
+                      onDragStart={(e) => handleColumnDragStart(e, column.id)}
+                      className="cursor-grab active:cursor-grabbing"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <GripVertical size={12} className="text-pdm-fg-muted opacity-50" />
+                    </span>
                     <span>{column.label}</span>
                     {sortColumn === column.id && (
                       sortDirection === 'asc' 
@@ -842,16 +1303,17 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 </td>
               </tr>
             )}
-            {sortedFiles.map(file => {
+            {sortedFiles.map((file, index) => {
               const diffClass = file.diffStatus === 'added' ? 'diff-added' 
                 : file.diffStatus === 'modified' ? 'diff-modified'
-                : file.diffStatus === 'deleted' ? 'diff-deleted' : ''
+                : file.diffStatus === 'deleted' ? 'diff-deleted'
+                : file.diffStatus === 'outdated' ? 'diff-outdated' : ''
               
               return (
               <tr
                 key={file.path}
                 className={`${selectedFiles.includes(file.path) ? 'selected' : ''} ${diffClass}`}
-                onClick={(e) => handleRowClick(e, file)}
+                onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}
               >
@@ -891,8 +1353,28 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
       {/* Context Menu */}
       {contextMenu && (() => {
-        const isSynced = !!contextMenu.file.pdmData
-        const isFolder = contextMenu.file.isDirectory
+        const contextFiles = getContextMenuFiles()
+        const multiSelect = contextFiles.length > 1
+        const firstFile = contextFiles[0]
+        const isSynced = contextFiles.every(f => !!f.pdmData)
+        const anySynced = contextFiles.some(f => !!f.pdmData)
+        const anyUnsynced = contextFiles.some(f => !f.pdmData && !f.isDirectory)
+        const isFolder = firstFile.isDirectory
+        const allFolders = contextFiles.every(f => f.isDirectory)
+        const allFiles = contextFiles.every(f => !f.isDirectory)
+        const fileCount = contextFiles.filter(f => !f.isDirectory).length
+        const folderCount = contextFiles.filter(f => f.isDirectory).length
+        
+        // Check out/in status - only consider synced non-folder files
+        const syncedNonFolderFiles = contextFiles.filter(f => !f.isDirectory && f.pdmData)
+        const allCheckedOut = syncedNonFolderFiles.length > 0 && syncedNonFolderFiles.every(f => f.pdmData?.checked_out_by)
+        const allCheckedIn = syncedNonFolderFiles.length > 0 && syncedNonFolderFiles.every(f => !f.pdmData?.checked_out_by)
+        const anyCheckedOut = syncedNonFolderFiles.some(f => f.pdmData?.checked_out_by)
+        const anyCheckedIn = syncedNonFolderFiles.some(f => !f.pdmData?.checked_out_by)
+        
+        const countLabel = multiSelect 
+          ? `(${fileCount > 0 ? `${fileCount} file${fileCount > 1 ? 's' : ''}` : ''}${fileCount > 0 && folderCount > 0 ? ', ' : ''}${folderCount > 0 ? `${folderCount} folder${folderCount > 1 ? 's' : ''}` : ''})`
+          : ''
         
         return (
           <>
@@ -909,22 +1391,35 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               className="context-menu"
               style={{ left: contextMenu.x, top: contextMenu.y }}
             >
-              {!isFolder && (
+              {!multiSelect && !isFolder && (
                 <div 
                   className="context-menu-item"
                   onClick={() => {
-                    window.electronAPI?.openFile(contextMenu.file.path)
+                    window.electronAPI?.openFile(firstFile.path)
                     setContextMenu(null)
                   }}
                 >
                   Open
                 </div>
               )}
-              {isFolder && (
+              {multiSelect && allFiles && (
+                <div 
+                  className="context-menu-item"
+                  onClick={async () => {
+                    for (const file of contextFiles) {
+                      window.electronAPI?.openFile(file.path)
+                    }
+                    setContextMenu(null)
+                  }}
+                >
+                  Open All {countLabel}
+                </div>
+              )}
+              {!multiSelect && isFolder && (
                 <div 
                   className="context-menu-item"
                   onClick={() => {
-                    navigateToFolder(contextMenu.file.relativePath)
+                    navigateToFolder(firstFile.relativePath)
                     setContextMenu(null)
                   }}
                 >
@@ -934,29 +1429,68 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               <div 
                 className="context-menu-item"
                 onClick={() => {
-                  window.electronAPI?.openInExplorer(contextMenu.file.path)
+                  window.electronAPI?.openInExplorer(firstFile.path)
                   setContextMenu(null)
                 }}
               >
                 Show in Explorer
               </div>
               
+              {!multiSelect && (
+                <div 
+                  className="context-menu-item"
+                  onClick={() => startRenaming(firstFile)}
+                >
+                  <Pencil size={14} />
+                  Rename
+                </div>
+              )}
+              
+              <div className="context-menu-separator" />
+              
               <div 
                 className="context-menu-item"
-                onClick={() => startRenaming(contextMenu.file)}
+                onClick={() => {
+                  handleCopy()
+                  setContextMenu(null)
+                }}
               >
-                <Pencil size={14} />
-                Rename
+                <Copy size={14} />
+                Copy
+                <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+C</span>
+              </div>
+              <div 
+                className="context-menu-item"
+                onClick={() => {
+                  handleCut()
+                  setContextMenu(null)
+                }}
+              >
+                <Scissors size={14} />
+                Cut
+                <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+X</span>
+              </div>
+              <div 
+                className={`context-menu-item ${!clipboard ? 'disabled' : ''}`}
+                onClick={() => {
+                  if (clipboard) {
+                    handlePaste()
+                  }
+                  setContextMenu(null)
+                }}
+              >
+                <ClipboardPaste size={14} />
+                Paste
+                <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+V</span>
               </div>
               
               <div className="context-menu-separator" />
               
               {/* Sync option - only for unsynced items */}
-              {!isSynced && (
+              {anyUnsynced && (
                 <div 
                   className="context-menu-item"
                   onClick={async () => {
-                    const file = contextMenu.file
                     setContextMenu(null)
                     
                     if (!user) {
@@ -970,69 +1504,78 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       return
                     }
                     
-                    if (isFolder) {
-                      // Sync folder - find all files in this folder and subfolders
-                      const folderPrefix = file.relativePath + '/'
-                      const folderFiles = files.filter(f => 
-                        !f.isDirectory && 
-                        (f.relativePath.startsWith(folderPrefix) || 
-                         f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === file.relativePath)
-                      )
+                    // Collect all unsynced files from selection (including files in selected folders)
+                    let unsyncedFiles: LocalFile[] = []
+                    
+                    for (const item of contextFiles) {
+                      if (item.isDirectory) {
+                        // Get all files in this folder and subfolders
+                        const folderPrefix = item.relativePath + '/'
+                        const folderFiles = files.filter(f => 
+                          !f.isDirectory && 
+                          !f.pdmData &&
+                          (f.relativePath.startsWith(folderPrefix) || 
+                           f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
+                        )
+                        unsyncedFiles.push(...folderFiles)
+                      } else if (!item.pdmData) {
+                        // Single unsynced file
+                        unsyncedFiles.push(item)
+                      }
+                    }
+                    
+                    // Remove duplicates (in case folders overlap)
+                    unsyncedFiles = unsyncedFiles.filter((f, i, arr) => 
+                      arr.findIndex(x => x.path === f.path) === i
+                    )
+                    
+                    if (unsyncedFiles.length === 0) {
+                      addToast('info', 'All files already synced')
+                      setStatusMessage('')
+                      return
+                    }
+                    
+                    let synced = 0
+                    let failed = 0
+                    const errors: string[] = []
+                    const total = unsyncedFiles.length
+                    const totalBytes = unsyncedFiles.reduce((sum, f) => sum + f.size, 0)
+                    let uploadedBytes = 0
+                    const startTime = Date.now()
+                    
+                    const formatSpeed = (bytesPerSec: number) => {
+                      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+                      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+                      return `${bytesPerSec.toFixed(0)} B/s`
+                    }
+                    
+                    const formatSize = (bytes: number) => {
+                      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+                      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+                      return `${bytes} B`
+                    }
+                    
+                    setStatusMessage(`Syncing 0/${total} files (0%)...`)
+                    
+                    for (let i = 0; i < unsyncedFiles.length; i++) {
+                      const f = unsyncedFiles[i]
+                      const elapsed = (Date.now() - startTime) / 1000
+                      const speed = elapsed > 0 ? uploadedBytes / elapsed : 0
+                      const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0
                       
-                      // Filter to only unsynced files
-                      const unsyncedFiles = folderFiles.filter(f => !f.pdmData)
+                      setStatusMessage(`Syncing ${i + 1}/${total} (${percent}%) • ${formatSpeed(speed)} • ${f.name}`)
                       
-                      if (unsyncedFiles.length === 0) {
-                        if (folderFiles.length > 0) {
-                          addToast('info', `All ${folderFiles.length} files already synced`)
-                        } else {
-                          addToast('info', 'No files to sync in this folder')
+                      try {
+                        const readResult = await window.electronAPI?.readFile(f.path)
+                        if (!readResult?.success) {
+                          failed++
+                          errors.push(`${f.name}: Failed to read file`)
+                          console.error('Read error for', f.name, readResult?.error)
+                          continue
                         }
-                        setStatusMessage('')
-                        return
-                      }
-                      
-                      let synced = 0
-                      let failed = 0
-                      const errors: string[] = []
-                      const total = unsyncedFiles.length
-                      const totalBytes = unsyncedFiles.reduce((sum, f) => sum + f.size, 0)
-                      let uploadedBytes = 0
-                      const startTime = Date.now()
-                      
-                      const formatSpeed = (bytesPerSec: number) => {
-                        if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
-                        if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
-                        return `${bytesPerSec.toFixed(0)} B/s`
-                      }
-                      
-                      const formatSize = (bytes: number) => {
-                        if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-                        if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
-                        return `${bytes} B`
-                      }
-                      
-                      setStatusMessage(`Syncing 0/${total} files (0%)...`)
-                      
-                      for (let i = 0; i < unsyncedFiles.length; i++) {
-                        const f = unsyncedFiles[i]
-                        const elapsed = (Date.now() - startTime) / 1000
-                        const speed = elapsed > 0 ? uploadedBytes / elapsed : 0
-                        const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0
                         
-                        setStatusMessage(`Syncing ${i + 1}/${total} (${percent}%) • ${formatSpeed(speed)} • ${f.name}`)
-                        
-                        try {
-                          const readResult = await window.electronAPI?.readFile(f.path)
-                          if (!readResult?.success) {
-                            failed++
-                            errors.push(`${f.name}: Failed to read file`)
-                            console.error('Read error for', f.name, readResult?.error)
-                            continue
-                          }
-                          
-                          if (!readResult.data || !readResult.hash) {
-                            failed++
+                        if (!readResult.data || !readResult.hash) {
+                          failed++
                             errors.push(`${f.name}: No data or hash`)
                             continue
                           }
@@ -1081,55 +1624,21 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       }
                       
                       onRefresh()
-                    } else {
-                      // Sync single file
-                      setStatusMessage(`Syncing ${file.name}...`)
-                      
-                      try {
-                        const readResult = await window.electronAPI?.readFile(file.path)
-                        if (readResult?.success && readResult.data && readResult.hash) {
-                          const { error, isNew } = await syncFile(
-                            organization.id,
-                            user.id,
-                            file.relativePath,
-                            file.name,
-                            file.extension,
-                            file.size,
-                            readResult.hash,
-                            readResult.data
-                          )
-                          
-                          if (error) {
-                            const errorMsg = typeof error === 'object' && error !== null && 'message' in error 
-                              ? (error as { message: string }).message 
-                              : String(error)
-                            addToast('error', `Failed to sync: ${errorMsg}`)
-                          } else {
-                            addToast('success', `${isNew ? 'Synced' : 'Updated'} ${file.name}`)
-                            onRefresh()
-                          }
-                        } else {
-                          addToast('error', 'Failed to read file')
-                        }
-                      } catch (err) {
-                        console.error('Sync error:', err)
-                        addToast('error', 'Failed to sync file')
-                      }
-                      setStatusMessage('')
-                    }
+                    
+                    setStatusMessage('')
                   }}
                 >
                   <Cloud size={14} />
-                  {isFolder ? 'Sync Folder to Cloud' : 'Sync to Cloud'}
+                  First Check In {multiSelect ? countLabel : ''}
                 </div>
               )}
               
               {/* Check Out - for synced files or folders with synced content */}
-              {isFolder ? (
+              {allFolders && !multiSelect ? (
                 <div 
                   className="context-menu-item"
                   onClick={() => {
-                    handleCheckoutFolder(contextMenu.file)
+                    handleCheckoutFolder(firstFile)
                     setContextMenu(null)
                   }}
                 >
@@ -1138,27 +1647,56 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 </div>
               ) : (
                 <div 
-                  className={`context-menu-item ${!isSynced ? 'disabled' : ''}`}
-                  onClick={() => {
-                    if (!isSynced) return
-                    // TODO: Implement checkout
-                    setStatusMessage('Check out not implemented yet')
+                  className={`context-menu-item ${!anySynced || allCheckedOut ? 'disabled' : ''}`}
+                  onClick={async () => {
+                    if (!anySynced || allCheckedOut || !user) return
                     setContextMenu(null)
+                    
+                    // Only checkout files that are not already checked out
+                    const filesToCheckout = contextFiles.filter(f => !f.isDirectory && f.pdmData?.id && !f.pdmData.checked_out_by)
+                    if (filesToCheckout.length === 0) {
+                      addToast('info', 'All files are already checked out')
+                      return
+                    }
+                    
+                    let succeeded = 0
+                    let failed = 0
+                    
+                    for (const file of filesToCheckout) {
+                      setStatusMessage(`Checking out ${succeeded + failed + 1}/${filesToCheckout.length}: ${file.name}...`)
+                      const result = await checkoutFile(file.pdmData!.id, user.id)
+                      
+                      if (result.success) {
+                        await window.electronAPI?.setReadonly(file.path, false)
+                        succeeded++
+                      } else {
+                        failed++
+                      }
+                    }
+                    
+                    setStatusMessage('')
+                    if (failed > 0) {
+                      addToast('warning', `Checked out ${succeeded}/${filesToCheckout.length} files`)
+                    } else {
+                      addToast('success', `Checked out ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+                    }
+                    onRefresh()
                   }}
-                  title={!isSynced ? 'File must be synced first' : ''}
+                  title={!anySynced ? 'Files must be synced first' : allCheckedOut ? 'Already checked out' : ''}
                 >
                   <ArrowDown size={14} className="text-pdm-error" />
-                  Check Out
-                  {!isSynced && <span className="text-xs text-pdm-fg-muted ml-auto">(sync first)</span>}
+                  Check Out {multiSelect ? countLabel : ''}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(sync first)</span>}
+                  {anySynced && allCheckedOut && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
                 </div>
               )}
               
               {/* Check In - for synced files or folders with synced content */}
-              {isFolder ? (
+              {allFolders && !multiSelect ? (
                 <div 
                   className="context-menu-item"
                   onClick={() => {
-                    handleCheckinFolder(contextMenu.file)
+                    handleCheckinFolder(firstFile)
                     setContextMenu(null)
                   }}
                 >
@@ -1167,18 +1705,67 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 </div>
               ) : (
                 <div 
-                  className={`context-menu-item ${!isSynced ? 'disabled' : ''}`}
-                  onClick={() => {
-                    if (!isSynced) return
-                    // TODO: Implement checkin
-                    setStatusMessage('Check in not implemented yet')
+                  className={`context-menu-item ${!anySynced || allCheckedIn ? 'disabled' : ''}`}
+                  onClick={async () => {
+                    if (!anySynced || allCheckedIn || !user) return
                     setContextMenu(null)
+                    
+                    // Only checkin files that are checked out
+                    const filesToCheckin = contextFiles.filter(f => !f.isDirectory && f.pdmData?.id && f.pdmData.checked_out_by)
+                    if (filesToCheckin.length === 0) {
+                      addToast('info', 'No files are checked out')
+                      return
+                    }
+                    
+                    let succeeded = 0
+                    let failed = 0
+                    
+                    for (const file of filesToCheckin) {
+                      setStatusMessage(`Checking in ${succeeded + failed + 1}/${filesToCheckin.length}: ${file.name}...`)
+                      
+                      try {
+                        const readResult = await window.electronAPI?.readFile(file.path)
+                        
+                        if (readResult?.success && readResult.data && readResult.hash) {
+                          const result = await checkinFile(file.pdmData!.id, user.id, {
+                            newContentHash: readResult.hash,
+                            newFileSize: file.size
+                          })
+                          
+                          if (result.success) {
+                            await window.electronAPI?.setReadonly(file.path, true)
+                            succeeded++
+                          } else {
+                            failed++
+                          }
+                        } else {
+                          const result = await checkinFile(file.pdmData!.id, user.id)
+                          if (result.success) {
+                            await window.electronAPI?.setReadonly(file.path, true)
+                            succeeded++
+                          } else {
+                            failed++
+                          }
+                        }
+                      } catch {
+                        failed++
+                      }
+                    }
+                    
+                    setStatusMessage('')
+                    if (failed > 0) {
+                      addToast('warning', `Checked in ${succeeded}/${filesToCheckin.length} files`)
+                    } else {
+                      addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+                    }
+                    onRefresh()
                   }}
-                  title={!isSynced ? 'File must be synced first' : ''}
+                  title={!anySynced ? 'Files must be synced first' : allCheckedIn ? 'Already checked in' : ''}
                 >
                   <ArrowUp size={14} className="text-pdm-success" />
-                  Check In
-                  {!isSynced && <span className="text-xs text-pdm-fg-muted ml-auto">(sync first)</span>}
+                  Check In {multiSelect ? countLabel : ''}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(sync first)</span>}
+                  {anySynced && allCheckedIn && <span className="text-xs text-pdm-fg-muted ml-auto">(already in)</span>}
                 </div>
               )}
               
@@ -1199,12 +1786,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               <div 
                 className="context-menu-item danger"
                 onClick={() => {
-                  setDeleteConfirm(contextMenu.file)
+                  // For multi-select, set deleteConfirm to first file (dialog will handle all)
+                  setDeleteConfirm(firstFile)
                   setContextMenu(null)
                 }}
               >
                 <Trash2 size={14} />
-                Delete
+                Delete {countLabel}
               </div>
               
               <div className="context-menu-separator" />
@@ -1226,6 +1814,44 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           </>
         )
       })()}
+
+      {/* Column context menu */}
+      {columnContextMenu && (
+        <>
+          <div 
+            className="fixed inset-0 z-50" 
+            onClick={() => setColumnContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setColumnContextMenu({ x: e.clientX, y: e.clientY })
+            }}
+          />
+          <div 
+            className="context-menu max-h-96 overflow-y-auto"
+            style={{ left: columnContextMenu.x, top: columnContextMenu.y }}
+          >
+            <div className="px-3 py-1.5 text-xs text-pdm-fg-muted uppercase tracking-wide border-b border-pdm-border mb-1">
+              Show/Hide Columns
+            </div>
+            {columns.map(column => (
+              <div 
+                key={column.id}
+                className="context-menu-item"
+                onClick={() => {
+                  toggleColumnVisibility(column.id)
+                }}
+              >
+                {column.visible ? (
+                  <Eye size={14} className="text-pdm-success" />
+                ) : (
+                  <EyeOff size={14} className="text-pdm-fg-muted" />
+                )}
+                <span className={column.visible ? '' : 'text-pdm-fg-muted'}>{column.label}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* Empty space context menu */}
       {emptyContextMenu && (
@@ -1260,6 +1886,19 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               <Upload size={14} />
               Add Files...
             </div>
+            <div 
+              className={`context-menu-item ${!clipboard ? 'disabled' : ''}`}
+              onClick={() => {
+                if (clipboard) {
+                  handlePaste()
+                }
+                setEmptyContextMenu(null)
+              }}
+            >
+              <ClipboardPaste size={14} />
+              Paste
+              <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+V</span>
+            </div>
             <div className="context-menu-separator" />
             <div 
               className="context-menu-item"
@@ -1290,61 +1929,118 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       )}
 
       {/* Delete confirmation dialog */}
-      {deleteConfirm && (
-        <>
-          <div 
-            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
-            onClick={() => setDeleteConfirm(null)}
-          >
+      {deleteConfirm && (() => {
+        // Get all files to delete (selected files if deleteConfirm is in selection, otherwise just deleteConfirm)
+        const filesToDelete = selectedFiles.includes(deleteConfirm.path)
+          ? sortedFiles.filter(f => selectedFiles.includes(f.path))
+          : [deleteConfirm]
+        const deleteCount = filesToDelete.length
+        const folderCount = filesToDelete.filter(f => f.isDirectory).length
+        const fileCount = filesToDelete.filter(f => !f.isDirectory).length
+        
+        return (
+          <>
             <div 
-              className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md shadow-xl"
-              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
+              onClick={() => setDeleteConfirm(null)}
             >
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-pdm-error/20 flex items-center justify-center">
-                  <AlertTriangle size={20} className="text-pdm-error" />
+              <div 
+                className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-full bg-pdm-error/20 flex items-center justify-center">
+                    <AlertTriangle size={20} className="text-pdm-error" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-pdm-fg">
+                      Delete {deleteCount > 1 ? `${deleteCount} Items` : deleteConfirm.isDirectory ? 'Folder' : 'File'}?
+                    </h3>
+                    <p className="text-sm text-pdm-fg-muted">This action will move items to the Recycle Bin.</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-pdm-fg">Delete {deleteConfirm.isDirectory ? 'Folder' : 'File'}?</h3>
-                  <p className="text-sm text-pdm-fg-muted">This action will move the item to the Recycle Bin.</p>
-                </div>
-              </div>
-              
-              <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4">
-                <div className="flex items-center gap-2">
-                  {deleteConfirm.isDirectory ? (
-                    <FolderOpen size={16} className="text-pdm-fg-muted" />
+                
+                <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4 max-h-40 overflow-y-auto">
+                  {deleteCount === 1 ? (
+                    <div className="flex items-center gap-2">
+                      {deleteConfirm.isDirectory ? (
+                        <FolderOpen size={16} className="text-pdm-fg-muted" />
+                      ) : (
+                        <File size={16} className="text-pdm-fg-muted" />
+                      )}
+                      <span className="text-pdm-fg font-medium truncate">{deleteConfirm.name}</span>
+                    </div>
                   ) : (
-                    <File size={16} className="text-pdm-fg-muted" />
+                    <>
+                      <div className="text-sm text-pdm-fg mb-2">
+                        {fileCount > 0 && <span>{fileCount} file{fileCount > 1 ? 's' : ''}</span>}
+                        {fileCount > 0 && folderCount > 0 && <span>, </span>}
+                        {folderCount > 0 && <span>{folderCount} folder{folderCount > 1 ? 's' : ''}</span>}
+                      </div>
+                      <div className="space-y-1">
+                        {filesToDelete.slice(0, 5).map(f => (
+                          <div key={f.path} className="flex items-center gap-2 text-sm">
+                            {f.isDirectory ? (
+                              <FolderOpen size={14} className="text-pdm-fg-muted" />
+                            ) : (
+                              <File size={14} className="text-pdm-fg-muted" />
+                            )}
+                            <span className="text-pdm-fg-dim truncate">{f.name}</span>
+                          </div>
+                        ))}
+                        {filesToDelete.length > 5 && (
+                          <div className="text-xs text-pdm-fg-muted">
+                            ...and {filesToDelete.length - 5} more
+                          </div>
+                        )}
+                      </div>
+                    </>
                   )}
-                  <span className="text-pdm-fg font-medium truncate">{deleteConfirm.name}</span>
+                  {folderCount > 0 && (
+                    <p className="text-xs text-pdm-fg-muted mt-2">
+                      All contents inside folders will also be deleted.
+                    </p>
+                  )}
                 </div>
-                {deleteConfirm.isDirectory && (
-                  <p className="text-xs text-pdm-fg-muted mt-2">
-                    All contents inside the folder will also be deleted.
-                  </p>
-                )}
-              </div>
-              
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setDeleteConfirm(null)}
-                  className="btn btn-ghost"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => handleDelete(deleteConfirm)}
-                  className="btn bg-pdm-error hover:bg-pdm-error/80 text-white"
-                >
-                  <Trash2 size={14} />
-                  Delete
-                </button>
+                
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setDeleteConfirm(null)}
+                    className="btn btn-ghost"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={async () => {
+                      let deleted = 0
+                      for (const file of filesToDelete) {
+                        const result = await window.electronAPI?.deleteItem(file.path)
+                        if (result?.success) {
+                          deleted++
+                          setUndoStack(prev => [...prev, { type: 'delete', file, originalPath: file.path }])
+                        }
+                      }
+                      setDeleteConfirm(null)
+                      clearSelection()
+                      
+                      if (deleted === filesToDelete.length) {
+                        addToast('success', `Deleted ${deleted} item${deleted > 1 ? 's' : ''}`)
+                      } else {
+                        addToast('warning', `Deleted ${deleted}/${filesToDelete.length} items`)
+                      }
+                      onRefresh()
+                    }}
+                    className="btn bg-pdm-error hover:bg-pdm-error/80 text-white"
+                  >
+                    <Trash2 size={14} />
+                    Delete {deleteCount > 1 ? `(${deleteCount})` : ''}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        )
+      })()}
     </div>
   )
 }

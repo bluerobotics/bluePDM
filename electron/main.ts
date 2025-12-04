@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
+import chokidar from 'chokidar'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -11,6 +12,7 @@ let mainWindow: BrowserWindow | null = null
 
 // Local working directory for checked-out files
 let workingDirectory: string | null = null
+let fileWatcher: chokidar.FSWatcher | null = null
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -331,6 +333,7 @@ ipcMain.handle('working-dir:select', async () => {
   if (!result.canceled && result.filePaths.length > 0) {
     workingDirectory = result.filePaths[0]
     log('Working directory set:', workingDirectory)
+    startFileWatcher(workingDirectory)
     return { success: true, path: workingDirectory }
   }
   return { success: false, canceled: true }
@@ -341,6 +344,7 @@ ipcMain.handle('working-dir:get', () => workingDirectory)
 ipcMain.handle('working-dir:set', async (_, newPath: string) => {
   if (fs.existsSync(newPath)) {
     workingDirectory = newPath
+    startFileWatcher(newPath)
     return { success: true, path: workingDirectory }
   }
   return { success: false, error: 'Path does not exist' }
@@ -354,12 +358,90 @@ ipcMain.handle('working-dir:create', async (_, newPath: string) => {
       log('Created working directory:', newPath)
     }
     workingDirectory = newPath
+    startFileWatcher(newPath)
     return { success: true, path: workingDirectory }
   } catch (err) {
     log('Error creating working directory:', err)
     return { success: false, error: String(err) }
   }
 })
+
+// File watcher for detecting external changes
+function startFileWatcher(dirPath: string) {
+  // Close existing watcher if any
+  if (fileWatcher) {
+    fileWatcher.close()
+    fileWatcher = null
+  }
+  
+  log('Starting file watcher for:', dirPath)
+  
+  // Debounce timer for batching changes
+  let debounceTimer: NodeJS.Timeout | null = null
+  const changedFiles = new Set<string>()
+  
+  fileWatcher = chokidar.watch(dirPath, {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 1000,  // Wait for file to be stable for 1 second
+      pollInterval: 100
+    },
+    ignored: [
+      /(^|[\/\\])\../,  // Ignore dotfiles
+      /node_modules/,
+      /\.git/,
+      /~\$/,  // Ignore Office temp files
+      /\.tmp$/i,
+      /\.swp$/i
+    ]
+  })
+  
+  const notifyChanges = () => {
+    if (changedFiles.size > 0 && mainWindow) {
+      const files = Array.from(changedFiles)
+      changedFiles.clear()
+      log('File changes detected:', files.length, 'files')
+      mainWindow.webContents.send('files-changed', files)
+    }
+    debounceTimer = null
+  }
+  
+  fileWatcher.on('change', (filePath) => {
+    const relativePath = path.relative(dirPath, filePath).replace(/\\/g, '/')
+    changedFiles.add(relativePath)
+    
+    // Debounce to batch rapid changes
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+    }
+    debounceTimer = setTimeout(notifyChanges, 500)
+  })
+  
+  fileWatcher.on('add', (filePath) => {
+    const relativePath = path.relative(dirPath, filePath).replace(/\\/g, '/')
+    changedFiles.add(relativePath)
+    
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+    }
+    debounceTimer = setTimeout(notifyChanges, 500)
+  })
+  
+  fileWatcher.on('unlink', (filePath) => {
+    const relativePath = path.relative(dirPath, filePath).replace(/\\/g, '/')
+    changedFiles.add(relativePath)
+    
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+    }
+    debounceTimer = setTimeout(notifyChanges, 500)
+  })
+  
+  fileWatcher.on('error', (error) => {
+    log('File watcher error:', error)
+  })
+}
 
 // ============================================
 // IPC Handlers - Local File Operations
@@ -467,7 +549,16 @@ ipcMain.handle('fs:list-working-files', async () => {
           // Recurse into folder
           walkDir(fullPath, baseDir)
         } else {
-          // Add file entry
+          // Add file entry with hash for comparison
+          let fileHash: string | undefined
+          try {
+            // Compute hash for files (needed for diff detection)
+            const fileData = fs.readFileSync(fullPath)
+            fileHash = crypto.createHash('sha256').update(fileData).digest('hex')
+          } catch {
+            // Skip hash if file can't be read
+          }
+          
           files.push({
             name: item.name,
             path: fullPath,
@@ -475,7 +566,8 @@ ipcMain.handle('fs:list-working-files', async () => {
             isDirectory: false,
             extension: path.extname(item.name).toLowerCase(),
             size: stats.size,
-            modifiedTime: stats.mtime.toISOString()
+            modifiedTime: stats.mtime.toISOString(),
+            hash: fileHash
           })
         }
       }
@@ -579,6 +671,45 @@ ipcMain.handle('fs:open-in-explorer', async (_, targetPath: string) => {
 ipcMain.handle('fs:open-file', async (_, filePath: string) => {
   shell.openPath(filePath)
   return { success: true }
+})
+
+// Set file read-only attribute
+ipcMain.handle('fs:set-readonly', async (_, filePath: string, readonly: boolean) => {
+  try {
+    const stats = fs.statSync(filePath)
+    if (stats.isDirectory()) {
+      return { success: true } // Skip directories
+    }
+    
+    // Get current mode
+    const currentMode = stats.mode
+    
+    if (readonly) {
+      // Remove write permissions (owner, group, others)
+      const newMode = currentMode & ~0o222
+      fs.chmodSync(filePath, newMode)
+    } else {
+      // Add owner write permission
+      const newMode = currentMode | 0o200
+      fs.chmodSync(filePath, newMode)
+    }
+    
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+})
+
+// Check if file is read-only
+ipcMain.handle('fs:is-readonly', async (_, filePath: string) => {
+  try {
+    const stats = fs.statSync(filePath)
+    // Check if owner write bit is not set
+    const isReadonly = (stats.mode & 0o200) === 0
+    return { success: true, readonly: isReadonly }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
 })
 
 // Select files to add (returns file paths)

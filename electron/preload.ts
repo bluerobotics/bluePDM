@@ -96,6 +96,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyFile: (sourcePath: string, destPath: string) => ipcRenderer.invoke('fs:copy-file', sourcePath, destPath),
   openInExplorer: (path: string) => ipcRenderer.invoke('fs:open-in-explorer', path),
   openFile: (path: string) => ipcRenderer.invoke('fs:open-file', path),
+  setReadonly: (path: string, readonly: boolean) => ipcRenderer.invoke('fs:set-readonly', path, readonly),
+  isReadonly: (path: string) => ipcRenderer.invoke('fs:is-readonly', path),
 
   // Dialogs
   selectFiles: () => ipcRenderer.invoke('dialog:select-files'),
@@ -124,6 +126,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       events.forEach(event => {
         ipcRenderer.removeAllListeners(event)
       })
+    }
+  },
+  
+  // File change listener
+  onFilesChanged: (callback: (files: string[]) => void) => {
+    const handler = (_: unknown, files: string[]) => callback(files)
+    ipcRenderer.on('files-changed', handler)
+    
+    return () => {
+      ipcRenderer.removeListener('files-changed', handler)
     }
   }
 })
@@ -162,6 +174,8 @@ declare global {
       copyFile: (sourcePath: string, destPath: string) => Promise<OperationResult>
       openInExplorer: (path: string) => Promise<OperationResult>
       openFile: (path: string) => Promise<OperationResult>
+      setReadonly: (path: string, readonly: boolean) => Promise<OperationResult>
+      isReadonly: (path: string) => Promise<{ success: boolean; readonly?: boolean; error?: string }>
       
       // Dialogs
       selectFiles: () => Promise<FileSelectResult>
@@ -169,6 +183,9 @@ declare global {
       
       // Menu events
       onMenuEvent: (callback: (event: string) => void) => () => void
+      
+      // File change events
+      onFilesChanged: (callback: (files: string[]) => void) => () => void
     }
   }
 }
