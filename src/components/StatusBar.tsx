@@ -49,7 +49,7 @@ export function StatusBar() {
   if (!hasVaultConnected) {
     return (
       <div className="bg-pdm-activitybar border-t border-pdm-border flex items-center justify-end px-3 py-[2px] text-xs text-pdm-fg-dim select-none flex-shrink-0">
-        <span className="text-pdm-fg-muted">v0.7.0</span>
+        <span className="text-pdm-fg-muted">v0.7.1</span>
       </div>
     )
   }
