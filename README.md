@@ -1,8 +1,8 @@
-# Blue PDM
+# BluePDM
 
 Open-source Product Data Management for engineering teams. Built with Electron, React, TypeScript, and Supabase.
 
-![Blue PDM](https://img.shields.io/badge/version-0.1.0-blue)
+![BluePDM](https://img.shields.io/badge/version-0.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Features
@@ -18,7 +18,7 @@ Open-source Product Data Management for engineering teams. Built with Electron, 
 
 ## Optimized for SolidWorks
 
-Blue PDM is designed specifically for SolidWorks and other CAD file management:
+BluePDM is designed specifically for SolidWorks and other CAD file management:
 
 - `.sldprt` (Parts)
 - `.sldasm` (Assemblies)

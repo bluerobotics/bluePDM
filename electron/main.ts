@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, dialog, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, shell, dialog, screen, nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -7,6 +7,15 @@ import chokidar from 'chokidar'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+// Prevent crashes from taking down the whole app
+process.on('uncaughtException', (error) => {
+  console.error('[Main] Uncaught exception:', error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Main] Unhandled rejection:', reason)
+})
 
 let mainWindow: BrowserWindow | null = null
 
@@ -64,7 +73,7 @@ const log = (...args: unknown[]) => {
   console.log('[Main]', ...args)
 }
 
-log('Blue PDM starting...', { isDev, dirname: __dirname })
+log('BluePDM starting...', { isDev, dirname: __dirname })
 
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer')
 
@@ -268,7 +277,7 @@ function createAppMenu() {
       label: 'Help',
       submenu: [
         {
-          label: 'About Blue PDM',
+          label: 'About BluePDM',
           click: () => mainWindow?.webContents.send('menu:about')
         }
       ]
@@ -279,7 +288,7 @@ function createAppMenu() {
     template.unshift({
       label: app.getName(),
       submenu: [
-        { label: 'About Blue PDM', role: 'about' },
+        { label: 'About BluePDM', role: 'about' },
         { type: 'separator' },
         { label: 'Services', role: 'services' },
         { type: 'separator' },
@@ -383,14 +392,20 @@ function startFileWatcher(dirPath: string) {
   fileWatcher = chokidar.watch(dirPath, {
     persistent: true,
     ignoreInitial: true,
+    usePolling: false,  // Use native fs events (faster, but may need polling on network drives)
     awaitWriteFinish: {
       stabilityThreshold: 1000,  // Wait for file to be stable for 1 second
       pollInterval: 100
     },
+    ignorePermissionErrors: true,  // Ignore EPERM errors
     ignored: [
       /(^|[\/\\])\../,  // Ignore dotfiles
       /node_modules/,
       /\.git/,
+      /desktop\.ini/i,  // Windows system files
+      /thumbs\.db/i,
+      /\$RECYCLE\.BIN/i,
+      /System Volume Information/i,
       /~\$/,  // Ignore Office temp files
       /\.tmp$/i,
       /\.swp$/i
@@ -415,7 +430,9 @@ function startFileWatcher(dirPath: string) {
     if (debounceTimer) {
       clearTimeout(debounceTimer)
     }
-    debounceTimer = setTimeout(notifyChanges, 500)
+    // Use longer debounce when many files are changing (bulk operations)
+    const delay = changedFiles.size > 10 ? 2000 : 1000
+    debounceTimer = setTimeout(notifyChanges, delay)
   })
   
   fileWatcher.on('add', (filePath) => {
@@ -425,7 +442,9 @@ function startFileWatcher(dirPath: string) {
     if (debounceTimer) {
       clearTimeout(debounceTimer)
     }
-    debounceTimer = setTimeout(notifyChanges, 500)
+    // Use longer debounce when many files are changing (bulk operations)
+    const delay = changedFiles.size > 10 ? 2000 : 1000
+    debounceTimer = setTimeout(notifyChanges, delay)
   })
   
   fileWatcher.on('unlink', (filePath) => {
@@ -435,10 +454,16 @@ function startFileWatcher(dirPath: string) {
     if (debounceTimer) {
       clearTimeout(debounceTimer)
     }
-    debounceTimer = setTimeout(notifyChanges, 500)
+    // Use longer debounce when many files are changing (bulk operations)
+    const delay = changedFiles.size > 10 ? 2000 : 1000
+    debounceTimer = setTimeout(notifyChanges, delay)
   })
   
-  fileWatcher.on('error', (error) => {
+  fileWatcher.on('error', (error: NodeJS.ErrnoException) => {
+    // Ignore EPERM errors (permission denied) - common on Windows for system files
+    if (error.code === 'EPERM' || error.code === 'EACCES') {
+      return
+    }
     log('File watcher error:', error)
   })
 }
@@ -606,6 +631,10 @@ ipcMain.handle('fs:delete', async (_, targetPath: string) => {
     return { success: false, error: String(err) }
   }
 })
+
+// Native file drag is disabled due to Electron crashpad issues on Windows
+// Use "Show in Explorer" or copy/paste instead
+// ipcMain.on('fs:start-drag', ...) - disabled
 
 ipcMain.handle('fs:rename', async (_, oldPath: string, newPath: string) => {
   try {

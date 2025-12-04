@@ -1,4 +1,4 @@
--- Blue PDM Database Schema (Supabase Storage Edition)
+-- BluePDM Database Schema (Supabase Storage Edition)
 -- Run this in your Supabase SQL editor to set up the database
 
 -- Enable UUID extension
@@ -58,6 +58,26 @@ CREATE TABLE users (
 
 CREATE INDEX idx_users_org_id ON users(org_id);
 CREATE INDEX idx_users_email ON users(email);
+
+-- ===========================================
+-- VAULTS
+-- ===========================================
+
+CREATE TABLE vaults (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,                  -- Display name (e.g., "Main Vault", "Archive")
+  slug TEXT NOT NULL,                  -- URL/path safe identifier (e.g., "main-vault")
+  description TEXT,
+  storage_bucket TEXT NOT NULL,        -- Supabase storage bucket name
+  is_default BOOLEAN DEFAULT false,    -- Default vault for the organization
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  
+  UNIQUE(org_id, slug)
+);
+
+CREATE INDEX idx_vaults_org_id ON vaults(org_id);
 
 -- ===========================================
 -- FILES (Metadata only - content in Supabase Storage)

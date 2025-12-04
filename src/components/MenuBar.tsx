@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { LogOut, ChevronDown, User, Building2, Settings } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Settings } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
+import { SettingsModal } from './SettingsModal'
 
 interface MenuBarProps {
   onOpenVault: () => void
@@ -13,6 +14,7 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
   const [appVersion, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -100,7 +102,7 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
               strokeLinejoin="round"
             />
           </svg>
-          <span className="text-sm font-semibold text-pdm-fg">Blue PDM</span>
+          <span className="text-sm font-semibold text-pdm-fg">BluePDM</span>
           {appVersion && (
             <span className="text-xs text-pdm-fg-muted">v{appVersion}</span>
           )}
@@ -110,11 +112,20 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
       {/* Center - Title (optional) */}
       <div className="flex-1" />
 
-      {/* Right side - User info (with padding for window controls) */}
+      {/* Right side - Settings and User (with padding for window controls) */}
       <div 
-        className="flex items-center h-full pl-4 titlebar-no-drag"
+        className="flex items-center gap-2 h-full pl-4 titlebar-no-drag"
         style={{ paddingRight: titleBarPadding }}
       >
+        {/* Settings gear */}
+        <button
+          onClick={() => setShowSettings(true)}
+          className="p-1.5 rounded hover:bg-pdm-bg-lighter transition-colors text-pdm-fg-muted hover:text-pdm-fg"
+          title="Settings"
+        >
+          <Settings size={18} />
+        </button>
+        
         {user ? (
           <div className="relative" ref={menuRef}>
             <button 
@@ -138,9 +149,9 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
               <ChevronDown size={12} className={`text-pdm-fg-muted transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Dropdown Menu */}
+            {/* Simplified Dropdown Menu */}
             {showUserMenu && (
-              <div className="absolute right-0 top-full mt-1 w-64 bg-pdm-bg-light border border-pdm-border rounded-lg shadow-xl overflow-hidden z-50">
+              <div className="absolute right-0 top-full mt-1 w-56 bg-pdm-bg-light border border-pdm-border rounded-lg shadow-xl overflow-hidden z-50">
                 {/* User Info Header */}
                 <div className="px-4 py-3 border-b border-pdm-border">
                   <div className="flex items-center gap-3">
@@ -197,32 +208,8 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
                   </div>
                 </div>
 
-                {/* Menu Items */}
-                <div className="py-1">
-                  <button 
-                    onClick={() => {
-                      setShowUserMenu(false)
-                      addToast('info', 'Account settings coming soon')
-                    }}
-                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-pdm-fg-dim hover:bg-pdm-highlight hover:text-pdm-fg transition-colors"
-                  >
-                    <User size={14} />
-                    Account Settings
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setShowUserMenu(false)
-                      addToast('info', 'Preferences coming soon')
-                    }}
-                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-pdm-fg-dim hover:bg-pdm-highlight hover:text-pdm-fg transition-colors"
-                  >
-                    <Settings size={14} />
-                    Preferences
-                  </button>
-                </div>
-
                 {/* Sign Out */}
-                <div className="border-t border-pdm-border py-1">
+                <div className="py-1">
                   <button 
                     onClick={() => {
                       setShowUserMenu(false)
@@ -247,6 +234,9 @@ export function MenuBar({ onOpenVault, onRefresh }: MenuBarProps) {
           </button>
         )}
       </div>
+      
+      {/* Settings Modal */}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   )
 }

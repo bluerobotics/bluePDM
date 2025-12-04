@@ -2,10 +2,18 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { PDMFile, FileState, Organization, User } from '../types/pdm'
 
-export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search'
+export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'settings'
 export type DetailsPanelTab = 'properties' | 'whereused' | 'contains' | 'history'
 export type ToastType = 'error' | 'success' | 'info' | 'warning'
-export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated'
+export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud'
+
+// Connected vault - an org vault that's connected locally
+export interface ConnectedVault {
+  id: string           // Vault ID from database
+  name: string         // Vault name
+  localPath: string    // Local folder path
+  isExpanded: boolean  // UI state - is this vault expanded in explorer
+}
 
 export interface ToastMessage {
   id: string
@@ -58,9 +66,14 @@ interface PDMState {
   isAuthenticated: boolean
   isOfflineMode: boolean
   
-  // Vault
+  // Vault (legacy single vault)
   vaultPath: string | null
+  vaultName: string | null  // Custom display name for vault
   isVaultConnected: boolean
+  
+  // Connected vaults (multi-vault support)
+  connectedVaults: ConnectedVault[]
+  activeVaultId: string | null  // Currently selected vault for file browser
   
   // File Browser
   files: LocalFile[]
@@ -97,6 +110,17 @@ interface PDMState {
   isRefreshing: boolean
   statusMessage: string
   
+  // Sync progress
+  syncProgress: {
+    isActive: boolean
+    operation: 'upload' | 'download' | 'checkin' | 'checkout'
+    current: number
+    total: number
+    percent: number
+    speed: string
+    cancelRequested: boolean
+  }
+  
   // Toasts
   toasts: ToastMessage[]
   
@@ -116,9 +140,18 @@ interface PDMState {
   
   // Actions - Vault
   setVaultPath: (path: string | null) => void
+  setVaultName: (name: string | null) => void
   setVaultConnected: (connected: boolean) => void
   addRecentVault: (path: string) => void
   setAutoConnect: (auto: boolean) => void
+  
+  // Actions - Connected Vaults
+  setConnectedVaults: (vaults: ConnectedVault[]) => void
+  addConnectedVault: (vault: ConnectedVault) => void
+  removeConnectedVault: (vaultId: string) => void
+  toggleVaultExpanded: (vaultId: string) => void
+  setActiveVault: (vaultId: string | null) => void
+  updateConnectedVault: (vaultId: string, updates: Partial<ConnectedVault>) => void
   
   // Actions - Files
   setFiles: (files: LocalFile[]) => void
@@ -161,17 +194,25 @@ interface PDMState {
   setIsRefreshing: (refreshing: boolean) => void
   setStatusMessage: (message: string) => void
   
+  // Actions - Sync Progress
+  setSyncProgress: (progress: Partial<PDMState['syncProgress']>) => void
+  startSync: (total: number, operation?: 'upload' | 'download' | 'checkin' | 'checkout') => void
+  updateSyncProgress: (current: number, percent: number, speed: string) => void
+  requestCancelSync: () => void
+  endSync: () => void
+  
   // Getters
   getSelectedFileObjects: () => LocalFile[]
   getVisibleFiles: () => LocalFile[]
   getFileByPath: (path: string) => LocalFile | undefined
   getDeletedFiles: () => LocalFile[]  // Files on server but not locally
-  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; deleted: number; outdated: number }
+  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; deleted: number; outdated: number; cloud: number }
 }
 
 const defaultColumns: ColumnConfig[] = [
   { id: 'name', label: 'Name', width: 280, visible: true, sortable: true },
-  { id: 'fileStatus', label: 'File Status', width: 120, visible: true, sortable: true },
+  { id: 'fileStatus', label: 'File Status', width: 100, visible: true, sortable: true },
+  { id: 'checkedOutBy', label: 'Checked Out By', width: 150, visible: true, sortable: true },
   { id: 'version', label: 'Ver', width: 60, visible: true, sortable: true },
   { id: 'itemNumber', label: 'Item Number', width: 120, visible: true, sortable: true },
   { id: 'description', label: 'Description', width: 200, visible: true, sortable: true },
@@ -192,7 +233,10 @@ export const usePDMStore = create<PDMState>()(
       isOfflineMode: false,
       
       vaultPath: null,
+      vaultName: null,
       isVaultConnected: false,
+      connectedVaults: [],
+      activeVaultId: null,
       
       files: [],
       serverFiles: [],
@@ -223,10 +267,20 @@ export const usePDMStore = create<PDMState>()(
       isRefreshing: false,
       statusMessage: '',
       
+      syncProgress: {
+        isActive: false,
+        operation: 'upload',
+        current: 0,
+        total: 0,
+        percent: 0,
+        speed: '',
+        cancelRequested: false
+      },
+      
       toasts: [],
       
       recentVaults: [],
-      autoConnect: false,
+      autoConnect: true,
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
@@ -245,6 +299,7 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Vault
       setVaultPath: (vaultPath) => set({ vaultPath }),
+      setVaultName: (vaultName) => set({ vaultName }),
       setVaultConnected: (isVaultConnected) => set({ isVaultConnected }),
       addRecentVault: (path) => {
         const { recentVaults } = get()
@@ -252,6 +307,40 @@ export const usePDMStore = create<PDMState>()(
         set({ recentVaults: updated })
       },
       setAutoConnect: (autoConnect) => set({ autoConnect }),
+      
+      // Actions - Connected Vaults
+      setConnectedVaults: (connectedVaults) => set({ connectedVaults }),
+      addConnectedVault: (vault) => {
+        const { connectedVaults } = get()
+        // Don't add duplicates
+        if (connectedVaults.some(v => v.id === vault.id)) return
+        set({ connectedVaults: [...connectedVaults, vault] })
+      },
+      removeConnectedVault: (vaultId) => {
+        const { connectedVaults, activeVaultId } = get()
+        const updated = connectedVaults.filter(v => v.id !== vaultId)
+        set({ 
+          connectedVaults: updated,
+          activeVaultId: activeVaultId === vaultId ? (updated[0]?.id || null) : activeVaultId
+        })
+      },
+      toggleVaultExpanded: (vaultId) => {
+        const { connectedVaults } = get()
+        set({
+          connectedVaults: connectedVaults.map(v =>
+            v.id === vaultId ? { ...v, isExpanded: !v.isExpanded } : v
+          )
+        })
+      },
+      setActiveVault: (activeVaultId) => set({ activeVaultId }),
+      updateConnectedVault: (vaultId, updates) => {
+        const { connectedVaults } = get()
+        set({
+          connectedVaults: connectedVaults.map(v =>
+            v.id === vaultId ? { ...v, ...updates } : v
+          )
+        })
+      },
       
       // Actions - Files
       setFiles: (files) => set({ files }),
@@ -333,6 +422,23 @@ export const usePDMStore = create<PDMState>()(
       setIsLoading: (isLoading) => set({ isLoading }),
       setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
       setStatusMessage: (statusMessage) => set({ statusMessage }),
+      
+      // Actions - Sync Progress
+      setSyncProgress: (progress) => set(state => ({ 
+        syncProgress: { ...state.syncProgress, ...progress } 
+      })),
+      startSync: (total, operation = 'upload') => set({ 
+        syncProgress: { isActive: true, operation, current: 0, total, percent: 0, speed: '', cancelRequested: false } 
+      }),
+      updateSyncProgress: (current, percent, speed) => set(state => ({ 
+        syncProgress: { ...state.syncProgress, current, percent, speed } 
+      })),
+      requestCancelSync: () => set(state => ({ 
+        syncProgress: { ...state.syncProgress, cancelRequested: true } 
+      })),
+      endSync: () => set({ 
+        syncProgress: { isActive: false, operation: 'upload', current: 0, total: 0, percent: 0, speed: '', cancelRequested: false } 
+      }),
       
       // Getters
       getSelectedFileObjects: () => {
@@ -422,8 +528,9 @@ export const usePDMStore = create<PDMState>()(
         let modified = 0
         let deleted = 0
         let outdated = 0
+        let cloud = 0
         
-        // Count all files (including deleted ghost entries) recursively
+        // Count all files (including cloud-only entries) recursively
         const prefix = folderPath ? folderPath + '/' : ''
         for (const file of files) {
           if (file.isDirectory) continue
@@ -437,17 +544,21 @@ export const usePDMStore = create<PDMState>()(
           else if (file.diffStatus === 'modified') modified++
           else if (file.diffStatus === 'deleted') deleted++
           else if (file.diffStatus === 'outdated') outdated++
+          else if (file.diffStatus === 'cloud') cloud++
         }
         
-        return { added, modified, deleted, outdated }
+        return { added, modified, deleted, outdated, cloud }
       }
     }),
     {
       name: 'blue-pdm-storage',
       partialize: (state) => ({
         vaultPath: state.vaultPath,
+        vaultName: state.vaultName,
         recentVaults: state.recentVaults,
         autoConnect: state.autoConnect,
+        connectedVaults: state.connectedVaults,
+        activeVaultId: state.activeVaultId,
         sidebarVisible: state.sidebarVisible,
         sidebarWidth: state.sidebarWidth,
         activeView: state.activeView,

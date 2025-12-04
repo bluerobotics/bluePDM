@@ -1,5 +1,5 @@
 /**
- * Blue PDM Storage Service
+ * BluePDM Storage Service
  * 
  * Handles file storage using Supabase Storage with content-addressable storage.
  * Each file version is stored by its SHA-256 hash, enabling deduplication.
@@ -106,18 +106,36 @@ export async function downloadFile(
   hash: string
 ): Promise<{ data: Blob | null; error?: string }> {
   try {
-    const storagePath = getStoragePath(orgId, hash)
+    // Try old flat structure first (most existing files use this)
+    const flatPath = `${orgId}/${hash}`
+    console.log('[Storage] Trying flat path:', flatPath)
     
-    const { data, error } = await supabase.storage
+    let { data, error } = await supabase.storage
       .from(BUCKET_NAME)
-      .download(storagePath)
+      .download(flatPath)
     
+    // If not found, try new subdirectory structure
     if (error) {
+      console.log('[Storage] Flat path failed, trying subdirectory:', error.message)
+      const storagePath = getStoragePath(orgId, hash)
+      const result = await supabase.storage
+        .from(BUCKET_NAME)
+        .download(storagePath)
+      
+      if (!result.error && result.data) {
+        console.log('[Storage] Subdirectory path worked')
+        return { data: result.data }
+      }
+      
+      // Both failed
+      console.error('[Storage] Both paths failed')
       return { data: null, error: error.message }
     }
     
+    console.log('[Storage] Flat path worked')
     return { data }
   } catch (err) {
+    console.error('[Storage] Download exception:', err)
     return { data: null, error: String(err) }
   }
 }

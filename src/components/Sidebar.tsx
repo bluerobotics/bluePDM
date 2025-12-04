@@ -3,6 +3,7 @@ import { ExplorerView } from './sidebar/ExplorerView'
 import { CheckoutView } from './sidebar/CheckoutView'
 import { HistoryView } from './sidebar/HistoryView'
 import { SearchView } from './sidebar/SearchView'
+import { SettingsView } from './sidebar/SettingsView'
 
 interface SidebarProps {
   onOpenVault: () => void
@@ -22,6 +23,8 @@ export function Sidebar({ onOpenVault, onOpenRecentVault }: SidebarProps) {
         return <HistoryView />
       case 'search':
         return <SearchView />
+      case 'settings':
+        return <SettingsView />
       default:
         return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} />
     }
@@ -37,6 +40,8 @@ export function Sidebar({ onOpenVault, onOpenRecentVault }: SidebarProps) {
         return 'HISTORY'
       case 'search':
         return 'SEARCH'
+      case 'settings':
+        return 'SETTINGS'
       default:
         return ''
     }

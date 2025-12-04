@@ -339,12 +339,13 @@ export async function syncFile(
 ) {
   try {
     // 1. Upload file content to storage (using content hash as filename for deduplication)
-    const storagePath = `${orgId}/${contentHash}`
+    // Use subdirectory based on first 2 chars of hash to prevent too many files in one folder
+    const storagePath = `${orgId}/${contentHash.substring(0, 2)}/${contentHash}`
     
     // Check if this content already exists (deduplication)
     const { data: existingFile } = await supabase.storage
       .from('vault')
-      .list(orgId, { search: contentHash })
+      .list(`${orgId}/${contentHash.substring(0, 2)}`, { search: contentHash })
     
     if (!existingFile || existingFile.length === 0) {
       // Convert base64 to blob

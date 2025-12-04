@@ -1,6 +1,6 @@
 {
   "name": "blue-pdm",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Product Data Management for engineering teams",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -41,7 +41,7 @@
   },
   "build": {
     "appId": "com.bluerobotics.pdm",
-    "productName": "Blue PDM",
+    "productName": "BluePDM",
     "artifactName": "${productName}-${version}-${os}.${ext}",
     "directories": {
       "output": "release"

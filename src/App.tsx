@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { supabase, getCurrentSession, getUserProfile, isSupabaseConfigured, getFiles, linkUserToOrganization } from './lib/supabase'
+import { supabase, getCurrentSession, getUserProfile, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -17,6 +17,7 @@ function App() {
     isOfflineMode,
     vaultPath,
     isVaultConnected,
+    connectedVaults,
     sidebarVisible,
     setSidebarWidth,
     toggleSidebar,
@@ -32,6 +33,9 @@ function App() {
     setUser,
     setOrganization,
   } = usePDMStore()
+  
+  // Consider vault connected if either legacy or new multi-vault system is connected
+  const hasVaultConnected = isVaultConnected || connectedVaults.length > 0
 
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [isResizingDetails, setIsResizingDetails] = useState(false)
@@ -127,11 +131,14 @@ function App() {
   }, [setUser, setOrganization, setStatusMessage, setVaultConnected])
 
   // Load files from working directory and merge with PDM data
-  const loadFiles = useCallback(async () => {
+  // silent = true means no loading spinner (for background refreshes after downloads/uploads)
+  const loadFiles = useCallback(async (silent: boolean = false) => {
     if (!window.electronAPI || !vaultPath) return
     
-    setIsLoading(true)
-    setStatusMessage('Loading files...')
+    if (!silent) {
+      setIsLoading(true)
+      setStatusMessage('Loading files...')
+    }
     
     try {
       // 1. Load local files
@@ -209,11 +216,42 @@ function App() {
             }
           })
           
-          // Add deleted files (exist on server but not locally) as "ghost" entries
+          // Add cloud-only files (exist on server but not locally) as "cloud" entries
+          // These appear faded/greyed to indicate they're available but not downloaded
+          const cloudFolders = new Set<string>()
+          
           for (const pdmFile of pdmFiles) {
             if (!localPathSet.has(pdmFile.file_path)) {
+              // If file is checked out by current user but doesn't exist locally,
+              // auto-release the checkout (user deleted it externally)
+              if (pdmFile.checked_out_by === user?.id) {
+                console.log('[Auto-release] File deleted externally, releasing checkout:', pdmFile.file_name)
+                checkinFile(pdmFile.id, user.id).then(result => {
+                  if (result.success) {
+                    console.log('[Auto-release] Released checkout for:', pdmFile.file_name)
+                  } else {
+                    console.error('[Auto-release] Failed to release:', result.error)
+                  }
+                })
+                // Clear the checkout info for display (optimistic update)
+                pdmFile.checked_out_by = null
+                pdmFile.checked_out_at = null
+                pdmFile.checked_out_user = null
+              }
+              
+              // Add cloud parent folders for this file
+              const pathParts = pdmFile.file_path.split('/')
+              let currentPath = ''
+              for (let i = 0; i < pathParts.length - 1; i++) {
+                currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
+                if (!localPathSet.has(currentPath) && !cloudFolders.has(currentPath)) {
+                  cloudFolders.add(currentPath)
+                }
+              }
+              
+              // Add the cloud-only file (not synced locally)
               localFiles.push({
-                name: pdmFile.name,
+                name: pdmFile.file_name,
                 path: `${vaultPath}\\${pdmFile.file_path.replace(/\//g, '\\')}`,
                 relativePath: pdmFile.file_path,
                 isDirectory: false,
@@ -221,10 +259,25 @@ function App() {
                 size: pdmFile.file_size || 0,
                 modifiedTime: pdmFile.updated_at || '',
                 pdmData: pdmFile,
-                isSynced: true,
-                diffStatus: 'deleted'
+                isSynced: false, // Not synced locally
+                diffStatus: 'cloud' // Cloud-only, available for download
               })
             }
+          }
+          
+          // Add cloud folders (folders that exist on server but not locally)
+          for (const folderPath of cloudFolders) {
+            const folderName = folderPath.split('/').pop() || folderPath
+            localFiles.push({
+              name: folderName,
+              path: `${vaultPath}\\${folderPath.replace(/\//g, '\\')}`,
+              relativePath: folderPath,
+              isDirectory: true,
+              extension: '',
+              size: 0,
+              modifiedTime: '',
+              diffStatus: 'cloud'
+            })
           }
         }
       } else {
@@ -233,6 +286,46 @@ function App() {
           ...f,
           diffStatus: f.isDirectory ? undefined : 'added' as const
         }))
+      }
+      
+      // Update folder diffStatus based on contents
+      // A folder should be 'cloud' if all its contents are cloud-only
+      // Process folders bottom-up (deepest first) so parent folders see updated child statuses
+      const folders = localFiles.filter(f => f.isDirectory)
+      const fileMap = new Map(localFiles.map(f => [f.relativePath.replace(/\\/g, '/'), f]))
+      
+      // Sort folders by depth (deepest first)
+      folders.sort((a, b) => {
+        const depthA = a.relativePath.split(/[/\\]/).length
+        const depthB = b.relativePath.split(/[/\\]/).length
+        return depthB - depthA
+      })
+      
+      // Check each folder from deepest to shallowest
+      for (const folder of folders) {
+        const normalizedFolder = folder.relativePath.replace(/\\/g, '/')
+        
+        // Get direct children of this folder
+        const hasLocalContent = localFiles.some(f => {
+          if (f.relativePath === folder.relativePath) return false // Skip self
+          const normalizedPath = f.relativePath.replace(/\\/g, '/')
+          
+          // Check if it's a direct child (not nested deeper)
+          if (!normalizedPath.startsWith(normalizedFolder + '/')) return false
+          const remainder = normalizedPath.slice(normalizedFolder.length + 1)
+          if (remainder.includes('/')) return false // It's nested deeper, not direct child
+          
+          // Check if this item is local (not cloud-only)
+          return f.diffStatus !== 'cloud'
+        })
+        
+        if (!hasLocalContent) {
+          // Update this folder to cloud status
+          const folderInList = localFiles.find(f => f.relativePath === folder.relativePath)
+          if (folderInList) {
+            folderInList.diffStatus = 'cloud'
+          }
+        }
       }
       
       setFiles(localFiles)
@@ -252,11 +345,15 @@ function App() {
         }
       }
     } catch (err) {
-      setStatusMessage('Error loading files')
+      if (!silent) {
+        setStatusMessage('Error loading files')
+      }
       console.error(err)
     } finally {
-      setIsLoading(false)
-      setTimeout(() => setStatusMessage(''), 3000)
+      if (!silent) {
+        setIsLoading(false)
+        setTimeout(() => setStatusMessage(''), 3000)
+      }
     }
   }, [vaultPath, organization, isOfflineMode, setFiles, setIsLoading, setStatusMessage])
 
@@ -370,13 +467,30 @@ function App() {
   }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles])
 
   // File change watcher - auto-refresh when files change externally
+  // Completely disabled during sync operations for smooth performance
   useEffect(() => {
     if (!window.electronAPI || !vaultPath) return
     
+    let refreshTimeout: NodeJS.Timeout | null = null
+    
     const cleanup = window.electronAPI.onFilesChanged((changedFiles) => {
-      console.log('[FileWatcher] Files changed:', changedFiles)
-      // Refresh the file list to update hashes and detect modifications
-      loadFiles()
+      // Completely skip ALL updates during sync operations
+      const { syncProgress } = usePDMStore.getState()
+      if (syncProgress.isActive) {
+        return // Silent skip - no logging, no processing
+      }
+      
+      console.log('[FileWatcher] Files changed:', changedFiles.length, 'files')
+      
+      // Debounce - wait for changes to settle
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout)
+      }
+      
+      refreshTimeout = setTimeout(() => {
+        loadFiles(true) // Silent refresh
+        refreshTimeout = null
+      }, 1000) // Wait 1 second after last change
     })
     
     return cleanup
@@ -415,11 +529,11 @@ function App() {
   }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles])
 
   // Determine if we should show the welcome screen
-  const showWelcome = (!user && !isOfflineMode) || !isVaultConnected
+  const showWelcome = (!user && !isOfflineMode) || !hasVaultConnected
 
   return (
     <div className="h-screen flex flex-col bg-pdm-bg overflow-hidden">
-      <MenuBar 
+      <MenuBar
         onOpenVault={handleOpenVault}
         onRefresh={loadFiles}
       />
@@ -453,7 +567,7 @@ function App() {
               {/* File Browser */}
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                 <FileBrowser onRefresh={loadFiles} />
-              </div>
+          </div>
 
               {/* Details Panel */}
               {detailsPanelVisible && (
@@ -462,7 +576,7 @@ function App() {
                     className="h-1 bg-pdm-border hover:bg-pdm-accent cursor-row-resize transition-colors flex-shrink-0"
                     onMouseDown={() => setIsResizingDetails(true)}
                   />
-                  <DetailsPanel />
+          <DetailsPanel />
                 </>
               )}
             </>

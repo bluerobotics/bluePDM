@@ -1,7 +1,15 @@
 import { useState, useEffect } from 'react'
-import { Cloud, Shield, Zap, Clock, Users, FolderPlus, Loader2, HardDrive, RefreshCw, WifiOff, LogIn, Check, Settings } from 'lucide-react'
-import { usePDMStore } from '../stores/pdmStore'
-import { getFiles, signInWithGoogle, isSupabaseConfigured } from '../lib/supabase'
+import { Cloud, Shield, Zap, Clock, Users, FolderPlus, Loader2, HardDrive, RefreshCw, WifiOff, LogIn, Check, Settings, Database, Link, Plus } from 'lucide-react'
+import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
+import { getFiles, signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
+
+interface Vault {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  is_default: boolean
+}
 
 interface WelcomeScreenProps {
   onOpenVault: () => void
@@ -9,19 +17,64 @@ interface WelcomeScreenProps {
 }
 
 export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenProps) {
-  const { recentVaults, user, organization, setStatusMessage, isOfflineMode, setOfflineMode, autoConnect, setAutoConnect } = usePDMStore()
+  const { 
+    recentVaults, 
+    user, 
+    organization, 
+    setStatusMessage, 
+    isOfflineMode, 
+    setOfflineMode, 
+    autoConnect, 
+    setAutoConnect,
+    connectedVaults,
+    addConnectedVault,
+    addToast
+  } = usePDMStore()
+  
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [cloudFileCount, setCloudFileCount] = useState(0)
   const [loadingCloud, setLoadingCloud] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [orgVaults, setOrgVaults] = useState<Vault[]>([])
+  const [isLoadingVaults, setIsLoadingVaults] = useState(false)
+  const [connectingVaultId, setConnectingVaultId] = useState<string | null>(null)
 
-  // Auto-connect on mount if enabled and we have a recent vault
+  // Auto-connect on mount if enabled and we have connected vaults
   useEffect(() => {
-    if (autoConnect && recentVaults.length > 0 && (user || isOfflineMode)) {
-      handleConnect()
+    if (autoConnect && connectedVaults.length > 0 && (user || isOfflineMode)) {
+      // Auto-connect to first connected vault
+      const vault = connectedVaults[0]
+      onOpenRecentVault(vault.localPath)
     }
-  }, [user, isOfflineMode])
+  }, [user, isOfflineMode, connectedVaults.length])
+
+  // Load organization vaults
+  useEffect(() => {
+    const loadOrgVaults = async () => {
+      if (!organization?.id) return
+      
+      setIsLoadingVaults(true)
+      try {
+        const { data, error } = await supabase
+          .from('vaults')
+          .select('id, name, slug, description, is_default')
+          .eq('org_id', organization.id)
+          .order('is_default', { ascending: false })
+          .order('name')
+        
+        if (!error && data) {
+          setOrgVaults(data)
+        }
+      } catch (err) {
+        console.error('Error loading vaults:', err)
+      } finally {
+        setIsLoadingVaults(false)
+      }
+    }
+    
+    loadOrgVaults()
+  }, [organization?.id])
 
   // Load cloud vault file count when user/org is available
   useEffect(() => {
@@ -69,7 +122,41 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     setOfflineMode(true)
   }
 
-  const handleConnect = async () => {
+  const handleConnectVault = async (vault: Vault) => {
+    if (!window.electronAPI) return
+    
+    setConnectingVaultId(vault.id)
+    
+    try {
+      // Create vault folder in C:\ (use slug directly as folder name)
+      const vaultPath = `C:\\${vault.slug}`
+      const result = await window.electronAPI.createWorkingDir(vaultPath)
+      
+      if (result.success && result.path) {
+        // Add to connected vaults
+        const connectedVault: ConnectedVault = {
+          id: vault.id,
+          name: vault.name,
+          localPath: result.path,
+          isExpanded: true
+        }
+        addConnectedVault(connectedVault)
+        
+        // Open the vault
+        onOpenRecentVault(result.path)
+        addToast('success', `Connected to "${vault.name}"`)
+      } else {
+        addToast('error', result.error || 'Failed to create vault folder')
+      }
+    } catch (err) {
+      console.error('Error connecting to vault:', err)
+      addToast('error', 'Failed to connect to vault')
+    } finally {
+      setConnectingVaultId(null)
+    }
+  }
+
+  const handleConnectLegacy = async () => {
     if (!window.electronAPI) return
     
     setIsConnecting(true)
@@ -78,17 +165,13 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
       let vaultPath: string
       
       if (recentVaults.length > 0) {
-        // Use most recent vault
         vaultPath = recentVaults[0]
       } else if (organization) {
-        // Create new vault with org slug
-        vaultPath = `C:\\${organization.slug}-vault`
+        vaultPath = `C:\\${organization.slug}`
       } else {
-        // Offline mode - generic name
         vaultPath = `C:\\pdm-vault`
       }
       
-      // Create folder if it doesn't exist, then connect
       const result = await window.electronAPI.createWorkingDir(vaultPath)
       if (result.success && result.path) {
         setStatusMessage(`Connected to vault: ${result.path}`)
@@ -102,6 +185,10 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     } finally {
       setIsConnecting(false)
     }
+  }
+
+  const isVaultConnected = (vaultId: string) => {
+    return connectedVaults.some(v => v.id === vaultId)
   }
 
   // ============================================
@@ -140,7 +227,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                 </svg>
               </div>
             </div>
-            <h1 className="text-3xl font-bold text-pdm-fg mb-2">Blue PDM</h1>
+            <h1 className="text-3xl font-bold text-pdm-fg mb-2">BluePDM</h1>
             <p className="text-pdm-fg-dim">
               Product Data Management for engineering teams
             </p>
@@ -199,18 +286,6 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   // ============================================
   // VAULT CONNECTION SCREEN (shown when authenticated or offline)
   // ============================================
-  const vaultName = recentVaults.length > 0 
-    ? recentVaults[0].split(/[/\\]/).pop() 
-    : organization 
-      ? `${organization.slug}-vault`
-      : 'pdm-vault'
-  
-  const vaultPath = recentVaults.length > 0 
-    ? recentVaults[0]
-    : organization 
-      ? `C:\\${organization.slug}-vault`
-      : 'C:\\pdm-vault'
-
   const features = [
     { icon: <RefreshCw size={18} />, title: 'Folder Sync', description: 'Folders sync instantly' },
     { icon: <Shield size={18} />, title: 'Check In/Out', description: 'Lock files while editing' },
@@ -283,25 +358,86 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           )}
         </div>
 
-        {/* Vault Card */}
-        <div className="bg-pdm-bg-light border border-pdm-border rounded-xl p-6 mb-6">
-          <div className="flex items-center gap-4 mb-4">
-            <div className="w-12 h-12 rounded-xl bg-pdm-accent/20 flex items-center justify-center flex-shrink-0">
-              <HardDrive size={24} className="text-pdm-accent" />
+        {/* Organization Vaults */}
+        {!isOfflineMode && organization && orgVaults.length > 0 && (
+          <div className="mb-6">
+            <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3 flex items-center gap-2">
+              <Database size={14} />
+              Organization Vaults
             </div>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-lg font-semibold text-pdm-fg truncate">
-                {vaultName}
-              </h2>
-              <p className="text-xs text-pdm-fg-muted truncate">
-                {vaultPath}
-              </p>
+            
+            <div className="space-y-2">
+              {orgVaults.map(vault => {
+                const connected = isVaultConnected(vault.id)
+                const isConnectingThis = connectingVaultId === vault.id
+                
+                return (
+                  <div 
+                    key={vault.id}
+                    className={`bg-pdm-bg-light border rounded-xl p-4 transition-colors ${
+                      connected ? 'border-pdm-accent' : 'border-pdm-border hover:border-pdm-border-light'
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                        connected ? 'bg-pdm-accent/20' : 'bg-pdm-bg'
+                      }`}>
+                        <HardDrive size={20} className={connected ? 'text-pdm-accent' : 'text-pdm-fg-muted'} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-medium text-pdm-fg truncate">
+                            {vault.name}
+                          </h3>
+                          {vault.is_default && (
+                            <span className="px-1.5 py-0.5 bg-pdm-accent/20 text-pdm-accent text-[10px] rounded">
+                              Default
+                            </span>
+                          )}
+                          {connected && (
+                            <Check size={14} className="text-pdm-success" />
+                          )}
+                        </div>
+                        {vault.description && (
+                          <p className="text-xs text-pdm-fg-muted truncate">
+                            {vault.description}
+                          </p>
+                        )}
+                      </div>
+                      
+                      {connected ? (
+                        <button
+                          onClick={() => {
+                            const cv = connectedVaults.find(v => v.id === vault.id)
+                            if (cv) onOpenRecentVault(cv.localPath)
+                          }}
+                          className="btn btn-primary btn-sm gap-1"
+                        >
+                          <FolderPlus size={14} />
+                          Open
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleConnectVault(vault)}
+                          disabled={isConnectingThis}
+                          className="btn btn-secondary btn-sm gap-1"
+                        >
+                          {isConnectingThis ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Link size={14} />
+                          )}
+                          Connect
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-          </div>
-
-          {/* Cloud status */}
-          {!isOfflineMode && organization && (
-            <div className="flex items-center gap-2 text-xs text-pdm-fg-dim mb-4 px-1">
+            
+            {/* Cloud status */}
+            <div className="flex items-center gap-2 text-xs text-pdm-fg-dim mt-3 px-1">
               <Cloud size={14} className="text-pdm-accent" />
               {loadingCloud ? (
                 <span>Loading...</span>
@@ -309,28 +445,69 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                 <span>
                   {cloudFileCount > 0 
                     ? `${cloudFileCount} file${cloudFileCount !== 1 ? 's' : ''} in cloud`
-                    : 'Empty vault'}
+                    : 'No files synced yet'}
                 </span>
               )}
             </div>
-          )}
+          </div>
+        )}
+        
+        {/* No vaults message */}
+        {!isOfflineMode && organization && orgVaults.length === 0 && !isLoadingVaults && (
+          <div className="mb-6 p-6 bg-pdm-bg-light border border-pdm-border rounded-xl text-center">
+            <Database size={32} className="text-pdm-fg-muted mx-auto mb-3" />
+            <h3 className="font-medium text-pdm-fg mb-1">No Vaults Created</h3>
+            <p className="text-sm text-pdm-fg-muted mb-4">
+              Create a vault in Settings → Organization to get started.
+            </p>
+            <p className="text-xs text-pdm-fg-dim">
+              Or use the advanced options below to connect manually.
+            </p>
+          </div>
+        )}
+        
+        {/* Loading vaults */}
+        {isLoadingVaults && (
+          <div className="mb-6 p-6 bg-pdm-bg-light border border-pdm-border rounded-xl flex items-center justify-center">
+            <Loader2 size={24} className="animate-spin text-pdm-fg-muted" />
+          </div>
+        )}
 
-          {/* Connect Button */}
-          <button
-            onClick={handleConnect}
-            disabled={isConnecting}
-            className="w-full btn btn-primary btn-lg gap-2 justify-center"
-          >
-            {isConnecting ? (
-              <Loader2 size={20} className="animate-spin" />
-            ) : (
-              <FolderPlus size={20} />
-            )}
-            Connect
-          </button>
+        {/* Offline mode - legacy vault connection */}
+        {isOfflineMode && (
+          <div className="bg-pdm-bg-light border border-pdm-border rounded-xl p-6 mb-6">
+            <div className="flex items-center gap-4 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-pdm-warning/20 flex items-center justify-center flex-shrink-0">
+                <HardDrive size={24} className="text-pdm-warning" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold text-pdm-fg truncate">
+                  Local Vault
+                </h2>
+                <p className="text-xs text-pdm-fg-muted truncate">
+                  {recentVaults[0] || 'C:\\pdm-vault'}
+                </p>
+              </div>
+            </div>
 
-          {/* Auto-connect toggle */}
-          <label className="flex items-center gap-2 mt-4 cursor-pointer justify-center">
+            <button
+              onClick={handleConnectLegacy}
+              disabled={isConnecting}
+              className="w-full btn btn-primary btn-lg gap-2 justify-center"
+            >
+              {isConnecting ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : (
+                <FolderPlus size={20} />
+              )}
+              Connect
+            </button>
+          </div>
+        )}
+
+        {/* Auto-connect toggle */}
+        {(connectedVaults.length > 0 || recentVaults.length > 0) && (
+          <label className="flex items-center gap-2 cursor-pointer justify-center mb-6">
             <div 
               onClick={() => setAutoConnect(!autoConnect)}
               className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
@@ -345,7 +522,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
               Auto-connect on startup
             </span>
           </label>
-        </div>
+        )}
 
         {/* Advanced Options */}
         <div className="mb-6">
@@ -354,7 +531,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
             className="flex items-center gap-2 text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors mx-auto"
           >
             <Settings size={14} />
-            {showAdvanced ? 'Hide options' : 'More options'}
+            {showAdvanced ? 'Hide options' : 'Advanced options'}
           </button>
           
           {showAdvanced && (
@@ -366,10 +543,10 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                 Choose Different Location...
               </button>
               
-              {recentVaults.length > 1 && (
+              {recentVaults.length > 0 && (
                 <div className="pt-2">
-                  <div className="text-xs text-pdm-fg-muted mb-2">Other recent vaults:</div>
-                  {recentVaults.slice(1, 4).map(vault => (
+                  <div className="text-xs text-pdm-fg-muted mb-2">Recent vault paths:</div>
+                  {recentVaults.slice(0, 3).map(vault => (
                     <button
                       key={vault}
                       onClick={() => onOpenRecentVault(vault)}

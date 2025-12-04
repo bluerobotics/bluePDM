@@ -208,7 +208,12 @@ export function DetailsPanel() {
                   <PropertyItem 
                     icon={<Clock size={14} />}
                     label="Modified"
-                    value={format(new Date(file.modifiedTime), 'MMM d, yyyy HH:mm')}
+                    value={file.modifiedTime ? (() => {
+                      try {
+                        const date = new Date(file.modifiedTime)
+                        return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
+                      } catch { return '-' }
+                    })() : '-'}
                   />
                   <PropertyItem 
                     icon={<Info size={14} />}
@@ -330,7 +335,7 @@ export function DetailsPanel() {
                             </div>
                             <div className="flex items-center gap-1">
                               <Clock size={12} />
-                              <span title={format(new Date(version.created_at), 'MMM d, yyyy HH:mm:ss')}>
+                              <span title={version.created_at ? format(new Date(version.created_at), 'MMM d, yyyy HH:mm:ss') : '-'}>
                                 {formatDistanceToNow(new Date(version.created_at), { addSuffix: true })}
                               </span>
                             </div>

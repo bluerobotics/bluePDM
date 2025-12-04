@@ -192,15 +192,34 @@ input::placeholder {
   cursor: pointer;
 }
 
-.file-table tr:hover {
+.file-table tr:hover:not(.selected) {
   background: var(--pdm-highlight);
 }
 
-.file-table tr.selected {
+/* Disable row hover during box selection */
+.file-table.selecting tr:hover {
+  background: transparent;
+}
+
+.file-table.selecting tr.selected {
   background: var(--pdm-selection);
 }
 
-.file-table tr.selected:hover {
+.file-table tr.selected,
+.file-table tr.selected.diff-cloud,
+.file-table tr.selected.diff-added,
+.file-table tr.selected.diff-modified,
+.file-table tr.selected.diff-deleted,
+.file-table tr.selected.diff-outdated {
+  background: var(--pdm-selection);
+}
+
+.file-table tr.selected:hover,
+.file-table tr.selected.diff-cloud:hover,
+.file-table tr.selected.diff-added:hover,
+.file-table tr.selected.diff-modified:hover,
+.file-table tr.selected.diff-deleted:hover,
+.file-table tr.selected.diff-outdated:hover {
   background: var(--pdm-selection);
 }
 
@@ -490,6 +509,26 @@ input::placeholder {
   background: rgba(168, 85, 247, 0.25) !important;
 }
 
+/* Cloud-only files (on server but not downloaded locally) */
+.diff-cloud {
+  opacity: 0.5;
+}
+
+.diff-cloud:hover:not(.selected) {
+  opacity: 0.7;
+  background: rgba(100, 150, 200, 0.1);
+}
+
+/* Selected rows should keep selection background regardless of diff status */
+tr.selected.diff-cloud {
+  opacity: 1;
+}
+
+.diff-cloud td {
+  color: var(--pdm-fg-muted);
+  font-style: italic;
+}
+
 /* Sidebar diff highlighting */
 .sidebar-diff-added {
   background: rgba(74, 222, 128, 0.1);
@@ -506,6 +545,15 @@ input::placeholder {
 
 .sidebar-diff-deleted span {
   text-decoration: line-through;
+}
+
+.sidebar-diff-cloud {
+  opacity: 0.5;
+}
+
+.sidebar-diff-cloud span {
+  font-style: italic;
+  color: var(--pdm-fg-muted);
 }
 
 .sidebar-diff-outdated {

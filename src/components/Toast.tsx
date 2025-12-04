@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { X, AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react'
-import { usePDMStore, ToastMessage, ToastType } from '../stores/pdmStore'
+import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check } from 'lucide-react'
+import { usePDMStore, ToastMessage } from '../stores/pdmStore'
 
 export function Toast() {
   const { toasts, removeToast } = usePDMStore()
@@ -16,6 +16,7 @@ export function Toast() {
 
 function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => void }) {
   const [isExiting, setIsExiting] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (toast.duration !== 0) {
@@ -30,6 +31,16 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
   const handleClose = () => {
     setIsExiting(true)
     setTimeout(onClose, 200)
+  }
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(toast.message)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error('Failed to copy:', err)
+    }
   }
 
   const icons = {
@@ -65,12 +76,24 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
         {icons[toast.type]}
       </span>
       <p className="flex-1 text-sm leading-relaxed">{toast.message}</p>
-      <button
-        onClick={handleClose}
-        className="flex-shrink-0 opacity-60 hover:opacity-100 transition-opacity"
-      >
-        <X size={14} />
-      </button>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {/* Copy button - show for errors and warnings */}
+        {(toast.type === 'error' || toast.type === 'warning') && (
+          <button
+            onClick={handleCopy}
+            className="opacity-60 hover:opacity-100 transition-opacity p-0.5"
+            title={copied ? 'Copied!' : 'Copy error'}
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        )}
+        <button
+          onClick={handleClose}
+          className="opacity-60 hover:opacity-100 transition-opacity"
+        >
+          <X size={14} />
+        </button>
+      </div>
     </div>
   )
 }

@@ -58,14 +58,8 @@ export function ActivityBar() {
         />
       </div>
       
-      <div className="flex flex-col mb-2">
-        <button
-          className="w-12 h-12 flex items-center justify-center text-pdm-fg-muted hover:text-pdm-fg-dim transition-colors"
-          title="Settings"
-        >
-          <Settings size={22} />
-        </button>
-      </div>
+      {/* Settings moved to top bar */}
+      <div className="flex-1" />
     </div>
   )
 }
