@@ -5,7 +5,7 @@ import type { PDMFile, FileState, Organization, User } from '../types/pdm'
 export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
-export type ToastType = 'error' | 'success' | 'info' | 'warning'
+export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud'
 
 // Connected vault - an org vault that's connected locally
@@ -21,6 +21,14 @@ export interface ToastMessage {
   type: ToastType
   message: string
   duration?: number
+  // Progress toast fields
+  progress?: {
+    current: number
+    total: number
+    percent: number
+    speed?: string
+    cancelRequested?: boolean
+  }
 }
 
 // Local file info from filesystem
@@ -49,6 +57,15 @@ export interface ServerFile {
   name: string
   extension: string
   content_hash: string
+}
+
+// Queued operation for non-blocking file operations
+export interface QueuedOperation {
+  id: string
+  type: 'download' | 'delete' | 'upload' | 'checkin' | 'checkout'
+  label: string  // Human-readable description
+  paths: string[]  // Folder/file paths being operated on
+  execute: () => Promise<void>
 }
 
 // Column configuration for file browser
@@ -118,6 +135,7 @@ interface PDMState {
   isLoading: boolean
   isRefreshing: boolean
   statusMessage: string
+  filesLoaded: boolean  // Has the initial file load completed?
   
   // Sync progress
   syncProgress: {
@@ -147,8 +165,21 @@ interface PDMState {
   pinnedFolders: { path: string; vaultId: string; vaultName: string; isDirectory: boolean }[]
   pinnedSectionExpanded: boolean
   
+  // Processing folders (for spinner display)
+  processingFolders: Set<string>
+  
+  // Operation queue for non-blocking file operations
+  operationQueue: QueuedOperation[]
+  
+  // History filter (for folder-specific history view)
+  historyFolderFilter: string | null
+  
   // Actions - Toasts
   addToast: (type: ToastType, message: string, duration?: number) => void
+  addProgressToast: (id: string, message: string, total: number) => void
+  updateProgressToast: (id: string, current: number, percent: number, speed?: string) => void
+  requestCancelProgressToast: (id: string) => void
+  isProgressToastCancelled: (id: string) => boolean
   removeToast: (id: string) => void
   
   // Actions - Auth
@@ -188,6 +219,7 @@ interface PDMState {
   // Actions - Files
   setFiles: (files: LocalFile[]) => void
   setServerFiles: (files: ServerFile[]) => void
+  updateFileInStore: (path: string, updates: Partial<LocalFile>) => void
   renameFileInStore: (oldPath: string, newPath: string, newName: string) => void
   setSelectedFiles: (paths: string[]) => void
   toggleFileSelection: (path: string, multiSelect?: boolean) => void
@@ -225,6 +257,9 @@ interface PDMState {
   moveTabToRight: (tab: DetailsPanelTab) => void
   moveTabToBottom: (tab: DetailsPanelTab) => void
   
+  // Actions - History
+  setHistoryFolderFilter: (folderPath: string | null) => void
+  
   // Actions - Columns
   setColumnWidth: (id: string, width: number) => void
   toggleColumnVisibility: (id: string) => void
@@ -234,6 +269,7 @@ interface PDMState {
   setIsLoading: (loading: boolean) => void
   setIsRefreshing: (refreshing: boolean) => void
   setStatusMessage: (message: string) => void
+  setFilesLoaded: (loaded: boolean) => void
   
   // Actions - Sync Progress
   setSyncProgress: (progress: Partial<PDMState['syncProgress']>) => void
@@ -241,6 +277,17 @@ interface PDMState {
   updateSyncProgress: (current: number, percent: number, speed: string) => void
   requestCancelSync: () => void
   endSync: () => void
+  
+  // Actions - Processing Folders
+  addProcessingFolder: (path: string) => void
+  removeProcessingFolder: (path: string) => void
+  clearProcessingFolders: () => void
+  
+  // Actions - Operation Queue
+  queueOperation: (operation: Omit<QueuedOperation, 'id'>) => string  // Returns operation ID
+  removeFromQueue: (id: string) => void
+  hasPathConflict: (paths: string[]) => boolean
+  processQueue: () => void
   
   // Getters
   getSelectedFileObjects: () => LocalFile[]
@@ -314,6 +361,7 @@ export const usePDMStore = create<PDMState>()(
       isLoading: false,
       isRefreshing: false,
       statusMessage: '',
+      filesLoaded: false,
       
       syncProgress: {
         isActive: false,
@@ -333,11 +381,47 @@ export const usePDMStore = create<PDMState>()(
       lowercaseExtensions: true,
       pinnedFolders: [],
       pinnedSectionExpanded: true,
+      processingFolders: new Set(),
+      operationQueue: [],
+      historyFolderFilter: null,
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
         const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
         set(state => ({ toasts: [...state.toasts, { id, type, message, duration }] }))
+      },
+      addProgressToast: (id, message, total) => {
+        set(state => ({ 
+          toasts: [...state.toasts, { 
+            id, 
+            type: 'progress', 
+            message, 
+            duration: 0, // Don't auto-dismiss progress toasts
+            progress: { current: 0, total, percent: 0 }
+          }] 
+        }))
+      },
+      updateProgressToast: (id, current, percent, speed) => {
+        set(state => ({
+          toasts: state.toasts.map(t => 
+            t.id === id && t.type === 'progress'
+              ? { ...t, progress: { ...t.progress!, current, percent, speed } }
+              : t
+          )
+        }))
+      },
+      requestCancelProgressToast: (id) => {
+        set(state => ({
+          toasts: state.toasts.map(t => 
+            t.id === id && t.type === 'progress' && t.progress
+              ? { ...t, progress: { ...t.progress, cancelRequested: true } }
+              : t
+          )
+        }))
+      },
+      isProgressToastCancelled: (id) => {
+        const toast = get().toasts.find(t => t.id === id)
+        return toast?.progress?.cancelRequested || false
       },
       removeToast: (id) => {
         set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }))
@@ -429,8 +513,15 @@ export const usePDMStore = create<PDMState>()(
       // Actions - Files
       setFiles: (files) => set({ files }),
       setServerFiles: (serverFiles) => set({ serverFiles }),
+      updateFileInStore: (path, updates) => {
+        set(state => ({
+          files: state.files.map(f => 
+            f.path === path ? { ...f, ...updates } : f
+          )
+        }))
+      },
       renameFileInStore: (oldPath, newPath, newName) => {
-        const { files, selectedFiles, expandedFolders } = get()
+        const { files, selectedFiles } = get()
         
         // Update file in the files array
         const updatedFiles = files.map(f => {
@@ -547,6 +638,9 @@ export const usePDMStore = create<PDMState>()(
         })
       },
       
+      // Actions - History
+      setHistoryFolderFilter: (folderPath) => set({ historyFolderFilter: folderPath }),
+      
       // Actions - Columns
       setColumnWidth: (id, width) => {
         const { columns } = get()
@@ -566,6 +660,7 @@ export const usePDMStore = create<PDMState>()(
       setIsLoading: (isLoading) => set({ isLoading }),
       setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
       setStatusMessage: (statusMessage) => set({ statusMessage }),
+      setFilesLoaded: (filesLoaded) => set({ filesLoaded }),
       
       // Actions - Sync Progress
       setSyncProgress: (progress) => set(state => ({ 
@@ -580,9 +675,99 @@ export const usePDMStore = create<PDMState>()(
       requestCancelSync: () => set(state => ({ 
         syncProgress: { ...state.syncProgress, cancelRequested: true } 
       })),
-      endSync: () => set({ 
-        syncProgress: { isActive: false, operation: 'upload', current: 0, total: 0, percent: 0, speed: '', cancelRequested: false } 
+      endSync: () => {
+        set({ 
+          syncProgress: { isActive: false, operation: 'upload', current: 0, total: 0, percent: 0, speed: '', cancelRequested: false } 
+        })
+        // Process the queue after ending sync so the next operation can start
+        setTimeout(() => get().processQueue(), 100)
+      },
+      
+      // Actions - Processing Folders
+      addProcessingFolder: (path) => set(state => {
+        const newSet = new Set(state.processingFolders)
+        newSet.add(path)
+        return { processingFolders: newSet }
       }),
+      removeProcessingFolder: (path) => {
+        set(state => {
+          const newSet = new Set(state.processingFolders)
+          newSet.delete(path)
+          return { processingFolders: newSet }
+        })
+        // Try to process queued operations after a folder is done
+        setTimeout(() => get().processQueue(), 100)
+      },
+      clearProcessingFolders: () => set({ processingFolders: new Set() }),
+      
+      // Actions - Operation Queue
+      queueOperation: (operation) => {
+        const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        const fullOperation: QueuedOperation = { ...operation, id }
+        
+        set(state => ({
+          operationQueue: [...state.operationQueue, fullOperation]
+        }))
+        
+        // Try to process the queue immediately
+        setTimeout(() => get().processQueue(), 0)
+        
+        return id
+      },
+      
+      removeFromQueue: (id) => set(state => ({
+        operationQueue: state.operationQueue.filter(op => op.id !== id)
+      })),
+      
+      hasPathConflict: (paths) => {
+        const { processingFolders } = get()
+        
+        // Check if any of the requested paths overlap with currently processing paths
+        for (const path of paths) {
+          for (const processingPath of processingFolders) {
+            // Check if paths overlap (one contains the other or they're the same)
+            if (path === processingPath || 
+                path.startsWith(processingPath + '/') || 
+                path.startsWith(processingPath + '\\') ||
+                processingPath.startsWith(path + '/') || 
+                processingPath.startsWith(path + '\\')) {
+              return true
+            }
+          }
+        }
+        return false
+      },
+      
+      processQueue: async () => {
+        const { operationQueue, hasPathConflict, removeFromQueue, addToast, syncProgress } = get()
+        
+        if (operationQueue.length === 0) return
+        
+        // Don't start a new operation if one is already running
+        // This ensures the progress bar only shows one operation at a time
+        if (syncProgress.isActive) return
+        
+        // Find the first operation that doesn't have a path conflict
+        for (const operation of operationQueue) {
+          if (!hasPathConflict(operation.paths)) {
+            // Remove from queue before executing
+            removeFromQueue(operation.id)
+            
+            try {
+              await operation.execute()
+            } catch (err) {
+              console.error('Queue operation failed:', err)
+              addToast('error', `Operation failed: ${operation.label}`)
+            }
+            
+            // After completing, try to process more from the queue
+            setTimeout(() => get().processQueue(), 100)
+            return
+          }
+        }
+        
+        // All operations have conflicts, will try again when a processing folder is removed
+      },
       
       // Getters
       getSelectedFileObjects: () => {
@@ -597,7 +782,6 @@ export const usePDMStore = create<PDMState>()(
           // Check if parent folder is expanded
           const parts = file.relativePath.split('/')
           if (parts.length > 1) {
-            const parentPath = parts.slice(0, -1).join('/')
             // Check all ancestor folders
             for (let i = 1; i <= parts.length - 1; i++) {
               const ancestorPath = parts.slice(0, i).join('/')
@@ -615,7 +799,7 @@ export const usePDMStore = create<PDMState>()(
           visible = visible.filter(f => 
             f.name.toLowerCase().includes(query) ||
             f.relativePath.toLowerCase().includes(query) ||
-            f.pdmData?.partNumber?.toLowerCase().includes(query) ||
+            f.pdmData?.part_number?.toLowerCase().includes(query) ||
             f.pdmData?.description?.toLowerCase().includes(query)
           )
         }

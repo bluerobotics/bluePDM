@@ -223,6 +223,21 @@ input::placeholder {
   background: var(--pdm-selection);
 }
 
+/* Processing state (downloading/deleting) - brighten the dimmed text */
+.file-table tr.processing {
+  color: var(--pdm-fg);
+  opacity: 0.85;
+}
+
+.file-table tr.processing.diff-cloud {
+  opacity: 0.85;
+}
+
+.file-table tr.processing td {
+  color: var(--pdm-fg-dim);
+  font-style: normal;
+}
+
 .file-table tr.selected:hover,
 .file-table tr.selected.diff-cloud:hover,
 .file-table tr.selected.diff-added:hover,
@@ -307,6 +322,7 @@ input::placeholder {
   cursor: pointer;
   border-radius: 4px;
   transition: background-color 0.1s ease;
+  user-select: none;
 }
 
 .tree-item:hover {
@@ -326,6 +342,20 @@ input::placeholder {
   background: rgba(59, 130, 246, 0.15);
 }
 
+.tree-item.processing {
+  color: var(--pdm-fg-dim);
+  opacity: 0.85;
+}
+
+.tree-item.processing.sidebar-diff-cloud {
+  opacity: 0.85;
+}
+
+.tree-item.processing span {
+  color: var(--pdm-fg-dim);
+  font-style: normal;
+}
+
 .tree-item-indent {
   width: 16px;
   flex-shrink: 0;
@@ -336,6 +366,24 @@ input::placeholder {
   height: 18px;
   margin-right: 6px;
   flex-shrink: 0;
+}
+
+/* Inline action buttons */
+.inline-actions {
+  opacity: 0.3;
+  transition: opacity 150ms ease-in-out;
+}
+
+.group:hover .inline-actions,
+.group\/name:hover .inline-actions {
+  opacity: 1;
+}
+
+.inline-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 150ms ease-in-out;
 }
 
 /* Panel styling */

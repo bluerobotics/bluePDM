@@ -45,6 +45,9 @@ export function RightPanel() {
   // PDF preview state
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null)
   const [pdfLoading, setPdfLoading] = useState(false)
+  
+  // eDrawings state
+  const [eDrawingsStatus, setEDrawingsStatus] = useState<{ checked: boolean; installed: boolean; path: string | null }>({ checked: false, installed: false, path: null })
 
   // Check if eDrawings is installed
   useEffect(() => {

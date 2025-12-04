@@ -12,8 +12,11 @@ import {
   CloudOff,
   Edit,
   FolderPlus,
-  Star
+  Star,
+  History,
+  Info
 } from 'lucide-react'
+import { useState } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { checkoutFile, checkinFile, syncFile } from '../lib/supabase'
 import { downloadFile } from '../lib/storage'
@@ -50,7 +53,11 @@ export function FileContextMenu({
   onNewFolder,
   onDelete
 }: FileContextMenuProps) {
-  const { user, organization, vaultPath, activeVaultId, addToast, startSync, updateSyncProgress, endSync, pinnedFolders, pinFolder, unpinFolder, connectedVaults } = usePDMStore()
+  const { user, organization, vaultPath, activeVaultId, addToast, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addProcessingFolder, removeProcessingFolder, queueOperation, hasPathConflict, updateFileInStore, startSync, updateSyncProgress, endSync } = usePDMStore()
+  
+  const [showProperties, setShowProperties] = useState(false)
+  const [folderSize, setFolderSize] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
+  const [isCalculatingSize, setIsCalculatingSize] = useState(false)
   
   if (contextFiles.length === 0) return null
   
@@ -191,7 +198,8 @@ export function FileContextMenu({
   // Handlers
   const handleOpen = () => {
     if (firstFile.isDirectory) {
-      // Could navigate to folder
+      // Open folder in Windows Explorer
+      window.electronAPI?.showInExplorer(firstFile.path)
     } else {
       window.electronAPI?.openFile(firstFile.path)
     }
@@ -221,6 +229,18 @@ export function FileContextMenu({
         const result = await checkoutFile(file.pdmData!.id, user.id)
         if (result.success) {
           await window.electronAPI?.setReadonly(file.path, false)
+          // Update file in store directly instead of full refresh
+          updateFileInStore(file.path, {
+            pdmData: { 
+              ...file.pdmData!, 
+              checked_out_by: user.id,
+              checked_out_user: { 
+                full_name: user.full_name, 
+                email: user.email, 
+                avatar_url: user.avatar_url 
+              }
+            }
+          })
           succeeded++
         } else {
           failed++
@@ -235,7 +255,6 @@ export function FileContextMenu({
     } else {
       addToast('success', `Checked out ${succeeded} file${succeeded > 1 ? 's' : ''}`)
     }
-    onRefresh(true)
   }
   
   const handleCheckin = async () => {
@@ -261,6 +280,12 @@ export function FileContextMenu({
           })
           if (result.success) {
             await window.electronAPI?.setReadonly(file.path, true)
+            // Update file in store directly instead of full refresh
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+              localHash: readResult.hash,
+              diffStatus: undefined  // Now in sync
+            })
             succeeded++
           } else {
             failed++
@@ -269,6 +294,10 @@ export function FileContextMenu({
           const result = await checkinFile(file.pdmData!.id, user.id)
           if (result.success) {
             await window.electronAPI?.setReadonly(file.path, true)
+            // Update file in store directly
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null }
+            })
             succeeded++
           } else {
             failed++
@@ -284,7 +313,6 @@ export function FileContextMenu({
     } else {
       addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
     }
-    onRefresh(true)
   }
   
   const handleFirstCheckin = async () => {
@@ -346,32 +374,67 @@ export function FileContextMenu({
     if (!organization || !vaultPath) return
     onClose()
     
-    // Get cloud-only files
-    const cloudFiles: LocalFile[] = []
-    for (const item of contextFiles) {
-      if (item.isDirectory) {
-        const folderPrefix = item.relativePath + '/'
-        const filesInFolder = files.filter(f => 
-          !f.isDirectory && 
-          f.diffStatus === 'cloud' &&
-          f.relativePath.startsWith(folderPrefix)
-        )
-        cloudFiles.push(...filesInFolder)
-      } else if (item.diffStatus === 'cloud' && item.pdmData) {
-        cloudFiles.push(item)
+    // Get folder paths being operated on
+    const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
+    const operationPaths = foldersBeingProcessed.length > 0 ? foldersBeingProcessed : contextFiles.map(f => f.relativePath)
+    
+    // Define the download operation
+    const executeDownload = async () => {
+      // Get cloud-only files and track which folders actually have files to download
+      const cloudFiles: LocalFile[] = []
+      const foldersWithCloudFiles: string[] = []
+      
+      for (const item of contextFiles) {
+        if (item.isDirectory) {
+          const folderPrefix = item.relativePath + '/'
+          const filesInFolder = files.filter(f => 
+            !f.isDirectory && 
+            f.diffStatus === 'cloud' &&
+            f.relativePath.startsWith(folderPrefix)
+          )
+          if (filesInFolder.length > 0) {
+            cloudFiles.push(...filesInFolder)
+            foldersWithCloudFiles.push(item.relativePath)
+          }
+        } else if (item.diffStatus === 'cloud' && item.pdmData) {
+          cloudFiles.push(item)
+        }
       }
-    }
-    
-    if (cloudFiles.length === 0) {
-      addToast('info', 'No cloud files to download')
-      return
-    }
-    
-    startSync(cloudFiles.length, 'download')
+      
+      if (cloudFiles.length === 0) {
+        addToast('info', 'No cloud files to download')
+        return
+      }
+      
+      // Only track folders that actually have files to download
+      foldersWithCloudFiles.forEach(p => addProcessingFolder(p))
+      
+      // Create a unique toast ID for this download operation
+      const toastId = `download-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      const folderName = foldersWithCloudFiles.length > 0 
+        ? foldersWithCloudFiles[0].split('/').pop() 
+        : 'files'
+      addProgressToast(toastId, `Downloading ${folderName}...`, cloudFiles.length)
+      
     let succeeded = 0
     let failed = 0
+    let downloadedBytes = 0
+    let wasCancelled = false
+    const startTime = Date.now()
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
     
     for (let i = 0; i < cloudFiles.length; i++) {
+      // Check for cancellation
+      if (isProgressToastCancelled(toastId)) {
+        wasCancelled = true
+        break
+      }
+      
       const file = cloudFiles[i]
       if (!file.pdmData?.content_hash) {
         failed++
@@ -381,38 +444,199 @@ export function FileContextMenu({
       try {
         const { data, error } = await downloadFile(organization.id, file.pdmData.content_hash)
         if (!error && data) {
-          const fullPath = `${vaultPath}/${file.relativePath}`
-          await window.electronAPI?.ensureDir(fullPath.substring(0, fullPath.lastIndexOf('/')))
-          const result = await window.electronAPI?.writeFile(fullPath, data)
+          // Construct path with proper separators
+          const fullPath = `${vaultPath}\\${file.relativePath.replace(/\//g, '\\')}`
+          const parentDir = fullPath.substring(0, fullPath.lastIndexOf('\\'))
+          await window.electronAPI?.createFolder(parentDir)
+          
+          // Convert Blob to base64 for IPC transfer
+          const arrayBuffer = await data.arrayBuffer()
+          downloadedBytes += arrayBuffer.byteLength
+          const bytes = new Uint8Array(arrayBuffer)
+          let binary = ''
+          const chunkSize = 8192
+          for (let j = 0; j < bytes.length; j += chunkSize) {
+            const chunk = bytes.subarray(j, Math.min(j + chunkSize, bytes.length))
+            binary += String.fromCharCode.apply(null, Array.from(chunk))
+          }
+          const base64 = btoa(binary)
+          
+          const result = await window.electronAPI?.writeFile(fullPath, base64)
           if (result?.success) {
             await window.electronAPI?.setReadonly(fullPath, true)
             succeeded++
           } else {
+            console.error('Failed to write file:', file.name, result?.error)
             failed++
           }
         } else {
+          console.error('Download error for', file.name, ':', error)
           failed++
         }
-      } catch {
+      } catch (err) {
+        console.error('Download exception for', file.name, ':', err)
         failed++
       }
-      updateSyncProgress(i + 1, Math.round(((i + 1) / cloudFiles.length) * 100), '')
+      
+      // Calculate and display speed
+      const elapsed = (Date.now() - startTime) / 1000
+      const speed = elapsed > 0 ? downloadedBytes / elapsed : 0
+      const percent = Math.round(((i + 1) / cloudFiles.length) * 100)
+      updateProgressToast(toastId, i + 1, percent, formatSpeed(speed))
     }
     
-    endSync()
+    // Remove progress toast
+    removeToast(toastId)
+    foldersWithCloudFiles.forEach(p => removeProcessingFolder(p))
     
-    if (failed > 0) {
-      addToast('warning', `Downloaded ${succeeded}/${cloudFiles.length} files`)
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+    const avgSpeed = formatSpeed(downloadedBytes / parseFloat(totalTime))
+    
+    if (wasCancelled) {
+      addToast('warning', `Download stopped. ${succeeded} files downloaded.`)
+    } else if (failed > 0) {
+      addToast('warning', `Downloaded ${succeeded}/${cloudFiles.length} files in ${totalTime}s (${avgSpeed})`)
     } else {
-      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
     }
     onRefresh(true)
+    }
+    
+    // Check for path conflicts
+    if (hasPathConflict(operationPaths)) {
+      const folderNames = foldersBeingProcessed.length > 0 
+        ? foldersBeingProcessed.map(p => p.split('/').pop()).join(', ')
+        : 'files'
+      queueOperation({
+        type: 'download',
+        label: `Download ${folderNames}`,
+        paths: operationPaths,
+        execute: executeDownload
+      })
+      addToast('info', `Download queued - waiting for current operation to complete`)
+    } else {
+      executeDownload()
+    }
   }
   
-  const handleDeleteLocal = () => {
+  const handleDeleteLocal = async () => {
     onClose()
-    if (onDelete) {
-      onDelete(firstFile)
+    
+    // Get folder paths being operated on
+    const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
+    const operationPaths = foldersBeingProcessed.length > 0 ? foldersBeingProcessed : contextFiles.map(f => f.relativePath)
+    
+    // Define the delete operation
+    const executeDelete = async () => {
+      // Track folders being processed for spinner display
+      foldersBeingProcessed.forEach(p => addProcessingFolder(p))
+      
+      // Get files to remove - synced files that exist locally
+      const filesToRemove = syncedFilesInSelection.filter(f => f.diffStatus !== 'cloud')
+      
+      if (filesToRemove.length === 0) {
+        foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
+        addToast('info', 'No local files to remove')
+        return
+      }
+      
+      // Create a unique toast ID for this delete operation
+      const toastId = `delete-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      const folderName = foldersBeingProcessed.length > 0 
+        ? foldersBeingProcessed[0].split('/').pop() 
+        : 'files'
+      addProgressToast(toastId, `Removing ${folderName}...`, filesToRemove.length)
+      
+    let removed = 0
+    let failed = 0
+    
+    for (let i = 0; i < filesToRemove.length; i++) {
+      const file = filesToRemove[i]
+      
+      try {
+        // If checked out by me, release the checkout first
+        if (file.pdmData?.checked_out_by === user?.id && file.pdmData?.id) {
+          await checkinFile(file.pdmData.id, user!.id)
+        }
+        
+        const result = await window.electronAPI?.deleteItem(file.path)
+        if (result?.success) {
+          removed++
+        } else {
+          console.error('Failed to delete file:', file.name, result?.error)
+          failed++
+        }
+      } catch (err) {
+        console.error('Failed to remove file:', file.name, err)
+        failed++
+      }
+      
+      // Update progress
+      const percent = Math.round(((i + 1) / filesToRemove.length) * 100)
+      updateProgressToast(toastId, i + 1, percent)
+    }
+    
+    // Clean up empty parent directories
+    if (vaultPath) {
+      const parentDirs = new Set<string>()
+      for (const file of filesToRemove) {
+        let dir = file.path.substring(0, file.path.lastIndexOf('\\'))
+        while (dir && dir.length > vaultPath.length) {
+          parentDirs.add(dir)
+          const lastSlash = dir.lastIndexOf('\\')
+          if (lastSlash <= 0) break
+          dir = dir.substring(0, lastSlash)
+        }
+      }
+      
+      // Also include folders that were selected
+      for (const item of contextFiles) {
+        if (item.isDirectory && item.diffStatus !== 'cloud') {
+          parentDirs.add(item.path)
+        }
+      }
+      
+      // Sort by depth (deepest first)
+      const sortedDirs = Array.from(parentDirs).sort((a, b) => {
+        return b.split('\\').length - a.split('\\').length
+      })
+      
+      for (const dir of sortedDirs) {
+        try {
+          await window.electronAPI?.deleteItem(dir)
+        } catch {
+          // Folder might not be empty - expected
+        }
+      }
+    }
+    
+    // Remove progress toast
+    removeToast(toastId)
+    foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
+    
+    if (failed > 0) {
+      addToast('warning', `Removed ${removed}/${filesToRemove.length} files locally`)
+    } else if (removed > 0) {
+      addToast('success', `Removed ${removed} file${removed > 1 ? 's' : ''} locally`)
+    }
+    
+    onRefresh(true)
+    }
+    
+    // Check for path conflicts
+    if (hasPathConflict(operationPaths)) {
+      const folderNames = foldersBeingProcessed.length > 0 
+        ? foldersBeingProcessed.map(p => p.split('/').pop()).join(', ')
+        : 'files'
+      queueOperation({
+        type: 'delete',
+        label: `Remove local copy of ${folderNames}`,
+        paths: operationPaths,
+        execute: executeDelete
+      })
+      addToast('info', `Delete queued - waiting for current operation to complete`)
+    } else {
+      executeDelete()
     }
   }
 
@@ -430,8 +654,16 @@ export function FileContextMenu({
         className="context-menu"
         style={{ left: x, top: y }}
       >
-        {/* Open */}
-        {!multiSelect && (
+        {/* Download - for cloud-only files - show at TOP for cloud folders */}
+        {anyCloudOnly && (
+          <div className="context-menu-item" onClick={handleDownload}>
+            <ArrowDown size={14} className="text-pdm-success" />
+            Download {cloudOnlyCount > 0 ? `${cloudOnlyCount} files` : countLabel}
+          </div>
+        )}
+        
+        {/* Open - only for local files/folders (not cloud-only) */}
+        {!multiSelect && !allCloudOnly && (
           <div className="context-menu-item" onClick={handleOpen}>
             <ExternalLink size={14} />
             {isFolder ? 'Open Folder' : 'Open'}
@@ -531,6 +763,17 @@ export function FileContextMenu({
           </>
         )}
         
+        {/* New Folder */}
+        {onNewFolder && isFolder && !multiSelect && !allCloudOnly && (
+          <>
+            <div className="context-menu-separator" />
+            <div className="context-menu-item" onClick={() => { onNewFolder(); onClose(); }}>
+              <FolderPlus size={14} />
+              New Folder
+            </div>
+          </>
+        )}
+        
         <div className="context-menu-separator" />
         
         {/* First Check In - for unsynced files */}
@@ -538,14 +781,6 @@ export function FileContextMenu({
           <div className="context-menu-item" onClick={handleFirstCheckin}>
             <Cloud size={14} />
             First Check In {countLabel}
-          </div>
-        )}
-        
-        {/* Download - for cloud-only files */}
-        {anyCloudOnly && (
-          <div className="context-menu-item" onClick={handleDownload}>
-            <Download size={14} />
-            Download {cloudOnlyCount > 0 ? `${cloudOnlyCount} files` : countLabel}
           </div>
         )}
         
@@ -582,13 +817,57 @@ export function FileContextMenu({
         
         <div className="context-menu-separator" />
         
-        {/* New Folder */}
-        {onNewFolder && isFolder && !multiSelect && !allCloudOnly && (
-          <div className="context-menu-item" onClick={() => { onNewFolder(); onClose(); }}>
-            <FolderPlus size={14} />
-            New Folder
+        {/* Show History - for folders, opens in details panel */}
+        {!multiSelect && isFolder && (
+          <div 
+            className="context-menu-item"
+            onClick={() => {
+              // Open history tab in details panel - it will show folder activity
+              const { setDetailsPanelTab, detailsPanelVisible, toggleDetailsPanel } = usePDMStore.getState()
+              setDetailsPanelTab('history')
+              if (!detailsPanelVisible) toggleDetailsPanel()
+              onClose()
+            }}
+          >
+            <History size={14} />
+            Show History
           </div>
         )}
+        
+        {/* Properties */}
+        <div 
+          className="context-menu-item"
+          onClick={async () => {
+            if (isFolder && !multiSelect) {
+              setIsCalculatingSize(true)
+              setShowProperties(true)
+              // Calculate folder size
+              const filesInFolder = files.filter(f => 
+                !f.isDirectory && f.relativePath.startsWith(firstFile.relativePath + '/')
+              )
+              const foldersInFolder = files.filter(f => 
+                f.isDirectory && f.relativePath.startsWith(firstFile.relativePath + '/') && f.relativePath !== firstFile.relativePath
+              )
+              let totalSize = 0
+              for (const f of filesInFolder) {
+                totalSize += f.size || 0
+              }
+              setFolderSize({
+                size: totalSize,
+                fileCount: filesInFolder.length,
+                folderCount: foldersInFolder.length
+              })
+              setIsCalculatingSize(false)
+            } else {
+              setShowProperties(true)
+            }
+          }}
+        >
+          <Info size={14} />
+          Properties
+        </div>
+        
+        <div className="context-menu-separator" />
         
         {/* Remove Local Copy - for synced files, removes local but keeps server */}
         {anySynced && !allCloudOnly && (
@@ -614,7 +893,119 @@ export function FileContextMenu({
           </div>
         )}
       </div>
+      
+      {/* Properties Modal */}
+      {showProperties && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => { setShowProperties(false); onClose(); }} />
+          <div className="relative bg-pdm-panel border border-pdm-border rounded-lg shadow-xl w-[400px] max-h-[80vh] overflow-auto">
+            <div className="p-4 border-b border-pdm-border flex items-center gap-3">
+              <Info size={20} className="text-pdm-accent" />
+              <h3 className="font-semibold">Properties</h3>
+            </div>
+            <div className="p-4 space-y-3">
+              {/* Name */}
+              <div>
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Name</div>
+                <div className="text-sm">{firstFile.name}</div>
+              </div>
+              
+              {/* Type */}
+              <div>
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Type</div>
+                <div className="text-sm">
+                  {isFolder ? 'Folder' : (firstFile.extension ? firstFile.extension.toUpperCase() + ' File' : 'File')}
+                </div>
+              </div>
+              
+              {/* Location */}
+              <div>
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Location</div>
+                <div className="text-sm break-all text-pdm-fg-dim">
+                  {firstFile.relativePath.includes('/') 
+                    ? firstFile.relativePath.substring(0, firstFile.relativePath.lastIndexOf('/'))
+                    : '/'}
+                </div>
+              </div>
+              
+              {/* Size */}
+              <div>
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Size</div>
+                <div className="text-sm">
+                  {isFolder && !multiSelect ? (
+                    isCalculatingSize ? (
+                      <span className="text-pdm-fg-muted">Calculating...</span>
+                    ) : folderSize ? (
+                      <span>
+                        {formatSize(folderSize.size)}
+                        <span className="text-pdm-fg-muted ml-2">
+                          ({folderSize.fileCount} file{folderSize.fileCount !== 1 ? 's' : ''}, {folderSize.folderCount} folder{folderSize.folderCount !== 1 ? 's' : ''})
+                        </span>
+                      </span>
+                    ) : '—'
+                  ) : multiSelect ? (
+                    formatSize(contextFiles.reduce((sum, f) => sum + (f.size || 0), 0))
+                  ) : (
+                    formatSize(firstFile.size || 0)
+                  )}
+                </div>
+              </div>
+              
+              {/* Status */}
+              {firstFile.pdmData && (
+                <div>
+                  <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Status</div>
+                  <div className="text-sm">
+                    {firstFile.pdmData.checked_out_by 
+                      ? firstFile.pdmData.checked_out_by === user?.id 
+                        ? 'Checked out by you'
+                        : 'Checked out'
+                      : 'Available'}
+                  </div>
+                </div>
+              )}
+              
+              {/* Sync Status */}
+              <div>
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Sync Status</div>
+                <div className="text-sm">
+                  {firstFile.diffStatus === 'cloud' ? 'Cloud only (not downloaded)' 
+                    : firstFile.diffStatus === 'added' ? 'Local only (not synced)'
+                    : firstFile.diffStatus === 'modified' ? 'Modified locally'
+                    : firstFile.diffStatus === 'outdated' ? 'Outdated (newer version on server)'
+                    : firstFile.pdmData ? 'Synced' : 'Not synced'}
+                </div>
+              </div>
+              
+              {/* Modified Date */}
+              {firstFile.modifiedTime && (
+                <div>
+                  <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Modified</div>
+                  <div className="text-sm">{new Date(firstFile.modifiedTime).toLocaleString()}</div>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-pdm-border flex justify-end">
+              <button
+                onClick={() => { setShowProperties(false); onClose(); }}
+                className="btn btn-ghost"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
+}
+
+// Helper function to format file size
+function formatSize(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
 }
 

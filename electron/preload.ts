@@ -100,7 +100,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openInExplorer: (path: string) => ipcRenderer.invoke('fs:open-in-explorer', path),
   openFile: (path: string) => ipcRenderer.invoke('fs:open-file', path),
   setReadonly: (path: string, readonly: boolean) => ipcRenderer.invoke('fs:set-readonly', path, readonly),
-  // startDrag disabled due to Electron stability issues on Windows
+  startDrag: (filePaths: string[]) => ipcRenderer.send('fs:start-drag', filePaths),
   isReadonly: (path: string) => ipcRenderer.invoke('fs:is-readonly', path),
 
   // Dialogs

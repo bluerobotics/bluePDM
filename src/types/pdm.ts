@@ -68,6 +68,11 @@ export interface PDMFile {
   checked_out_by: string | null
   checked_out_at: string | null
   lock_message: string | null
+  checked_out_user?: {
+    full_name: string | null
+    email: string
+    avatar_url: string | null
+  } | null
   
   // Content tracking
   content_hash: string | null  // SHA-256 hash of file content

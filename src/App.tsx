@@ -33,8 +33,11 @@ function App() {
     setVaultConnected,
     setFiles,
     setServerFiles,
+    isLoading,
     setIsLoading,
+    statusMessage,
     setStatusMessage,
+    setFilesLoaded,
     addRecentVault,
     setUser,
     setOrganization,
@@ -339,9 +342,11 @@ function App() {
       }
       
       setFiles(localFiles)
-      const syncedCount = localFiles.filter(f => f.pdmData).length
+      setFilesLoaded(true)  // Mark that initial load is complete
       const totalFiles = localFiles.filter(f => !f.isDirectory).length
-      setStatusMessage(`Loaded ${localFiles.length} items (${syncedCount}/${totalFiles} synced)`)
+      const syncedCount = localFiles.filter(f => !f.isDirectory && f.pdmData).length
+      const folderCount = localFiles.filter(f => f.isDirectory).length
+      setStatusMessage(`Loaded ${totalFiles} files, ${folderCount} folders${syncedCount > 0 ? ` (${syncedCount} synced)` : ''}`)
       
       // Set read-only status on synced files
       // Files should be read-only unless checked out by current user
@@ -365,7 +370,7 @@ function App() {
         setTimeout(() => setStatusMessage(''), 3000)
       }
     }
-  }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage])
+  }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage, setFilesLoaded])
 
   // Open working directory
   const handleOpenVault = useCallback(async () => {
@@ -400,6 +405,24 @@ function App() {
 
   // Track what configuration we last loaded to avoid duplicate loads
   const lastLoadKey = useRef<string>('')
+  const mountedRef = useRef(false)
+  
+  // Reset state on component mount (handles HMR and stale loading state)
+  useEffect(() => {
+    // Force fresh load on mount
+    lastLoadKey.current = ''
+    
+    // Clear any stale loading state from previous HMR
+    // Use the store directly to check state at mount time
+    const state = usePDMStore.getState()
+    if (state.isLoading || state.statusMessage === 'Loading organization...' || state.statusMessage === 'Loading files...') {
+      setIsLoading(false)
+      setStatusMessage('')
+    }
+    
+    mountedRef.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Only run on mount
 
   // Initialize working directory on startup (only if authenticated or offline)
   useEffect(() => {
@@ -433,18 +456,29 @@ function App() {
       return // Wait for org to load
     }
     
+    // Clear loading state once organization is ready (handles HMR race conditions)
+    if (organization) {
+      // Don't show "Loading organization..." anymore - org is loaded
+      // The loadFiles call below will set proper loading state
+    }
+    
     // Create a key to track what we've loaded for
     // Include vaultPath so switching vaults triggers a new load
     const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}`
     
     // Skip if we've already loaded for this exact configuration
     if (lastLoadKey.current === loadKey) {
+      // Clear stale loading state if we're skipping (handles HMR)
+      setIsLoading(false)
+      if (statusMessage === 'Loading organization...' || statusMessage === 'Loading files...') {
+        setStatusMessage('')
+      }
       return
     }
     
     lastLoadKey.current = loadKey
     loadFiles()
-  }, [isVaultConnected, vaultPath, isOfflineMode, user, organization, currentVaultId, loadFiles, setIsLoading, setStatusMessage])
+  }, [isVaultConnected, vaultPath, isOfflineMode, user, organization, currentVaultId, loadFiles, setIsLoading, setStatusMessage, statusMessage])
 
   // Handle sidebar, details panel, and right panel resize
   useEffect(() => {

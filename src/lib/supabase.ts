@@ -162,7 +162,7 @@ export async function getFiles(orgId: string, options?: {
     .from('files')
     .select(`
       *,
-      checked_out_user:users!checked_out_by(email, full_name),
+      checked_out_user:users!checked_out_by(email, full_name, avatar_url),
       created_by_user:users!created_by(email, full_name)
     `)
     .eq('org_id', orgId)
@@ -202,7 +202,7 @@ export async function getFile(fileId: string) {
     .from('files')
     .select(`
       *,
-      checked_out_user:users!checked_out_by(email, full_name),
+      checked_out_user:users!checked_out_by(email, full_name, avatar_url),
       created_by_user:users!created_by(email, full_name),
       updated_by_user:users!updated_by(email, full_name)
     `)
@@ -320,7 +320,7 @@ export async function getAllCheckedOutFiles(orgId: string) {
     .from('files')
     .select(`
       *,
-      checked_out_user:users!checked_out_by(email, full_name)
+      checked_out_user:users!checked_out_by(email, full_name, avatar_url)
     `)
     .eq('org_id', orgId)
     .not('checked_out_by', 'is', null)
@@ -476,7 +476,7 @@ export async function checkoutFile(fileId: string, userId: string, message?: str
   // First check if file is already checked out
   const { data: file, error: fetchError } = await supabase
     .from('files')
-    .select('id, file_name, checked_out_by, checked_out_user:users!checked_out_by(email, full_name)')
+    .select('id, file_name, checked_out_by, checked_out_user:users!checked_out_by(email, full_name, avatar_url)')
     .eq('id', fileId)
     .single()
   

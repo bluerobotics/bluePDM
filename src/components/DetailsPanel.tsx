@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { usePDMStore } from '../stores/pdmStore'
 import { formatFileSize, STATE_INFO, getFileIconType } from '../types/pdm'
 import { format, formatDistanceToNow } from 'date-fns'
-import { getFileVersions } from '../lib/supabase'
+import { getFileVersions, getRecentActivity } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
 import { 
   FileBox, 
@@ -27,8 +27,39 @@ import {
   FilePen,
   ExternalLink,
   Download,
-  Eye
+  Eye,
+  FolderOpen,
+  ArrowDown,
+  ArrowUp,
+  Trash2,
+  Edit,
+  RefreshCw,
+  FolderPlus,
+  MoveRight
 } from 'lucide-react'
+
+interface ActivityEntry {
+  id: string
+  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+  user_email: string
+  details: Record<string, unknown>
+  created_at: string
+  file?: {
+    file_name: string
+    file_path: string
+  } | null
+}
+
+const ACTION_INFO: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+  checkout: { icon: <ArrowDown size={14} />, label: 'Checked out', color: 'text-pdm-error' },
+  checkin: { icon: <ArrowUp size={14} />, label: 'Checked in', color: 'text-pdm-success' },
+  create: { icon: <FolderPlus size={14} />, label: 'Created', color: 'text-pdm-accent' },
+  delete: { icon: <Trash2 size={14} />, label: 'Deleted', color: 'text-pdm-error' },
+  state_change: { icon: <RefreshCw size={14} />, label: 'State changed', color: 'text-pdm-warning' },
+  revision_change: { icon: <Edit size={14} />, label: 'Revision changed', color: 'text-pdm-info' },
+  rename: { icon: <Edit size={14} />, label: 'Renamed', color: 'text-pdm-fg-dim' },
+  move: { icon: <MoveRight size={14} />, label: 'Moved', color: 'text-pdm-fg-dim' },
+}
 
 interface VersionEntry {
   id: string
@@ -54,15 +85,23 @@ export function DetailsPanel() {
     user,
     addToast,
     cadPreviewMode,
-    lowercaseExtensions
+    lowercaseExtensions,
+    files,
+    organization
   } = usePDMStore()
 
   const selectedFileObjects = getSelectedFileObjects()
   const file = selectedFileObjects.length === 1 ? selectedFileObjects[0] : null
+  const isFolder = file?.isDirectory || false
   
   const [versions, setVersions] = useState<VersionEntry[]>([])
   const [isLoadingVersions, setIsLoadingVersions] = useState(false)
   const [rollingBack, setRollingBack] = useState<number | null>(null)
+  
+  // Folder-specific state
+  const [folderStats, setFolderStats] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
+  const [folderActivity, setFolderActivity] = useState<ActivityEntry[]>([])
+  const [isLoadingFolderActivity, setIsLoadingFolderActivity] = useState(false)
   
   // eDrawings state
   const [eDrawingsStatus, setEDrawingsStatus] = useState<{
@@ -164,7 +203,7 @@ export function DetailsPanel() {
   // Load version history when file changes or history tab is selected
   useEffect(() => {
     const loadVersions = async () => {
-      if (!file?.pdmData?.id || detailsPanelTab !== 'history') {
+      if (!file?.pdmData?.id || detailsPanelTab !== 'history' || isFolder) {
         setVersions([])
         return
       }
@@ -183,7 +222,65 @@ export function DetailsPanel() {
     }
     
     loadVersions()
-  }, [file?.pdmData?.id, detailsPanelTab])
+  }, [file?.pdmData?.id, detailsPanelTab, isFolder])
+  
+  // Calculate folder stats when a folder is selected
+  useEffect(() => {
+    if (!file || !isFolder) {
+      setFolderStats(null)
+      return
+    }
+    
+    const folderPath = file.relativePath
+    const filesInFolder = files.filter(f => 
+      !f.isDirectory && f.relativePath.startsWith(folderPath + '/')
+    )
+    const foldersInFolder = files.filter(f => 
+      f.isDirectory && f.relativePath.startsWith(folderPath + '/') && f.relativePath !== folderPath
+    )
+    
+    let totalSize = 0
+    for (const f of filesInFolder) {
+      totalSize += f.size || 0
+    }
+    
+    setFolderStats({
+      size: totalSize,
+      fileCount: filesInFolder.length,
+      folderCount: foldersInFolder.length
+    })
+  }, [file, isFolder, files])
+  
+  // Load folder activity when a folder is selected and history tab is active
+  useEffect(() => {
+    const loadFolderActivity = async () => {
+      if (!file || !isFolder || detailsPanelTab !== 'history' || !organization) {
+        setFolderActivity([])
+        return
+      }
+      
+      setIsLoadingFolderActivity(true)
+      try {
+        const { activity, error } = await getRecentActivity(organization.id, 100)
+        if (!error && activity) {
+          // Filter activity to this folder
+          const folderPath = file.relativePath
+          const filtered = (activity as ActivityEntry[]).filter(entry => {
+            if (!entry.file?.file_path) return false
+            return entry.file.file_path.startsWith(folderPath + '/') || 
+                   entry.file.file_path === folderPath
+          })
+          setFolderActivity(filtered)
+        }
+      } catch (err) {
+        console.error('Failed to load folder activity:', err)
+      } finally {
+        setIsLoadingFolderActivity(false)
+      }
+    }
+    
+    loadFolderActivity()
+  }, [file, isFolder, detailsPanelTab, organization])
 
   const handleRollback = async (targetVersion: number) => {
     if (!file?.pdmData?.id || !user) return
@@ -225,7 +322,7 @@ export function DetailsPanel() {
     if (!file) return <File size={32} className="text-pdm-fg-muted" />
     
     if (file.isDirectory) {
-      return <File size={32} className="text-pdm-warning" />
+      return <FolderOpen size={32} className="text-pdm-warning" />
     }
     
     const iconType = getFileIconType(file.extension)
@@ -324,13 +421,13 @@ export function DetailsPanel() {
           <>
             {detailsPanelTab === 'properties' && (
               <div className="flex gap-6">
-                {/* File icon and name */}
+                {/* File/Folder icon and name */}
                 <div className="flex items-start gap-4 flex-shrink-0">
                   {getFileIcon()}
                   <div>
                     <div className="font-semibold text-lg">{file.name}</div>
                     <div className="text-sm text-pdm-fg-muted">{file.relativePath}</div>
-                    {file.pdmData?.state && (
+                    {!isFolder && file.pdmData?.state && (
                       <span className={`state-badge ${file.pdmData.state.replace('_', '-')} mt-2`}>
                         {STATE_INFO[file.pdmData.state]?.label}
                       </span>
@@ -340,59 +437,105 @@ export function DetailsPanel() {
 
                 {/* Properties grid */}
                 <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-                  <PropertyItem 
-                    icon={<Tag size={14} />}
-                    label="Item Number"
-                    value={file.pdmData?.part_number || '-'}
-                  />
-                  <PropertyItem 
-                    icon={<Hash size={14} />}
-                    label="Revision"
-                    value={file.pdmData?.revision || 'A'}
-                  />
-                  <PropertyItem 
-                    icon={<Hash size={14} />}
-                    label="Version"
-                    value={String(file.pdmData?.version || 1)}
-                  />
-                  <PropertyItem 
-                    icon={<Info size={14} />}
-                    label="Type"
-                    value={file.extension 
-                      ? lowercaseExtensions !== false
-                        ? file.extension.replace('.', '').toLowerCase() 
-                        : file.extension.replace('.', '').toUpperCase() 
-                      : 'Folder'}
-                  />
-                  <PropertyItem 
-                    icon={<Clock size={14} />}
-                    label="Modified"
-                    value={file.modifiedTime ? (() => {
-                      try {
-                        const date = new Date(file.modifiedTime)
-                        return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
-                      } catch { return '-' }
-                    })() : '-'}
-                  />
-                  <PropertyItem 
-                    icon={<Info size={14} />}
-                    label="Size"
-                    value={file.isDirectory ? '-' : formatFileSize(file.size)}
-                  />
-                  <PropertyItem 
-                    icon={<User size={14} />}
-                    label="Checked Out"
-                    value={file.pdmData?.checked_out_by ? 
-                      ((file.pdmData as any).checked_out_user?.full_name || 
-                       (file.pdmData as any).checked_out_user?.email || 
-                       'Someone') 
-                      : 'Not checked out'}
-                  />
-                  <PropertyItem 
-                    icon={<Cloud size={14} />}
-                    label="Sync Status"
-                    value={file.pdmData ? 'Synced' : 'Local only'}
-                  />
+                  {isFolder ? (
+                    // Folder properties
+                    <>
+                      <PropertyItem 
+                        icon={<Info size={14} />}
+                        label="Type"
+                        value="Folder"
+                      />
+                      <PropertyItem 
+                        icon={<Info size={14} />}
+                        label="Size"
+                        value={folderStats ? formatFileSize(folderStats.size) : 'Calculating...'}
+                      />
+                      <PropertyItem 
+                        icon={<File size={14} />}
+                        label="Files"
+                        value={folderStats ? String(folderStats.fileCount) : '...'}
+                      />
+                      <PropertyItem 
+                        icon={<FolderOpen size={14} />}
+                        label="Folders"
+                        value={folderStats ? String(folderStats.folderCount) : '...'}
+                      />
+                      <PropertyItem 
+                        icon={<Clock size={14} />}
+                        label="Modified"
+                        value={file.modifiedTime ? (() => {
+                          try {
+                            const date = new Date(file.modifiedTime)
+                            return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
+                          } catch { return '-' }
+                        })() : '-'}
+                      />
+                      <PropertyItem 
+                        icon={<Cloud size={14} />}
+                        label="Location"
+                        value={file.relativePath.includes('/') 
+                          ? file.relativePath.substring(0, file.relativePath.lastIndexOf('/'))
+                          : '/'}
+                      />
+                    </>
+                  ) : (
+                    // File properties
+                    <>
+                      <PropertyItem 
+                        icon={<Tag size={14} />}
+                        label="Item Number"
+                        value={file.pdmData?.part_number || '-'}
+                      />
+                      <PropertyItem 
+                        icon={<Hash size={14} />}
+                        label="Revision"
+                        value={file.pdmData?.revision || 'A'}
+                      />
+                      <PropertyItem 
+                        icon={<Hash size={14} />}
+                        label="Version"
+                        value={String(file.pdmData?.version || 1)}
+                      />
+                      <PropertyItem 
+                        icon={<Info size={14} />}
+                        label="Type"
+                        value={file.extension 
+                          ? lowercaseExtensions !== false
+                            ? file.extension.replace('.', '').toLowerCase() 
+                            : file.extension.replace('.', '').toUpperCase() 
+                          : 'File'}
+                      />
+                      <PropertyItem 
+                        icon={<Clock size={14} />}
+                        label="Modified"
+                        value={file.modifiedTime ? (() => {
+                          try {
+                            const date = new Date(file.modifiedTime)
+                            return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
+                          } catch { return '-' }
+                        })() : '-'}
+                      />
+                      <PropertyItem 
+                        icon={<Info size={14} />}
+                        label="Size"
+                        value={formatFileSize(file.size)}
+                      />
+                      <PropertyItem 
+                        icon={<User size={14} />}
+                        label="Checked Out"
+                        value={file.pdmData?.checked_out_by ? 
+                          ((file.pdmData as any).checked_out_user?.full_name || 
+                           (file.pdmData as any).checked_out_user?.email || 
+                           'Someone') 
+                          : 'Not checked out'}
+                      />
+                      <PropertyItem 
+                        icon={<Cloud size={14} />}
+                        label="Sync Status"
+                        value={file.pdmData ? 'Synced' : 'Local only'}
+                      />
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -590,104 +733,161 @@ export function DetailsPanel() {
 
             {detailsPanelTab === 'history' && (
               <div>
-                {!file.pdmData ? (
-                  <div className="text-sm text-pdm-fg-muted text-center py-8">
-                    File not synced - no version history available
-                  </div>
-                ) : isLoadingVersions ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
-                  </div>
-                ) : versions.length === 0 ? (
-                  <div className="text-sm text-pdm-fg-muted text-center py-8">
-                    No version history
-                  </div>
+                {isFolder ? (
+                  // Folder activity history
+                  isLoadingFolderActivity ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
+                    </div>
+                  ) : folderActivity.length === 0 ? (
+                    <div className="text-sm text-pdm-fg-muted text-center py-8">
+                      No activity in this folder
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {folderActivity.map((entry) => {
+                        const actionInfo = ACTION_INFO[entry.action] || { 
+                          icon: <FileText size={14} />, 
+                          label: entry.action, 
+                          color: 'text-pdm-fg-muted' 
+                        }
+                        
+                        return (
+                          <div
+                            key={entry.id}
+                            className="p-2 bg-pdm-bg-light rounded border border-pdm-border hover:border-pdm-border-light transition-colors"
+                          >
+                            <div className="flex items-start gap-2">
+                              <span className={`mt-0.5 ${actionInfo.color}`}>
+                                {actionInfo.icon}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm">
+                                  <span className={actionInfo.color}>{actionInfo.label}</span>
+                                  {entry.file && (
+                                    <span className="text-pdm-fg ml-1 truncate">
+                                      {entry.file.file_name}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-pdm-fg-muted mt-1">
+                                  <span className="flex items-center gap-1">
+                                    <User size={10} />
+                                    {entry.user_email.split('@')[0]}
+                                  </span>
+                                  <span className="flex items-center gap-1">
+                                    <Clock size={10} />
+                                    {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
                 ) : (
-                  <div className="space-y-2">
-                    {versions.map((version, index) => {
-                      const isLatest = index === 0
-                      const isCurrent = file.pdmData?.version === version.version
-                      const canRollback = !isLatest && file.pdmData?.checked_out_by === user?.id
-                      
-                      return (
-                        <div
-                          key={version.id}
-                          className={`p-3 rounded-lg border transition-colors ${
-                            isCurrent 
-                              ? 'bg-pdm-accent/10 border-pdm-accent' 
-                              : 'bg-pdm-bg-light border-pdm-border hover:border-pdm-border-light'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <FileText size={14} className="text-pdm-accent" />
-                              <span className="text-sm font-medium">
-                                Version {version.version}
-                              </span>
-                              {isLatest && (
-                                <span className="px-1.5 py-0.5 text-xs bg-pdm-success/20 text-pdm-success rounded">
-                                  Latest
+                  // File version history
+                  !file.pdmData ? (
+                    <div className="text-sm text-pdm-fg-muted text-center py-8">
+                      File not synced - no version history available
+                    </div>
+                  ) : isLoadingVersions ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
+                    </div>
+                  ) : versions.length === 0 ? (
+                    <div className="text-sm text-pdm-fg-muted text-center py-8">
+                      No version history
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {versions.map((version, index) => {
+                        const isLatest = index === 0
+                        const isCurrent = file.pdmData?.version === version.version
+                        const canRollback = !isLatest && file.pdmData?.checked_out_by === user?.id
+                        
+                        return (
+                          <div
+                            key={version.id}
+                            className={`p-3 rounded-lg border transition-colors ${
+                              isCurrent 
+                                ? 'bg-pdm-accent/10 border-pdm-accent' 
+                                : 'bg-pdm-bg-light border-pdm-border hover:border-pdm-border-light'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <FileText size={14} className="text-pdm-accent" />
+                                <span className="text-sm font-medium">
+                                  Version {version.version}
                                 </span>
-                              )}
-                              {isCurrent && !isLatest && (
-                                <span className="px-1.5 py-0.5 text-xs bg-pdm-accent/20 text-pdm-accent rounded">
-                                  Current
+                                {isLatest && (
+                                  <span className="px-1.5 py-0.5 text-xs bg-pdm-success/20 text-pdm-success rounded">
+                                    Latest
+                                  </span>
+                                )}
+                                {isCurrent && !isLatest && (
+                                  <span className="px-1.5 py-0.5 text-xs bg-pdm-accent/20 text-pdm-accent rounded">
+                                    Current
+                                  </span>
+                                )}
+                                <span className="text-xs text-pdm-fg-muted">
+                                  Rev {version.revision}
                                 </span>
+                              </div>
+                              
+                              {canRollback && (
+                                <button
+                                  onClick={() => handleRollback(version.version)}
+                                  disabled={rollingBack !== null}
+                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-pdm-warning/20 text-pdm-warning rounded hover:bg-pdm-warning/30 transition-colors disabled:opacity-50"
+                                  title="Rollback to this version"
+                                >
+                                  {rollingBack === version.version ? (
+                                    <Loader2 size={12} className="animate-spin" />
+                                  ) : (
+                                    <RotateCcw size={12} />
+                                  )}
+                                  Rollback
+                                </button>
                               )}
-                              <span className="text-xs text-pdm-fg-muted">
-                                Rev {version.revision}
-                              </span>
                             </div>
                             
-                            {canRollback && (
-                              <button
-                                onClick={() => handleRollback(version.version)}
-                                disabled={rollingBack !== null}
-                                className="flex items-center gap-1 px-2 py-1 text-xs bg-pdm-warning/20 text-pdm-warning rounded hover:bg-pdm-warning/30 transition-colors disabled:opacity-50"
-                                title="Rollback to this version"
-                              >
-                                {rollingBack === version.version ? (
-                                  <Loader2 size={12} className="animate-spin" />
-                                ) : (
-                                  <RotateCcw size={12} />
-                                )}
-                                Rollback
-                              </button>
+                            {version.comment && (
+                              <div className="text-sm text-pdm-fg-dim mb-2 pl-6">
+                                "{version.comment}"
+                              </div>
                             )}
-                          </div>
-                          
-                          {version.comment && (
-                            <div className="text-sm text-pdm-fg-dim mb-2 pl-6">
-                              "{version.comment}"
-                            </div>
-                          )}
-                          
-                          <div className="flex flex-wrap items-center gap-4 text-xs text-pdm-fg-muted pl-6">
-                            <div className="flex items-center gap-1">
-                              <User size={12} />
-                              <span>{version.created_by_user?.full_name || version.created_by_user?.email || 'Unknown'}</span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Clock size={12} />
-                              <span title={version.created_at ? format(new Date(version.created_at), 'MMM d, yyyy HH:mm:ss') : '-'}>
-                                {formatDistanceToNow(new Date(version.created_at), { addSuffix: true })}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Info size={12} />
-                              <span>{formatFileSize(version.file_size)}</span>
+                            
+                            <div className="flex flex-wrap items-center gap-4 text-xs text-pdm-fg-muted pl-6">
+                              <div className="flex items-center gap-1">
+                                <User size={12} />
+                                <span>{version.created_by_user?.full_name || version.created_by_user?.email || 'Unknown'}</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Clock size={12} />
+                                <span title={version.created_at ? format(new Date(version.created_at), 'MMM d, yyyy HH:mm:ss') : '-'}>
+                                  {formatDistanceToNow(new Date(version.created_at), { addSuffix: true })}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Info size={12} />
+                                <span>{formatFileSize(version.file_size)}</span>
+                              </div>
                             </div>
                           </div>
+                        )
+                      })}
+                      
+                      {file.pdmData?.checked_out_by !== user?.id && versions.length > 1 && (
+                        <div className="text-xs text-pdm-fg-muted text-center py-2 border-t border-pdm-border mt-4">
+                          <span className="text-pdm-warning">Check out the file to enable rollback</span>
                         </div>
-                      )
-                    })}
-                    
-                    {file.pdmData?.checked_out_by !== user?.id && versions.length > 1 && (
-                      <div className="text-xs text-pdm-fg-muted text-center py-2 border-t border-pdm-border mt-4">
-                        <span className="text-pdm-warning">Check out the file to enable rollback</span>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )
                 )}
               </div>
             )}

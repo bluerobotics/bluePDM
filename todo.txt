@@ -1,3 +1,13 @@
+drag in/out to explorer and other apps
+drag in working well
+drag folders and files around inside
+folder history
+undo check-in in history tabs (checks out file, server restores previous version, newer version still lives locally)
+file "history" change name to versions
+download icon in folder inlines should always be next to the cloud logo
+"drive" logo to denote local files should also show in explorer inline
+for local files, inline button to check in
+
 solidworks integration
 - previews
 - solidworks metadata

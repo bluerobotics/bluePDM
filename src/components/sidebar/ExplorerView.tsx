@@ -18,8 +18,14 @@ import {
   FileCode,
   Cpu,
   FileType,
-  FilePen
+  FilePen,
+  Loader2,
+  ArrowDown,
+  ArrowUp,
+  PinOff
 } from 'lucide-react'
+import { checkoutFile, checkinFile } from '../../lib/supabase'
+import { downloadFile } from '../../lib/storage'
 import { usePDMStore, LocalFile, ConnectedVault } from '../../stores/pdmStore'
 import { getFileIconType } from '../../types/pdm'
 import { FileContextMenu } from '../FileContextMenu'
@@ -52,9 +58,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     togglePinnedSection,
     reorderPinnedFolders,
     renameFileInStore,
+    updateFileInStore,
     user,
+    organization,
+    selectedFiles,
     setSelectedFiles,
+    toggleFileSelection,
     lowercaseExtensions,
+    processingFolders,
+    isLoading,
+    filesLoaded,
+    addProgressToast,
+    updateProgressToast,
+    removeToast,
+    isProgressToastCancelled,
+    addProcessingFolder,
+    removeProcessingFolder,
   } = usePDMStore()
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: LocalFile } | null>(null)
@@ -62,6 +81,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [lastClickTime, setLastClickTime] = useState<number>(0)
   const [lastClickPath, setLastClickPath] = useState<string | null>(null)
+  const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
   const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [draggingPinIndex, setDraggingPinIndex] = useState<number | null>(null)
@@ -256,8 +276,188 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     return folderFiles.some(f => f.pdmData?.checked_out_by)
   }
 
+  // Check if a file/folder is affected by any processing operation
+  const isBeingProcessed = (relativePath: string) => {
+    // Check if this exact path is being processed
+    if (processingFolders.has(relativePath)) return true
+    // Check if any parent folder is being processed
+    for (const processingPath of processingFolders) {
+      if (relativePath.startsWith(processingPath + '/')) return true
+    }
+    return false
+  }
+
+  // Inline action: Download a single file
+  const handleInlineDownload = async (e: React.MouseEvent, file: LocalFile) => {
+    e.stopPropagation()
+    if (!organization || !vaultPath) return
+    
+    // Get files to download
+    let filesToDownload: LocalFile[] = []
+    if (file.isDirectory) {
+      filesToDownload = files.filter(f => 
+        !f.isDirectory && 
+        f.diffStatus === 'cloud' &&
+        f.relativePath.startsWith(file.relativePath + '/')
+      )
+    } else if (file.diffStatus === 'cloud') {
+      filesToDownload = [file]
+    }
+    
+    if (filesToDownload.length === 0) return
+    
+    addProcessingFolder(file.relativePath)
+    const toastId = `download-${Date.now()}`
+    addProgressToast(toastId, `Downloading ${file.name}...`, filesToDownload.length)
+    
+    let succeeded = 0
+    for (let i = 0; i < filesToDownload.length; i++) {
+      if (isProgressToastCancelled(toastId)) break
+      
+      const f = filesToDownload[i]
+      if (!f.pdmData?.content_hash) continue
+      
+      try {
+        const { data, error } = await downloadFile(organization.id, f.pdmData.content_hash)
+        if (!error && data) {
+          const fullPath = `${vaultPath}\\${f.relativePath.replace(/\//g, '\\')}`
+          const parentDir = fullPath.substring(0, fullPath.lastIndexOf('\\'))
+          await window.electronAPI?.createFolder(parentDir)
+          
+          const arrayBuffer = await data.arrayBuffer()
+          const bytes = new Uint8Array(arrayBuffer)
+          let binary = ''
+          const chunkSize = 8192
+          for (let j = 0; j < bytes.length; j += chunkSize) {
+            const chunk = bytes.subarray(j, Math.min(j + chunkSize, bytes.length))
+            binary += String.fromCharCode.apply(null, Array.from(chunk))
+          }
+          const base64 = btoa(binary)
+          
+          const result = await window.electronAPI?.writeFile(fullPath, base64)
+          if (result?.success) {
+            await window.electronAPI?.setReadonly(fullPath, true)
+            succeeded++
+          }
+        }
+      } catch (err) {
+        console.error('Download error:', err)
+      }
+      
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToDownload.length) * 100))
+    }
+    
+    removeToast(toastId)
+    removeProcessingFolder(file.relativePath)
+    
+    if (succeeded > 0) {
+      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+      onRefresh?.(true)
+    }
+  }
+
+  // Inline action: Check out a single file or folder
+  const handleInlineCheckout = async (e: React.MouseEvent, file: LocalFile) => {
+    e.stopPropagation()
+    if (!user) return
+    
+    // Get files to checkout
+    let filesToCheckout: LocalFile[] = []
+    if (file.isDirectory) {
+      filesToCheckout = files.filter(f => 
+        !f.isDirectory && 
+        f.pdmData && 
+        !f.pdmData.checked_out_by &&
+        f.diffStatus !== 'cloud' &&
+        f.relativePath.startsWith(file.relativePath + '/')
+      )
+    } else if (file.pdmData?.id && !file.pdmData.checked_out_by) {
+      filesToCheckout = [file]
+    }
+    
+    if (filesToCheckout.length === 0) {
+      addToast('info', 'No files to check out')
+      return
+    }
+    
+    let succeeded = 0
+    for (const f of filesToCheckout) {
+      try {
+        const result = await checkoutFile(f.pdmData!.id, user.id)
+        if (result.success) {
+          await window.electronAPI?.setReadonly(f.path, false)
+          updateFileInStore(f.path, {
+            pdmData: { 
+              ...f.pdmData!, 
+              checked_out_by: user.id,
+              checked_out_user: { 
+                full_name: user.full_name, 
+                email: user.email, 
+                avatar_url: user.avatar_url 
+              }
+            }
+          })
+          succeeded++
+        }
+      } catch (err) {
+        console.error('Checkout error:', err)
+      }
+    }
+    
+    if (succeeded > 0) {
+      addToast('success', `Checked out ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+    }
+  }
+
+  // Inline action: Check in a single file or folder
+  const handleInlineCheckin = async (e: React.MouseEvent, file: LocalFile) => {
+    e.stopPropagation()
+    if (!user) return
+    
+    // Get files to checkin
+    let filesToCheckin: LocalFile[] = []
+    if (file.isDirectory) {
+      filesToCheckin = files.filter(f => 
+        !f.isDirectory && 
+        f.pdmData?.checked_out_by === user.id &&
+        f.relativePath.startsWith(file.relativePath + '/')
+      )
+    } else if (file.pdmData?.id && file.pdmData.checked_out_by === user.id) {
+      filesToCheckin = [file]
+    }
+    
+    if (filesToCheckin.length === 0) {
+      addToast('info', 'No files to check in')
+      return
+    }
+    
+    let succeeded = 0
+    for (const f of filesToCheckin) {
+      try {
+        const result = await checkinFile(f.pdmData!.id, user.id)
+        if (result.success) {
+          await window.electronAPI?.setReadonly(f.path, true)
+          updateFileInStore(f.path, {
+            pdmData: { ...f.pdmData!, checked_out_by: null, checked_out_user: null }
+          })
+          succeeded++
+        }
+      } catch (err) {
+        console.error('Checkin error:', err)
+      }
+    }
+    
+    if (succeeded > 0) {
+      addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+    }
+  }
+
   const getFileIcon = (file: LocalFile) => {
     if (file.isDirectory) {
+      // Check if folder is being processed (downloading/deleting) or is inside a processing folder
+      if (isBeingProcessed(file.relativePath)) {
+        return <Loader2 size={16} className="text-sky-400 animate-spin" />
+      }
       // Cloud-only folders (exist on server but not locally)
       if (file.diffStatus === 'cloud') {
         return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
@@ -268,6 +468,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       }
       const synced = isFolderSynced(file.relativePath)
       return <FolderOpen size={16} className={synced ? 'text-pdm-success' : 'text-pdm-fg-muted'} />
+    }
+    
+    // Check if file is inside a processing folder
+    if (isBeingProcessed(file.relativePath)) {
+      return <Loader2 size={16} className="text-sky-400 animate-spin" />
     }
     
     const iconType = getFileIconType(file.extension)
@@ -303,24 +508,128 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     }
   }
   
-  // Get status icon for files (lock, green cloud, grey cloud)
+  // Get unique users with checkouts in a folder
+  const getFolderCheckoutUsers = (folderPath: string) => {
+    const { user } = usePDMStore.getState()
+    const folderFiles = files.filter(f => 
+      !f.isDirectory && 
+      f.pdmData?.checked_out_by &&
+      f.relativePath.startsWith(folderPath + '/')
+    )
+    
+    // Collect unique users
+    const usersMap = new Map<string, { id: string; name: string; avatar_url?: string; isMe: boolean }>()
+    
+    for (const f of folderFiles) {
+      const checkoutUserId = f.pdmData!.checked_out_by!
+      if (!usersMap.has(checkoutUserId)) {
+        const isMe = checkoutUserId === user?.id
+        if (isMe) {
+          usersMap.set(checkoutUserId, {
+            id: checkoutUserId,
+            name: 'You',
+            avatar_url: user?.avatar_url || undefined,
+            isMe: true
+          })
+        } else {
+          const checkedOutUser = (f.pdmData as any).checked_out_user
+          usersMap.set(checkoutUserId, {
+            id: checkoutUserId,
+            name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
+            avatar_url: checkedOutUser?.avatar_url,
+            isMe: false
+          })
+        }
+      }
+    }
+    
+    // Sort so "me" comes first
+    return Array.from(usersMap.values()).sort((a, b) => {
+      if (a.isMe && !b.isMe) return -1
+      if (!a.isMe && b.isMe) return 1
+      return 0
+    })
+  }
+
+  // Get status icon for files (avatar/lock, green cloud, grey cloud)
   const getStatusIcon = (file: LocalFile) => {
     const { user } = usePDMStore.getState()
     
-    // No status icons for folders - diff counts already show this info
+    // For folders - show stacked avatars of users with checkouts
     if (file.isDirectory) {
-      return null
+      const checkoutUsers = getFolderCheckoutUsers(file.relativePath)
+      if (checkoutUsers.length === 0) return null
+      
+      const maxShow = 3
+      const shown = checkoutUsers.slice(0, maxShow)
+      const extra = checkoutUsers.length - maxShow
+      
+      return (
+        <span className="flex items-center flex-shrink-0 -space-x-1.5" title={checkoutUsers.map(u => u.name).join(', ')}>
+          {shown.map((u, i) => (
+            u.avatar_url ? (
+              <img 
+                key={u.id}
+                src={u.avatar_url} 
+                alt={u.name}
+                className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg`}
+                style={{ zIndex: maxShow - i }}
+              />
+            ) : (
+              <div 
+                key={u.id}
+                className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] bg-pdm-bg`}
+                style={{ zIndex: maxShow - i }}
+              >
+                {u.name.charAt(0).toUpperCase()}
+              </div>
+            )
+          ))}
+          {extra > 0 && (
+            <div 
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
+              style={{ zIndex: 0 }}
+            >
+              +{extra}
+            </div>
+          )}
+        </span>
+      )
     }
     
     // For files:
-    // Checked out by me - yellow lock
+    // Checked out by me - show my avatar with orange ring
     if (file.pdmData?.checked_out_by === user?.id) {
-      return <Lock size={12} className="text-pdm-warning flex-shrink-0" />
+      if (user?.avatar_url) {
+        return (
+          <img 
+            src={user.avatar_url} 
+            alt="You"
+            title="Checked out by you"
+            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning"
+          />
+        )
+      }
+      return <Lock size={12} className="text-pdm-warning flex-shrink-0" title="Checked out by you" />
     }
     
-    // Checked out by someone else - red lock
+    // Checked out by someone else - show their avatar with red ring
     if (file.pdmData?.checked_out_by) {
-      return <Lock size={12} className="text-pdm-error flex-shrink-0" />
+      const checkedOutUser = (file.pdmData as any).checked_out_user
+      const avatarUrl = checkedOutUser?.avatar_url
+      const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
+      
+      if (avatarUrl) {
+        return (
+          <img 
+            src={avatarUrl} 
+            alt={displayName}
+            title={`Checked out by ${displayName}`}
+            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error"
+          />
+        )
+      }
+      return <Lock size={12} className="text-pdm-error flex-shrink-0" title={`Checked out by ${displayName}`} />
     }
     
     // Cloud-only (not downloaded) - grey cloud
@@ -350,21 +659,76 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const diffClass = file.diffStatus 
       ? `sidebar-diff-${file.diffStatus}` : ''
 
-    const isSelected = selectedFile === file.relativePath
+    const isSelected = selectedFiles.includes(file.path)
     const isRenaming = renamingFile?.relativePath === file.relativePath
+    const isProcessing = isBeingProcessed(file.relativePath)
 
     return (
       <div key={file.path}>
         <div
-          className={`tree-item ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${diffClass}`}
+          className={`tree-item group ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${isProcessing ? 'processing' : ''} ${diffClass}`}
           style={{ paddingLeft: 8 + depth * 16 }}
-          onClick={() => {
+          onClick={(e) => {
             if (isRenaming) return
             
-            // Select the file (local state for highlighting)
+            // Prevent text selection on shift+click
+            if (e.shiftKey) {
+              e.preventDefault()
+            }
+            
+            // Get flattened list of visible files for range selection
+            const getVisibleFiles = (): LocalFile[] => {
+              const result: LocalFile[] = []
+              const addFiles = (items: LocalFile[]) => {
+                for (const item of items) {
+                  result.push(item)
+                  if (item.isDirectory && expandedFolders.has(item.relativePath)) {
+                    const children = tree[item.relativePath] || []
+                    addFiles(children.sort((a, b) => {
+                      if (a.isDirectory && !b.isDirectory) return -1
+                      if (!a.isDirectory && b.isDirectory) return 1
+                      return a.name.localeCompare(b.name)
+                    }))
+                  }
+                }
+              }
+              addFiles((tree[''] || []).sort((a, b) => {
+                if (a.isDirectory && !b.isDirectory) return -1
+                if (!a.isDirectory && b.isDirectory) return 1
+                return a.name.localeCompare(b.name)
+              }))
+              return result
+            }
+            
+            const visibleFiles = getVisibleFiles()
+            const currentIndex = visibleFiles.findIndex(f => f.path === file.path)
+            
+            if (e.shiftKey && lastClickedIndex !== null) {
+              // Shift+click: select range
+              const start = Math.min(lastClickedIndex, currentIndex)
+              const end = Math.max(lastClickedIndex, currentIndex)
+              const rangePaths = visibleFiles.slice(start, end + 1).map(f => f.path)
+              
+              if (e.ctrlKey || e.metaKey) {
+                // Add range to existing selection
+                const newSelection = [...new Set([...selectedFiles, ...rangePaths])]
+                setSelectedFiles(newSelection)
+              } else {
+                // Replace selection with range
+                setSelectedFiles(rangePaths)
+              }
+            } else if (e.ctrlKey || e.metaKey) {
+              // Ctrl+click: toggle single item
+              toggleFileSelection(file.path, true)
+              setLastClickedIndex(currentIndex)
+            } else {
+              // Normal click: select single item
+              setSelectedFiles([file.path])
+              setLastClickedIndex(currentIndex)
+            }
+            
+            // Update local highlight state
             setSelectedFile(file.relativePath)
-            // Also update global store so DetailsPanel shows file info
-            setSelectedFiles([file.path])
             
             if (file.isDirectory) {
               // Navigate main pane to this folder
@@ -396,8 +760,36 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             e.preventDefault()
             e.stopPropagation()
             setSelectedFile(file.relativePath)
-            setSelectedFiles([file.path])
+            // If right-clicked file is not in selection, select only it
+            // Otherwise keep the multi-selection
+            if (!selectedFiles.includes(file.path)) {
+              setSelectedFiles([file.path])
+            }
             setContextMenu({ x: e.clientX, y: e.clientY, file })
+          }}
+          draggable={!file.isDirectory && file.diffStatus !== 'cloud'}
+          onDragStart={(e) => {
+            // Get files to drag
+            let filesToDrag: LocalFile[]
+            if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
+              filesToDrag = files.filter(f => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus !== 'cloud')
+            } else if (!file.isDirectory && file.diffStatus !== 'cloud') {
+              filesToDrag = [file]
+            } else {
+              e.preventDefault()
+              return
+            }
+            
+            if (filesToDrag.length === 0) {
+              e.preventDefault()
+              return
+            }
+            
+            const filePaths = filesToDrag.map(f => f.path)
+            console.log('[Drag] Starting native drag for:', filePaths)
+            
+            // Call Electron's native drag
+            window.electronAPI?.startDrag(filePaths)
           }}
         >
           {file.isDirectory && (
@@ -442,6 +834,63 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           
           {/* Status icon (lock, cloud) */}
           {!isRenaming && getStatusIcon(file)}
+          
+          {/* Inline action buttons - show on hover */}
+          {!isRenaming && !isBeingProcessed(file.relativePath) && (() => {
+            // Check if folder has cloud files
+            const hasCloudFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            // Check if folder has checkoutable files
+            const hasCheckoutableFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            // Check if folder has my checked out files
+            const hasMyCheckedOutFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            
+            const showDownload = file.diffStatus === 'cloud' || hasCloudFiles
+            const showCheckout = (!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles
+            const showCheckin = (!file.isDirectory && file.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
+            
+            if (!showDownload && !showCheckout && !showCheckin) return null
+            
+            return (
+              <span className="inline-actions flex items-center gap-0.5 ml-1">
+                {/* Download - for cloud items */}
+                {showDownload && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                    onClick={(e) => handleInlineDownload(e, file)}
+                    title="Download"
+                  >
+                    <ArrowDown size={12} />
+                  </button>
+                )}
+                {/* Check Out - for synced files/folders not checked out */}
+                {showCheckout && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
+                    onClick={(e) => handleInlineCheckout(e, file)}
+                    title="Check Out"
+                  >
+                    <ArrowDown size={12} />
+                  </button>
+                )}
+                {/* Check In - for files/folders checked out by me */}
+                {showCheckin && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                    onClick={(e) => handleInlineCheckin(e, file)}
+                    title="Check In"
+                  >
+                    <ArrowUp size={12} />
+                  </button>
+                )}
+              </span>
+            )
+          })()}
           
           {/* Diff counts for folders */}
           {!isRenaming && file.isDirectory && hasDiffs && (
@@ -533,7 +982,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               .map(file => renderTreeItem(file, 1))
             }
             
-            {tree[''].length === 0 && (
+            {tree[''].length === 0 && !isLoading && filesLoaded && (
               <div className="px-4 py-4 text-center text-pdm-fg-muted text-xs">
                 No files in vault
               </div>
@@ -576,7 +1025,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             .map(file => renderTreeItem(file))
           }
           
-          {rootItems.length === 0 && (
+          {rootItems.length === 0 && !isLoading && filesLoaded && (
             <div className="px-4 py-8 text-center text-pdm-fg-muted text-sm">
               No files in vault
             </div>
@@ -588,7 +1037,9 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               x={contextMenu.x}
               y={contextMenu.y}
               files={files}
-              contextFiles={[contextMenu.file]}
+              contextFiles={selectedFiles.length > 1 && selectedFiles.includes(contextMenu.file.path)
+                ? files.filter(f => selectedFiles.includes(f.path))
+                : [contextMenu.file]}
               onClose={() => setContextMenu(null)}
               onRefresh={onRefresh || (() => {})}
               clipboard={clipboard}
@@ -688,10 +1139,34 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   if (actualFile.isDirectory) return null
                   const { user } = usePDMStore.getState()
                   if (actualFile.pdmData?.checked_out_by === user?.id) {
-                    return <Lock size={12} className="text-pdm-warning flex-shrink-0" />
+                    if (user?.avatar_url) {
+                      return (
+                        <img 
+                          src={user.avatar_url} 
+                          alt="You"
+                          title="Checked out by you"
+                          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning"
+                        />
+                      )
+                    }
+                    return <Lock size={12} className="text-pdm-warning flex-shrink-0" title="Checked out by you" />
                   }
                   if (actualFile.pdmData?.checked_out_by) {
-                    return <Lock size={12} className="text-pdm-error flex-shrink-0" />
+                    const checkedOutUser = (actualFile.pdmData as any).checked_out_user
+                    const avatarUrl = checkedOutUser?.avatar_url
+                    const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
+                    
+                    if (avatarUrl) {
+                      return (
+                        <img 
+                          src={avatarUrl} 
+                          alt={displayName}
+                          title={`Checked out by ${displayName}`}
+                          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error"
+                        />
+                      )
+                    }
+                    return <Lock size={12} className="text-pdm-error flex-shrink-0" title={`Checked out by ${displayName}`} />
                   }
                   if (actualFile.diffStatus === 'cloud') {
                     return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
@@ -911,9 +1386,60 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         </span>
                       )}
                       
-                      {/* Unpin button */}
+                      {/* Inline action buttons for pinned items */}
+                      {actualFile && pinned.vaultId === activeVaultId && (() => {
+                        const hasCloudFiles = actualFile.isDirectory && files.some(f => 
+                          !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(actualFile.relativePath + '/')
+                        )
+                        const hasCheckoutableFiles = actualFile.isDirectory && files.some(f => 
+                          !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(actualFile.relativePath + '/')
+                        )
+                        const hasMyCheckedOutFiles = actualFile.isDirectory && files.some(f => 
+                          !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(actualFile.relativePath + '/')
+                        )
+                        
+                        const showDownload = actualFile.diffStatus === 'cloud' || hasCloudFiles
+                        const showCheckout = (!actualFile.isDirectory && actualFile.pdmData && !actualFile.pdmData.checked_out_by && actualFile.diffStatus !== 'cloud') || hasCheckoutableFiles
+                        const showCheckin = (!actualFile.isDirectory && actualFile.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
+                        
+                        if (!showDownload && !showCheckout && !showCheckin) return null
+                        
+                        return (
+                          <span className="inline-actions flex items-center gap-0.5 ml-1">
+                            {showDownload && (
+                              <button
+                                className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                                onClick={(e) => handleInlineDownload(e, actualFile)}
+                                title="Download"
+                              >
+                                <ArrowDown size={12} />
+                              </button>
+                            )}
+                            {showCheckout && (
+                              <button
+                                className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
+                                onClick={(e) => handleInlineCheckout(e, actualFile)}
+                                title="Check Out"
+                              >
+                                <ArrowDown size={12} />
+                              </button>
+                            )}
+                            {showCheckin && (
+                              <button
+                                className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                                onClick={(e) => handleInlineCheckin(e, actualFile)}
+                                title="Check In"
+                              >
+                                <ArrowUp size={12} />
+                              </button>
+                            )}
+                          </span>
+                        )
+                      })()}
+                      
+                      {/* Unpin button - slightly visible, full on hover */}
                       <button
-                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-pdm-bg rounded transition-opacity ml-1"
+                        className="opacity-30 group-hover:opacity-100 p-0.5 hover:bg-pdm-fg-muted/20 rounded transition-opacity ml-1"
                         onClick={(e) => {
                           e.stopPropagation()
                           unpinFolder(pinned.path)
@@ -921,7 +1447,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         }}
                         title="Unpin"
                       >
-                        <X size={12} className="text-pdm-fg-muted" />
+                        <PinOff size={12} className="text-pdm-fg-muted" />
                       </button>
                     </div>
                     
@@ -948,7 +1474,9 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           x={contextMenu.x}
           y={contextMenu.y}
           files={files}
-          contextFiles={[contextMenu.file]}
+          contextFiles={selectedFiles.length > 1 && selectedFiles.includes(contextMenu.file.path)
+            ? files.filter(f => selectedFiles.includes(f.path))
+            : [contextMenu.file]}
           onClose={() => setContextMenu(null)}
           onRefresh={onRefresh || (() => {})}
           clipboard={clipboard}

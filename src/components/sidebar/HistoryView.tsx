@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { FileText, User, Clock, ArrowUp, ArrowDown, Trash2, Edit, RefreshCw, FolderPlus, MoveRight } from 'lucide-react'
+import { FileText, User, Clock, ArrowUp, ArrowDown, Trash2, Edit, RefreshCw, FolderPlus, MoveRight, X, FolderOpen } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { getRecentActivity } from '../../lib/supabase'
 import { formatDistanceToNow } from 'date-fns'
@@ -28,7 +28,7 @@ const ACTION_INFO: Record<string, { icon: React.ReactNode; label: string; color:
 }
 
 export function HistoryView() {
-  const { organization, isVaultConnected } = usePDMStore()
+  const { organization, isVaultConnected, historyFolderFilter, setHistoryFolderFilter } = usePDMStore()
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
 
@@ -60,6 +60,16 @@ export function HistoryView() {
     const interval = setInterval(loadActivity, 30000)
     return () => clearInterval(interval)
   }, [isVaultConnected, organization])
+  
+  // Filter activity by folder if filter is set
+  const filteredActivity = historyFolderFilter
+    ? activity.filter(entry => {
+        if (!entry.file?.file_path) return false
+        // Check if file path starts with the filter path
+        return entry.file.file_path.startsWith(historyFolderFilter + '/') || 
+               entry.file.file_path === historyFolderFilter
+      })
+    : activity
 
   if (!isVaultConnected) {
     return (
@@ -80,20 +90,37 @@ export function HistoryView() {
   return (
     <div className="p-4">
       <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">
-        Vault Activity
+        {historyFolderFilter ? 'Folder History' : 'Vault Activity'}
       </div>
+      
+      {/* Folder filter indicator */}
+      {historyFolderFilter && (
+        <div className="flex items-center gap-2 mb-3 p-2 bg-pdm-bg-light rounded border border-pdm-border">
+          <FolderOpen size={14} className="text-pdm-accent flex-shrink-0" />
+          <span className="text-sm truncate flex-1" title={historyFolderFilter}>
+            {historyFolderFilter.split('/').pop() || historyFolderFilter}
+          </span>
+          <button
+            onClick={() => setHistoryFolderFilter(null)}
+            className="p-0.5 hover:bg-pdm-bg rounded text-pdm-fg-muted hover:text-pdm-fg"
+            title="Clear filter"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
-      {isLoading && activity.length === 0 ? (
+      {isLoading && filteredActivity.length === 0 ? (
         <div className="flex items-center justify-center py-8">
           <div className="spinner" />
         </div>
-      ) : activity.length === 0 ? (
+      ) : filteredActivity.length === 0 ? (
         <div className="text-sm text-pdm-fg-muted py-4 text-center">
-          No recent activity
+          {historyFolderFilter ? 'No activity in this folder' : 'No recent activity'}
         </div>
       ) : (
         <div className="space-y-2">
-          {activity.map((entry) => {
+          {filteredActivity.map((entry) => {
             const actionInfo = ACTION_INFO[entry.action] || { 
               icon: <FileText size={14} />, 
               label: entry.action, 

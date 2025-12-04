@@ -101,6 +101,7 @@ declare global {
       openFile: (path: string) => Promise<OperationResult>
       setReadonly: (path: string, readonly: boolean) => Promise<OperationResult>
       isReadonly: (path: string) => Promise<{ success: boolean; readonly?: boolean; error?: string }>
+      startDrag: (filePaths: string[]) => void
       
       // Dialogs
       selectFiles: () => Promise<FileSelectResult>

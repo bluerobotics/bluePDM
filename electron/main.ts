@@ -708,9 +708,55 @@ ipcMain.handle('fs:delete', async (_, targetPath: string) => {
   }
 })
 
-// Native file drag is disabled due to Electron crashpad issues on Windows
-// Use "Show in Explorer" or copy/paste instead
-// ipcMain.on('fs:start-drag', ...) - disabled
+// Native file drag - allows dragging files out of the app to Explorer, Chrome, etc.
+// Create a simple 32x32 PNG icon for drag operations
+const DRAG_ICON = nativeImage.createFromDataURL(
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABjSURBVFhH7c0xDQAgDAXQskKxgBUsYAErWMECFv7OwEImXEOTN/wdPwEAAAAAAACU7F0z27sZuweeAAAAAAAAlOzdM9u7GbsHngAAAAAAAJTs3TPbuxm7B56AAAAAgF9mZgO0VARYFxh/1QAAAABJRU5ErkJggg=='
+)
+
+// Check if running as admin (which breaks drag-and-drop on Windows)
+let warnedAboutAdmin = false
+
+ipcMain.on('fs:start-drag', (event, filePaths: string[]) => {
+  console.log('[Main] fs:start-drag received:', filePaths)
+  
+  // Warn once if running elevated (admin) - this breaks drag-and-drop on Windows
+  if (!warnedAboutAdmin && process.platform === 'win32') {
+    try {
+      // Check for admin by trying to read a protected location
+      const isElevated = process.env.USERNAME?.toLowerCase() !== process.env.USERPROFILE?.toLowerCase().split('\\').pop()
+      if (process.getuid && process.getuid() === 0) {
+        console.warn('[Main] WARNING: Running as administrator breaks drag-and-drop on Windows!')
+        warnedAboutAdmin = true
+      }
+    } catch {}
+  }
+  
+  // Filter to only existing files
+  const validPaths = filePaths.filter(p => {
+    try {
+      return fs.existsSync(p) && fs.statSync(p).isFile()
+    } catch {
+      return false
+    }
+  })
+  
+  if (validPaths.length === 0) {
+    console.log('[Main] No valid paths, skipping startDrag')
+    return
+  }
+  
+  try {
+    console.log('[Main] Calling startDrag for', validPaths.length, 'files')
+    event.sender.startDrag({
+      files: validPaths,
+      icon: DRAG_ICON
+    })
+    console.log('[Main] startDrag completed successfully')
+  } catch (err) {
+    console.error('[Main] startDrag error:', err)
+  }
+})
 
 ipcMain.handle('fs:rename', async (_, oldPath: string, newPath: string) => {
   try {
