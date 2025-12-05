@@ -9,18 +9,24 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 // Check if Supabase is configured
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true
-  },
-  realtime: {
-    params: {
-      eventsPerSecond: 10
+// Only create the client if credentials are configured
+// Use a dummy URL to prevent crash, but isSupabaseConfigured will gate all operations
+export const supabase = createClient<Database>(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder-key',
+  {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true
+    },
+    realtime: {
+      params: {
+        eventsPerSecond: 10
+      }
     }
   }
-})
+)
 
 // Set up listener for OAuth tokens from Electron main process (production only)
 let sessionResolver: ((success: boolean) => void) | null = null
