@@ -83,6 +83,7 @@ declare global {
       getWorkingDir: () => Promise<string | null>
       setWorkingDir: (path: string) => Promise<PathResult>
       createWorkingDir: (path: string) => Promise<PathResult>
+      clearWorkingDir: () => Promise<{ success: boolean }>
       
       // File system operations
       readFile: (path: string) => Promise<FileReadResult>
