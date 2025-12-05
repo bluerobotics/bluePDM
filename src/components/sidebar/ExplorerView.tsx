@@ -21,7 +21,11 @@ import {
   Loader2,
   ArrowDown,
   ArrowUp,
-  PinOff
+  PinOff,
+  Unlink,
+  FolderOpen as FolderOpenIcon,
+  AlertTriangle,
+  Check
 } from 'lucide-react'
 import { checkoutFile, checkinFile } from '../../lib/supabase'
 import { downloadFile } from '../../lib/storage'
@@ -73,9 +77,18 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     isProgressToastCancelled,
     addProcessingFolder,
     removeProcessingFolder,
+    removeConnectedVault,
+    setFiles,
+    setServerFiles,
+    setFilesLoaded,
+    setVaultPath,
+    setVaultConnected,
   } = usePDMStore()
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: LocalFile } | null>(null)
+  const [vaultContextMenu, setVaultContextMenu] = useState<{ x: number; y: number; vault: ConnectedVault } | null>(null)
+  const [disconnectingVault, setDisconnectingVault] = useState<ConnectedVault | null>(null)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [clipboard, setClipboard] = useState<{ files: LocalFile[]; operation: 'copy' | 'cut' } | null>(null)
   const [lastClickTime, setLastClickTime] = useState<number>(0)
   const [lastClickPath, setLastClickPath] = useState<string | null>(null)
@@ -94,6 +107,69 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       onRefresh?.(true)
     } else {
       addToast('error', 'Failed to delete')
+    }
+  }
+  
+  // Get files that need attention before disconnect
+  const getDisconnectWarnings = () => {
+    const checkedOutFiles = files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id)
+    const newFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'added')
+    const modifiedFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'modified')
+    return { checkedOutFiles, newFiles, modifiedFiles }
+  }
+  
+  const handleVaultContextMenu = (e: React.MouseEvent, vault: ConnectedVault) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setVaultContextMenu({ x: e.clientX, y: e.clientY, vault })
+  }
+  
+  const confirmDisconnect = async () => {
+    if (!disconnectingVault) return
+    
+    setIsDisconnecting(true)
+    
+    // Delete local folder
+    let folderDeleted = false
+    if (disconnectingVault.localPath) {
+      const api = window.electronAPI
+      if (api) {
+        try {
+          // Stop file watcher first
+          await api.clearWorkingDir()
+          await new Promise(resolve => setTimeout(resolve, 200))
+          
+          const result = await api.deleteItem(disconnectingVault.localPath)
+          if (result.success) {
+            folderDeleted = true
+          } else {
+            console.error('Failed to delete local folder:', result.error)
+            addToast('warning', `Could not delete local folder: ${result.error}`)
+          }
+        } catch (err) {
+          console.error('Failed to delete local folder:', err)
+          addToast('warning', `Could not delete local folder: ${err}`)
+        }
+      }
+    }
+    
+    // Clear file state if this was the active vault
+    if (disconnectingVault.id === activeVaultId) {
+      setFiles([])
+      setServerFiles([])
+      setFilesLoaded(false)
+      setVaultPath(null)
+      setVaultConnected(false)
+    }
+    
+    removeConnectedVault(disconnectingVault.id)
+    setDisconnectingVault(null)
+    setIsDisconnecting(false)
+    
+    if (folderDeleted) {
+      addToast('success', 'Vault disconnected and local files deleted')
+    } else {
+      addToast('info', 'Vault disconnected (local folder may still exist)')
     }
   }
   
@@ -944,6 +1020,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               toggleVaultExpanded(vault.id)
             }
           }}
+          onContextMenu={(e) => handleVaultContextMenu(e, vault)}
         >
           <span 
             className="cursor-pointer"
@@ -1480,6 +1557,171 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           onRename={handleRename}
           onNewFolder={handleNewFolder}
         />
+      )}
+      
+      {/* Vault Context Menu */}
+      {vaultContextMenu && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setVaultContextMenu(null)}
+        >
+          <div
+            className="fixed bg-pdm-bg-light border border-pdm-border rounded-lg shadow-xl py-1 min-w-[160px]"
+            style={{ left: vaultContextMenu.x, top: vaultContextMenu.y }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              className="w-full px-3 py-2 text-left text-sm hover:bg-pdm-highlight flex items-center gap-2 text-pdm-fg"
+              onClick={() => {
+                if (vaultContextMenu.vault.localPath) {
+                  window.electronAPI?.openInExplorer(vaultContextMenu.vault.localPath)
+                }
+                setVaultContextMenu(null)
+              }}
+            >
+              <FolderOpenIcon size={14} />
+              Open in Explorer
+            </button>
+            <div className="border-t border-pdm-border my-1" />
+            <button
+              className="w-full px-3 py-2 text-left text-sm hover:bg-pdm-highlight flex items-center gap-2 text-pdm-warning"
+              onClick={() => {
+                setDisconnectingVault(vaultContextMenu.vault)
+                setVaultContextMenu(null)
+              }}
+            >
+              <Unlink size={14} />
+              Disconnect Vault
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Disconnect Vault Confirmation Dialog */}
+      {disconnectingVault && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          onClick={() => setDisconnectingVault(null)}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-warning/50 rounded-xl shadow-2xl w-[480px] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-pdm-border bg-pdm-warning/10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-pdm-warning/20 rounded-full">
+                  <AlertTriangle size={24} className="text-pdm-warning" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-pdm-fg">Disconnect Vault</h3>
+                  <p className="text-sm text-pdm-fg-muted">"{disconnectingVault.name}"</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              {(() => {
+                const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                const hasBlockingIssues = checkedOutFiles.length > 0 || newFiles.length > 0 || modifiedFiles.length > 0
+                
+                return (
+                  <>
+                    {hasBlockingIssues ? (
+                      <div className="p-4 bg-pdm-error/10 border border-pdm-error/30 rounded-lg space-y-3">
+                        <p className="text-sm font-medium text-pdm-error">
+                          You must resolve these issues before disconnecting:
+                        </p>
+                        
+                        {checkedOutFiles.length > 0 && (
+                          <div className="bg-pdm-bg/50 p-2 rounded">
+                            <p className="text-sm text-pdm-fg flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-accent rounded-full"></span>
+                              <strong>{checkedOutFiles.length}</strong> file{checkedOutFiles.length !== 1 ? 's' : ''} checked out
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">Check in or undo checkout</p>
+                          </div>
+                        )}
+                        
+                        {newFiles.length > 0 && (
+                          <div className="bg-pdm-bg/50 p-2 rounded">
+                            <p className="text-sm text-pdm-fg flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-success rounded-full"></span>
+                              <strong>{newFiles.length}</strong> new file{newFiles.length !== 1 ? 's' : ''} not synced
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">Sync or delete locally</p>
+                          </div>
+                        )}
+                        
+                        {modifiedFiles.length > 0 && (
+                          <div className="bg-pdm-bg/50 p-2 rounded">
+                            <p className="text-sm text-pdm-fg flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-warning rounded-full"></span>
+                              <strong>{modifiedFiles.length}</strong> modified file{modifiedFiles.length !== 1 ? 's' : ''}
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">Check out & check in, or revert</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-4 bg-pdm-success/10 border border-pdm-success/30 rounded-lg">
+                        <p className="text-sm text-pdm-fg flex items-center gap-2">
+                          <Check size={16} className="text-pdm-success" />
+                          All files are synced. Safe to disconnect.
+                        </p>
+                      </div>
+                    )}
+                    
+                    <p className="text-sm text-pdm-fg-muted">
+                      {hasBlockingIssues 
+                        ? "Close this dialog and resolve the issues above."
+                        : "Local files will be deleted. You can reconnect anytime."}
+                    </p>
+                  </>
+                )
+              })()}
+            </div>
+            
+            {/* Actions */}
+            <div className="p-4 border-t border-pdm-border bg-pdm-bg flex justify-end gap-3">
+              <button
+                onClick={() => setDisconnectingVault(null)}
+                className="btn btn-ghost"
+                disabled={isDisconnecting}
+              >
+                {(() => {
+                  const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                  return (checkedOutFiles.length > 0 || newFiles.length > 0 || modifiedFiles.length > 0) ? 'Close' : 'Cancel'
+                })()}
+              </button>
+              {(() => {
+                const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                const canDisconnect = checkedOutFiles.length === 0 && newFiles.length === 0 && modifiedFiles.length === 0
+                
+                return canDisconnect ? (
+                  <button
+                    onClick={confirmDisconnect}
+                    disabled={isDisconnecting}
+                    className="btn bg-pdm-warning hover:bg-pdm-warning/80 text-black disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isDisconnecting ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        Disconnecting...
+                      </>
+                    ) : (
+                      <>
+                        <Unlink size={16} />
+                        Disconnect
+                      </>
+                    )}
+                  </button>
+                ) : null
+              })()}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
