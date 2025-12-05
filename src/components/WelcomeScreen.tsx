@@ -3,6 +3,19 @@ import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Databa
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
 
+// Build vault path based on platform
+function buildVaultPath(platform: string, vaultSlug: string): string {
+  if (platform === 'darwin') {
+    // macOS: ~/Documents/BluePDM/vault-name
+    return `~/Documents/BluePDM/${vaultSlug}`
+  } else if (platform === 'linux') {
+    return `~/BluePDM/${vaultSlug}`
+  } else {
+    // Windows: C:\BluePDM\vault-name
+    return `C:\\BluePDM\\${vaultSlug}`
+  }
+}
+
 interface VaultStats {
   fileCount: number
   totalSize: number
@@ -51,6 +64,14 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
   const [isLoadingVaults, setIsLoadingVaults] = useState(false)
   const [connectingVaultId, setConnectingVaultId] = useState<string | null>(null)
+  const [platform, setPlatform] = useState<string>('win32')
+
+  // Get platform on mount
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.getPlatform().then(setPlatform)
+    }
+  }, [])
 
   // Auto-connect on mount if we have connected vaults
   useEffect(() => {
@@ -140,8 +161,8 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     setConnectingVaultId(vault.id)
     
     try {
-      // Create vault folder in C:\BluePDM\ to avoid conflicts with other software
-      const vaultPath = `C:\\BluePDM\\${vault.slug}`
+      // Create vault folder based on platform
+      const vaultPath = buildVaultPath(platform, vault.slug)
       const result = await window.electronAPI.createWorkingDir(vaultPath)
       
       if (result.success && result.path) {
@@ -179,9 +200,9 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
       if (recentVaults.length > 0) {
         vaultPath = recentVaults[0]
       } else if (organization) {
-        vaultPath = `C:\\BluePDM\\${organization.slug}`
+        vaultPath = buildVaultPath(platform, organization.slug)
       } else {
-        vaultPath = `C:\\BluePDM\\local-vault`
+        vaultPath = buildVaultPath(platform, 'local-vault')
       }
       
       const result = await window.electronAPI.createWorkingDir(vaultPath)
@@ -473,7 +494,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
                   Local Vault
                 </h2>
                 <p className="text-xs text-pdm-fg-muted truncate">
-                  {recentVaults[0] || 'C:\\pdm-vault'}
+                  {recentVaults[0] || buildVaultPath(platform, 'local-vault')}
                 </p>
               </div>
             </div>

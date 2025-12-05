@@ -211,10 +211,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       return
     }
     
-    // Build new path
+    // Build new path (use the same path separator as the original)
+    const pathSep = oldPath.includes('/') ? '/' : '\\'
     const pathParts = oldPath.split(/[/\\]/)
     pathParts[pathParts.length - 1] = newName
-    const newPath = pathParts.join('\\')
+    const newPath = pathParts.join(pathSep)
     
     const result = await window.electronAPI?.moveFile(oldPath, newPath)
     if (result?.success) {

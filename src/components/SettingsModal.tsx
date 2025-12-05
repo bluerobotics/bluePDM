@@ -29,6 +29,19 @@ import {
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { supabase, signOut } from '../lib/supabase'
 
+// Build vault path based on platform
+function buildVaultPath(platform: string, vaultSlug: string): string {
+  if (platform === 'darwin') {
+    // macOS: ~/Documents/BluePDM/vault-name
+    return `~/Documents/BluePDM/${vaultSlug}`
+  } else if (platform === 'linux') {
+    return `~/BluePDM/${vaultSlug}`
+  } else {
+    // Windows: C:\BluePDM\vault-name
+    return `C:\\BluePDM\\${vaultSlug}`
+  }
+}
+
 type SettingsTab = 'account' | 'vault' | 'organization' | 'preferences' | 'about'
 
 interface OrgUser {
@@ -96,6 +109,16 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const [disconnectingVault, setDisconnectingVault] = useState<{ id: string; name: string } | null>(null)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
+  const [platform, setPlatform] = useState<string>('win32')
+  
+  // Get app version and platform
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.getVersion().then(setAppVersion)
+      window.electronAPI.getPlatform().then(setPlatform)
+    }
+  }, [])
   
   // Load org users and vaults when organization tab is selected
   useEffect(() => {
@@ -254,9 +277,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         // Rename the local folder too
         const api = (window as any).electronAPI
         if (api && connectedVault.localPath) {
+          // Use the same path separator as the original path
+          const pathSep = connectedVault.localPath.includes('/') ? '/' : '\\'
           const pathParts = connectedVault.localPath.split(/[/\\]/)
           pathParts[pathParts.length - 1] = newName.replace(/[<>:"/\\|?*]/g, '-')
-          const newPath = pathParts.join('\\')
+          const newPath = pathParts.join(pathSep)
           
           if (newPath !== connectedVault.localPath) {
             const result = await api.renameItem(connectedVault.localPath, newPath)
@@ -382,8 +407,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         return
       }
       
-      // Create vault folder in C:\BluePDM\ to avoid conflicts with other software
-      const localPath = `C:\\BluePDM\\${vault.slug}`
+      // Create vault folder based on platform
+      const localPath = buildVaultPath(platform, vault.slug)
       const result = await api.createWorkingDir(localPath)
       
       if (result.success && result.path) {
@@ -1047,9 +1072,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <p className="text-pdm-fg-dim mb-2">
                     Open source Product Data Management for engineering teams
                   </p>
-                  <p className="text-sm text-pdm-fg-muted">
-                    Version 0.7.1
-                  </p>
+                  {appVersion && (
+                    <p className="text-sm text-pdm-fg-muted">
+                      Version {appVersion}
+                    </p>
+                  )}
                 </div>
                 
                 {/* Links */}

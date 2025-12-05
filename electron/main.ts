@@ -506,13 +506,20 @@ ipcMain.handle('working-dir:set', async (_, newPath: string) => {
 
 ipcMain.handle('working-dir:create', async (_, newPath: string) => {
   try {
-    // Create the directory if it doesn't exist
-    if (!fs.existsSync(newPath)) {
-      fs.mkdirSync(newPath, { recursive: true })
-      log('Created working directory:', newPath)
+    // Expand ~ to home directory on macOS/Linux
+    let expandedPath = newPath
+    if (newPath.startsWith('~')) {
+      const homedir = require('os').homedir()
+      expandedPath = newPath.replace(/^~/, homedir)
     }
-    workingDirectory = newPath
-    startFileWatcher(newPath)
+    
+    // Create the directory if it doesn't exist
+    if (!fs.existsSync(expandedPath)) {
+      fs.mkdirSync(expandedPath, { recursive: true })
+      log('Created working directory:', expandedPath)
+    }
+    workingDirectory = expandedPath
+    startFileWatcher(expandedPath)
     return { success: true, path: workingDirectory }
   } catch (err) {
     log('Error creating working directory:', err)

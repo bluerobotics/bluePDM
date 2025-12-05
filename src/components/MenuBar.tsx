@@ -17,6 +17,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
+  const [platform, setPlatform] = useState<string>('win32') // Default to Windows
   const [localSearch, setLocalSearch] = useState(searchQuery || '')
   const menuRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -37,6 +38,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.getVersion().then(setAppVersion)
+      window.electronAPI.getPlatform().then(setPlatform)
       // Get the actual titlebar overlay rect
       window.electronAPI.getTitleBarOverlayRect?.().then((rect) => {
         if (rect?.width) {
@@ -79,8 +81,11 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
 
   return (
     <div className="h-[38px] bg-pdm-activitybar border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region relative">
-      {/* Left side - App name */}
-      <div className="absolute left-0 top-0 h-full flex items-center">
+      {/* Left side - App name (add padding on macOS for window buttons) */}
+      <div 
+        className="absolute left-0 top-0 h-full flex items-center"
+        style={{ paddingLeft: platform === 'darwin' ? 72 : 0 }}
+      >
         <div className="flex items-center gap-2 px-4 titlebar-no-drag">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
             <path 
@@ -190,10 +195,10 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
         )}
       </div>
 
-      {/* Right side - Settings and User (with padding for window controls) */}
+      {/* Right side - Settings and User (with padding for window controls on Windows) */}
       <div 
         className="absolute right-0 top-0 h-full flex items-center gap-2 pl-4 titlebar-no-drag"
-        style={{ paddingRight: titleBarPadding }}
+        style={{ paddingRight: platform === 'darwin' ? 16 : titleBarPadding }}
       >
         {/* Settings gear - hidden on welcome/signin screens */}
         {!minimal && (
