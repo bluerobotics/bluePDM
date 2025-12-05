@@ -1077,6 +1077,17 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 </div>
               )}
               
+              {/* My checkouts indicator - moved left */}
+              {checkedOutByMeCount > 0 && (
+                <div 
+                  className="flex items-center gap-0.5 text-[10px] text-pdm-accent bg-pdm-accent/10 px-1.5 py-0.5 rounded"
+                  title={`${checkedOutByMeCount} files checked out by you`}
+                >
+                  <Lock size={10} />
+                  <span>{checkedOutByMeCount}</span>
+                </div>
+              )}
+              
               {/* Cloud files indicator */}
               {cloudFilesCount > 0 && (
                 <div 
@@ -1088,21 +1099,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 </div>
               )}
               
-              {/* My checkouts indicator */}
-              {checkedOutByMeCount > 0 && (
-                <div 
-                  className="flex items-center gap-0.5 text-[10px] text-pdm-accent bg-pdm-accent/10 px-1.5 py-0.5 rounded"
-                  title={`${checkedOutByMeCount} files checked out by you`}
-                >
-                  <Lock size={10} />
-                  <span>{checkedOutByMeCount}</span>
-                </div>
-              )}
-              
-              {/* Download all cloud files button */}
+              {/* Download all cloud files button - slightly visible */}
               {cloudFilesCount > 0 && (
                 <button
-                  className="p-1 rounded hover:bg-pdm-bg/50 text-pdm-fg-muted hover:text-pdm-success opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="p-1 rounded hover:bg-pdm-bg/50 text-pdm-fg-muted/50 hover:text-pdm-success transition-colors"
                   title={`Download ${cloudFilesCount} cloud files`}
                   onClick={(e) => {
                     e.stopPropagation()
