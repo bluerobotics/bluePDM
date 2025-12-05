@@ -927,18 +927,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             
             if (!showDownload && !showCheckout && !showCheckin) return null
             
+            if (!showCheckout && !showCheckin) return null
+            
             return (
               <span className="inline-actions flex items-center gap-0.5 ml-1">
-                {/* Download - for cloud items */}
-                {showDownload && (
-                  <button
-                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
-                    onClick={(e) => handleInlineDownload(e, file)}
-                    title="Download"
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                )}
                 {/* Check Out - for synced files/folders not checked out */}
                 {showCheckout && (
                   <button
@@ -982,9 +974,28 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5">
                   <Cloud size={10} />
                   {diffCounts.cloud}
+                  {/* Download button right after cloud count */}
+                  <button
+                    className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-0.5"
+                    onClick={(e) => handleInlineDownload(e, file)}
+                    title="Download cloud files"
+                  >
+                    <ArrowDown size={10} />
+                  </button>
                 </span>
               )}
             </span>
+          )}
+          
+          {/* Download for individual cloud files (not folders) */}
+          {!isRenaming && !file.isDirectory && file.diffStatus === 'cloud' && (
+            <button
+              className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-1"
+              onClick={(e) => handleInlineDownload(e, file)}
+              title="Download"
+            >
+              <ArrowDown size={12} />
+            </button>
           )}
           
         </div>
