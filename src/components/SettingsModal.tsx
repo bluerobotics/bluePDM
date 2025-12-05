@@ -59,9 +59,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     user, 
     organization, 
     connectedVaults,
+    activeVaultId,
     addConnectedVault,
     removeConnectedVault,
     updateConnectedVault,
+    setFiles,
+    setServerFiles,
+    setFilesLoaded,
+    setVaultPath,
     setUser,
     setOrganization,
     addToast,
@@ -425,9 +430,17 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       }
     }
     
+    // Clear file state if this was the active vault
+    if (vaultId === activeVaultId) {
+      setFiles([])
+      setServerFiles([])
+      setFilesLoaded(false)
+      setVaultPath(null)
+    }
+    
     removeConnectedVault(vaultId)
     if (folderDeleted) {
-      addToast('success', 'Vault disconnected and local folder moved to Recycle Bin')
+      addToast('success', 'Vault disconnected and local files deleted')
     } else {
       addToast('info', 'Vault disconnected (local folder may still exist)')
     }
