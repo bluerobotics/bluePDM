@@ -1007,11 +1007,23 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const isActive = activeVaultId === vault.id
     const isExpanded = vault.isExpanded
     
+    // Calculate vault stats when active
+    const cloudFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length : 0
+    const checkedOutByMeCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length : 0
+    const checkedOutByOthers = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id) : []
+    
+    // Get unique users who have files checked out (excluding me)
+    const otherCheckoutUsers = isActive ? [...new Map(
+      checkedOutByOthers
+        .filter(f => f.pdmData?.checked_out_user)
+        .map(f => [f.pdmData!.checked_out_by, f.pdmData!.checked_out_user])
+    ).values()] : []
+    
     return (
       <div key={vault.id} className="border-b border-pdm-border last:border-b-0">
         {/* Vault header */}
         <div 
-          className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
+          className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
             isActive ? 'bg-pdm-highlight text-pdm-fg' : 'text-pdm-fg-dim hover:bg-pdm-highlight/50'
           }`}
           onClick={() => {
@@ -1038,6 +1050,70 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           <span className="flex-1 truncate text-sm font-medium">
             {vault.name}
           </span>
+          
+          {/* Inline badges and actions */}
+          {isActive && (
+            <div className="flex items-center gap-1">
+              {/* Stacked avatars of users with checkouts */}
+              {otherCheckoutUsers.length > 0 && (
+                <div className="flex -space-x-1.5" title={`${otherCheckoutUsers.length} user${otherCheckoutUsers.length > 1 ? 's' : ''} have files checked out`}>
+                  {otherCheckoutUsers.slice(0, 3).map((u: any, i) => (
+                    <div key={i} className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light overflow-hidden flex-shrink-0">
+                      {u?.avatar_url ? (
+                        <img src={u.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-pdm-accent/30 flex items-center justify-center text-[10px] font-medium text-pdm-accent">
+                          {u?.full_name?.[0] || u?.email?.[0] || '?'}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {otherCheckoutUsers.length > 3 && (
+                    <div className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light bg-pdm-bg-light flex items-center justify-center text-[9px] text-pdm-fg-muted flex-shrink-0">
+                      +{otherCheckoutUsers.length - 3}
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Cloud files indicator */}
+              {cloudFilesCount > 0 && (
+                <div 
+                  className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted bg-pdm-bg/50 px-1.5 py-0.5 rounded"
+                  title={`${cloudFilesCount} files available to download`}
+                >
+                  <Cloud size={10} />
+                  <span>{cloudFilesCount}</span>
+                </div>
+              )}
+              
+              {/* My checkouts indicator */}
+              {checkedOutByMeCount > 0 && (
+                <div 
+                  className="flex items-center gap-0.5 text-[10px] text-pdm-accent bg-pdm-accent/10 px-1.5 py-0.5 rounded"
+                  title={`${checkedOutByMeCount} files checked out by you`}
+                >
+                  <Lock size={10} />
+                  <span>{checkedOutByMeCount}</span>
+                </div>
+              )}
+              
+              {/* Download all cloud files button */}
+              {cloudFilesCount > 0 && (
+                <button
+                  className="p-1 rounded hover:bg-pdm-bg/50 text-pdm-fg-muted hover:text-pdm-success opacity-0 group-hover:opacity-100 transition-opacity"
+                  title={`Download ${cloudFilesCount} cloud files`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    // TODO: Implement bulk download
+                    addToast('info', `Download all ${cloudFilesCount} cloud files coming soon!`)
+                  }}
+                >
+                  <ArrowDown size={14} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
         
         {/* Vault contents */}
