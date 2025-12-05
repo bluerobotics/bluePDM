@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWorkingDir: () => ipcRenderer.invoke('working-dir:get'),
   setWorkingDir: (path: string) => ipcRenderer.invoke('working-dir:set', path),
   createWorkingDir: (path: string) => ipcRenderer.invoke('working-dir:create', path),
+  clearWorkingDir: () => ipcRenderer.invoke('working-dir:clear'),
 
   // File system operations
   readFile: (path: string) => ipcRenderer.invoke('fs:read-file', path),
@@ -196,6 +197,7 @@ declare global {
       getWorkingDir: () => Promise<string | null>
       setWorkingDir: (path: string) => Promise<PathResult>
       createWorkingDir: (path: string) => Promise<PathResult>
+      clearWorkingDir: () => Promise<OperationResult>
       
       // File system operations
       readFile: (path: string) => Promise<FileReadResult>

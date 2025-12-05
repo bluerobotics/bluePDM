@@ -488,6 +488,13 @@ ipcMain.handle('working-dir:select', async () => {
 
 ipcMain.handle('working-dir:get', () => workingDirectory)
 
+ipcMain.handle('working-dir:clear', () => {
+  log('Clearing working directory and stopping file watcher')
+  stopFileWatcher()
+  workingDirectory = null
+  return { success: true }
+})
+
 ipcMain.handle('working-dir:set', async (_, newPath: string) => {
   if (fs.existsSync(newPath)) {
     workingDirectory = newPath
@@ -513,13 +520,19 @@ ipcMain.handle('working-dir:create', async (_, newPath: string) => {
   }
 })
 
-// File watcher for detecting external changes
-function startFileWatcher(dirPath: string) {
-  // Close existing watcher if any
+// Stop file watcher
+function stopFileWatcher() {
   if (fileWatcher) {
+    log('Stopping file watcher')
     fileWatcher.close()
     fileWatcher = null
   }
+}
+
+// File watcher for detecting external changes
+function startFileWatcher(dirPath: string) {
+  // Close existing watcher if any
+  stopFileWatcher()
   
   log('Starting file watcher for:', dirPath)
   
@@ -768,6 +781,16 @@ ipcMain.handle('fs:delete', async (_, targetPath: string) => {
       log('Path does not exist:', targetPath)
       return { success: false, error: 'Path does not exist' }
     }
+    
+    // If deleting the working directory (or a parent), stop the file watcher first
+    if (workingDirectory && (targetPath === workingDirectory || workingDirectory.startsWith(targetPath))) {
+      log('Stopping file watcher before deleting working directory')
+      stopFileWatcher()
+      workingDirectory = null
+      // Give OS time to release file handles
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+    
     // Move to Recycle Bin instead of permanent delete
     await shell.trashItem(targetPath)
     log('Successfully moved to Recycle Bin:', targetPath)

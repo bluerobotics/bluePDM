@@ -406,6 +406,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       const api = window.electronAPI
       if (api) {
         try {
+          // Stop file watcher first to release file handles
+          await api.clearWorkingDir()
+          // Small delay to ensure handles are released
+          await new Promise(resolve => setTimeout(resolve, 200))
+          
           const result = await api.deleteItem(connectedVault.localPath)
           if (result.success) {
             folderDeleted = true
