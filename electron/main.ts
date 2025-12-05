@@ -811,43 +811,48 @@ const DRAG_ICON = nativeImage.createFromDataURL(
 let warnedAboutAdmin = false
 
 ipcMain.on('fs:start-drag', (event, filePaths: string[]) => {
-  console.log('[Main] fs:start-drag received:', filePaths)
-  
-  // Warn once if running elevated (admin) - this breaks drag-and-drop on Windows
-  if (!warnedAboutAdmin && process.platform === 'win32') {
-    try {
-      // Check for admin by trying to read a protected location
-      const isElevated = process.env.USERNAME?.toLowerCase() !== process.env.USERPROFILE?.toLowerCase().split('\\').pop()
-      if (process.getuid && process.getuid() === 0) {
-        console.warn('[Main] WARNING: Running as administrator breaks drag-and-drop on Windows!')
-        warnedAboutAdmin = true
-      }
-    } catch {}
-  }
+  log('fs:start-drag received:', filePaths.length, 'files')
   
   // Filter to only existing files
   const validPaths = filePaths.filter(p => {
     try {
-      return fs.existsSync(p) && fs.statSync(p).isFile()
-    } catch {
+      const exists = fs.existsSync(p)
+      const isFile = exists && fs.statSync(p).isFile()
+      if (!exists) log('  File does not exist:', p)
+      if (exists && !isFile) log('  Not a file:', p)
+      return isFile
+    } catch (err) {
+      log('  Error checking file:', p, err)
       return false
     }
   })
   
   if (validPaths.length === 0) {
-    console.log('[Main] No valid paths, skipping startDrag')
+    log('No valid paths for drag')
     return
   }
   
+  log('Valid paths for drag:', validPaths)
+  
   try {
-    console.log('[Main] Calling startDrag for', validPaths.length, 'files')
-    event.sender.startDrag({
-      files: validPaths,
-      icon: DRAG_ICON
-    })
-    console.log('[Main] startDrag completed successfully')
+    // Use the mainWindow's webContents for more reliable drag
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      log('Calling startDrag via mainWindow.webContents')
+      mainWindow.webContents.startDrag({
+        files: validPaths,
+        icon: DRAG_ICON
+      })
+      log('startDrag completed')
+    } else {
+      log('mainWindow not available, using event.sender')
+      event.sender.startDrag({
+        files: validPaths,
+        icon: DRAG_ICON
+      })
+      log('startDrag via event.sender completed')
+    }
   } catch (err) {
-    console.error('[Main] startDrag error:', err)
+    log('startDrag error:', err)
   }
 })
 
