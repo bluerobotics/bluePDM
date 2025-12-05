@@ -8,7 +8,6 @@ import {
   ArrowDown,
   ArrowUp,
   Cloud,
-  Download,
   CloudOff,
   Edit,
   FolderPlus,
@@ -35,7 +34,6 @@ interface FileContextMenuProps {
   onPaste?: () => void
   onRename?: (file: LocalFile) => void
   onNewFolder?: () => void
-  onDelete?: (file: LocalFile) => void
 }
 
 export function FileContextMenu({
@@ -50,8 +48,7 @@ export function FileContextMenu({
   onCut,
   onPaste,
   onRename,
-  onNewFolder,
-  onDelete
+  onNewFolder
 }: FileContextMenuProps) {
   const { user, organization, vaultPath, activeVaultId, addToast, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addProcessingFolder, removeProcessingFolder, queueOperation, hasPathConflict, updateFileInStore, startSync, updateSyncProgress, endSync } = usePDMStore()
   
@@ -69,7 +66,6 @@ export function FileContextMenu({
   const firstFile = contextFiles[0]
   const isFolder = firstFile.isDirectory
   const allFolders = contextFiles.every(f => f.isDirectory)
-  const allFiles = contextFiles.every(f => !f.isDirectory)
   const fileCount = contextFiles.filter(f => !f.isDirectory).length
   const folderCount = contextFiles.filter(f => f.isDirectory).length
   
@@ -172,7 +168,6 @@ export function FileContextMenu({
   
   // Check for cloud-only files
   const allCloudOnly = contextFiles.every(f => f.diffStatus === 'cloud')
-  const hasLocalFiles = contextFiles.some(f => f.diffStatus !== 'cloud')
   const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0
   
   // Count cloud-only files (for download count) - includes files inside folders

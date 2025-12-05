@@ -11,7 +11,6 @@ import {
   FileText,
   Layers,
   Lock,
-  MoreVertical,
   RefreshCw,
   Upload,
   Home,
@@ -61,7 +60,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     selectedFiles,
     setSelectedFiles,
     toggleFileSelection,
-    selectAllFiles,
     clearSelection,
     columns,
     setColumnWidth,
@@ -100,12 +98,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     processingFolders,
     addProcessingFolder,
     removeProcessingFolder,
-    clearProcessingFolders,
     queueOperation,
     hasPathConflict,
-    operationQueue,
-    setHistoryFolderFilter,
-    setActiveView,
     setDetailsPanelTab,
     detailsPanelVisible,
     toggleDetailsPanel,
@@ -925,7 +919,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   }
 
   // Delete a file or folder (moves to trash/recycle bin)
-  const handleDelete = async (file: LocalFile) => {
+  // @ts-ignore - Reserved for future use
+  const _handleDelete = async (file: LocalFile) => {
     if (!vaultPath || !window.electronAPI) {
       addToast('error', 'No vault connected')
       return
@@ -1855,8 +1850,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           setSelectionBox(prev => prev ? { ...prev, currentX, currentY } : null)
           
           // Calculate selection box bounds
-          const left = Math.min(selectionBox.startX, currentX)
-          const right = Math.max(selectionBox.startX, currentX)
           const top = Math.min(selectionBox.startY, currentY)
           const bottom = Math.max(selectionBox.startY, currentY)
           
@@ -2109,8 +2102,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         // Check out/in status - consider all synced files including those inside folders
         const allCheckedOut = syncedFilesInSelection.length > 0 && syncedFilesInSelection.every(f => f.pdmData?.checked_out_by)
         const allCheckedIn = syncedFilesInSelection.length > 0 && syncedFilesInSelection.every(f => !f.pdmData?.checked_out_by)
-        const anyCheckedOut = syncedFilesInSelection.some(f => f.pdmData?.checked_out_by)
-        const anyCheckedIn = syncedFilesInSelection.some(f => !f.pdmData?.checked_out_by)
         
         // Count files that can be checked out/in (for folder labels)
         const checkoutableCount = syncedFilesInSelection.filter(f => !f.pdmData?.checked_out_by).length
@@ -2142,9 +2133,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         }
         const cloudOnlyCount = getCloudOnlyFilesCount()
         const anyCloudOnly = cloudOnlyCount > 0 || contextFiles.some(f => f.diffStatus === 'cloud')
-        
-        // Check for locally synced files (can be unsynced)
-        const anyLocalSynced = contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'added')
         
         return (
           <>

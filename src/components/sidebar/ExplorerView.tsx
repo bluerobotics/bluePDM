@@ -11,7 +11,6 @@ import {
   Lock,
   Cloud,
   Star,
-  X,
   FileImage,
   FileSpreadsheet,
   FileArchive,
@@ -78,7 +77,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: LocalFile } | null>(null)
   const [clipboard, setClipboard] = useState<{ files: LocalFile[]; operation: 'copy' | 'cut' } | null>(null)
-  const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [lastClickTime, setLastClickTime] = useState<number>(0)
   const [lastClickPath, setLastClickPath] = useState<string | null>(null)
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
@@ -88,6 +86,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [dragOverPinIndex, setDragOverPinIndex] = useState<number | null>(null)
   const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
   
+  // @ts-ignore - Reserved for future use
   const handleDelete = async (file: LocalFile) => {
     const result = await window.electronAPI?.deleteItem(file.path)
     if (result?.success) {
@@ -610,7 +609,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           />
         )
       }
-      return <Lock size={12} className="text-pdm-warning flex-shrink-0" title="Checked out by you" />
+      return <span title="Checked out by you"><Lock size={12} className="text-pdm-warning flex-shrink-0" /></span>
     }
     
     // Checked out by someone else - show their avatar with red ring
@@ -629,7 +628,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           />
         )
       }
-      return <Lock size={12} className="text-pdm-error flex-shrink-0" title={`Checked out by ${displayName}`} />
+      return <span title={`Checked out by ${displayName}`}><Lock size={12} className="text-pdm-error flex-shrink-0" /></span>
     }
     
     // Cloud-only (not downloaded) - grey cloud
@@ -727,9 +726,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               setLastClickedIndex(currentIndex)
             }
             
-            // Update local highlight state
-            setSelectedFile(file.relativePath)
-            
             if (file.isDirectory) {
               // Navigate main pane to this folder
               setCurrentFolder(file.relativePath)
@@ -759,7 +755,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            setSelectedFile(file.relativePath)
             // If right-clicked file is not in selection, select only it
             // Otherwise keep the multi-selection
             if (!selectedFiles.includes(file.path)) {
@@ -1048,7 +1043,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               onPaste={handlePaste}
               onRename={handleRename}
               onNewFolder={handleNewFolder}
-              onDelete={handleDelete}
             />
           )}
         </div>
@@ -1149,7 +1143,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         />
                       )
                     }
-                    return <Lock size={12} className="text-pdm-warning flex-shrink-0" title="Checked out by you" />
+                    return <span title="Checked out by you"><Lock size={12} className="text-pdm-warning flex-shrink-0" /></span>
                   }
                   if (actualFile.pdmData?.checked_out_by) {
                     const checkedOutUser = (actualFile.pdmData as any).checked_out_user
@@ -1166,7 +1160,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         />
                       )
                     }
-                    return <Lock size={12} className="text-pdm-error flex-shrink-0" title={`Checked out by ${displayName}`} />
+                    return <span title={`Checked out by ${displayName}`}><Lock size={12} className="text-pdm-error flex-shrink-0" /></span>
                   }
                   if (actualFile.diffStatus === 'cloud') {
                     return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
@@ -1485,7 +1479,6 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           onPaste={handlePaste}
           onRename={handleRename}
           onNewFolder={handleNewFolder}
-          onDelete={handleDelete}
         />
       )}
     </div>

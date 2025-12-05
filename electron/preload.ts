@@ -159,6 +159,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => {
       ipcRenderer.removeListener('files-changed', handler)
     }
+  },
+  
+  // Auth session listener (for OAuth callback in production)
+  onSetSession: (callback: (tokens: { access_token: string; refresh_token: string; expires_in?: number; expires_at?: number }) => void) => {
+    const handler = (_: unknown, tokens: { access_token: string; refresh_token: string; expires_in?: number; expires_at?: number }) => callback(tokens)
+    ipcRenderer.on('auth:set-session', handler)
+    
+    return () => {
+      ipcRenderer.removeListener('auth:set-session', handler)
+    }
   }
 })
 
@@ -229,6 +239,9 @@ declare global {
       
       // File change events
       onFilesChanged: (callback: (files: string[]) => void) => () => void
+      
+      // Auth session events (for OAuth callback in production)
+      onSetSession: (callback: (tokens: { access_token: string; refresh_token: string; expires_in?: number; expires_at?: number }) => void) => () => void
     }
   }
 }

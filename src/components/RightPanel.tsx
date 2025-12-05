@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { usePDMStore, DetailsPanelTab } from '../stores/pdmStore'
-import { formatFileSize, STATE_INFO, getFileIconType } from '../types/pdm'
-import { format, formatDistanceToNow } from 'date-fns'
+import { usePDMStore } from '../stores/pdmStore'
+import { formatFileSize, getFileIconType } from '../types/pdm'
+import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { 
   FileBox, 
@@ -47,7 +47,7 @@ export function RightPanel() {
   const [pdfLoading, setPdfLoading] = useState(false)
   
   // eDrawings state
-  const [eDrawingsStatus, setEDrawingsStatus] = useState<{ checked: boolean; installed: boolean; path: string | null }>({ checked: false, installed: false, path: null })
+  const [, setEDrawingsStatus] = useState<{ checked: boolean; installed: boolean; path: string | null }>({ checked: false, installed: false, path: null })
 
   // Check if eDrawings is installed
   useEffect(() => {
@@ -170,13 +170,13 @@ export function RightPanel() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        {selectedFiles.length === 0 ? (
+        {selectedFileObjects.length === 0 ? (
           <div className="text-sm text-pdm-fg-muted text-center py-8">
             Select a file to view details
           </div>
-        ) : selectedFiles.length > 1 ? (
+        ) : selectedFileObjects.length > 1 ? (
           <div className="text-sm text-pdm-fg-muted text-center py-8">
-            {selectedFiles.length} files selected
+            {selectedFileObjects.length} files selected
           </div>
         ) : file && (
           <>

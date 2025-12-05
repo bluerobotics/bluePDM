@@ -99,6 +99,7 @@ export interface Database {
         Row: {
           id: string
           org_id: string
+          vault_id?: string
           file_path: string
           file_name: string
           extension: string
@@ -113,6 +114,7 @@ export interface Database {
           checked_out_by: string | null
           checked_out_at: string | null
           lock_message: string | null
+          content_hash: string | null
           git_hash: string | null
           lfs_oid: string | null
           file_size: number
@@ -125,6 +127,7 @@ export interface Database {
         Insert: {
           id?: string
           org_id: string
+          vault_id?: string
           file_path: string
           file_name: string
           extension: string
@@ -139,6 +142,7 @@ export interface Database {
           checked_out_by?: string | null
           checked_out_at?: string | null
           lock_message?: string | null
+          content_hash?: string | null
           git_hash?: string | null
           lfs_oid?: string | null
           file_size?: number
@@ -151,6 +155,7 @@ export interface Database {
         Update: {
           id?: string
           org_id?: string
+          vault_id?: string
           file_path?: string
           file_name?: string
           extension?: string
@@ -165,6 +170,7 @@ export interface Database {
           checked_out_by?: string | null
           checked_out_at?: string | null
           lock_message?: string | null
+          content_hash?: string | null
           git_hash?: string | null
           lfs_oid?: string | null
           file_size?: number
@@ -181,7 +187,8 @@ export interface Database {
           file_id: string
           version: number
           revision: string
-          git_hash: string
+          content_hash: string
+          git_hash: string | null
           lfs_oid: string | null
           file_size: number
           comment: string | null
@@ -194,7 +201,8 @@ export interface Database {
           file_id: string
           version: number
           revision: string
-          git_hash: string
+          content_hash: string
+          git_hash?: string | null
           lfs_oid?: string | null
           file_size: number
           comment?: string | null
@@ -207,7 +215,8 @@ export interface Database {
           file_id?: string
           version?: number
           revision?: string
-          git_hash?: string
+          content_hash?: string
+          git_hash?: string | null
           lfs_oid?: string | null
           file_size?: number
           comment?: string | null

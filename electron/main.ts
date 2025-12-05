@@ -180,6 +180,29 @@ function createWindow() {
     mainWindow.loadFile(loadPath).catch(err => log('Error loading file:', err))
   }
 
+  // In production, intercept OAuth redirects to localhost and reload the app with auth tokens
+  if (!isDev) {
+    mainWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (navUrl.startsWith('http://localhost') && navUrl.includes('access_token')) {
+        log('Intercepting OAuth redirect in main window:', navUrl.substring(0, 80) + '...')
+        event.preventDefault()
+        
+        // Extract hash/query from the redirect URL
+        const url = new URL(navUrl)
+        const hashFragment = url.hash || ''
+        const queryString = url.search || ''
+        
+        // Load the production HTML file with the auth tokens in hash
+        const prodPath = path.join(__dirname, '../dist/index.html')
+        const normalizedPath = prodPath.replace(/\\/g, '/')
+        const fileUrl = `file:///${normalizedPath}${queryString}${hashFragment}`
+        log('Reloading with file URL:', fileUrl.substring(0, 100) + '...')
+        
+        mainWindow?.loadURL(fileUrl)
+      }
+    })
+  }
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -339,13 +362,52 @@ ipcMain.handle('auth:open-oauth-window', async (_, url: string) => {
     })
     
     // Listen for redirect back to our app with auth tokens
+    let handled = false
     const handleAuthRedirect = (redirectUrl: string) => {
+      // Prevent duplicate handling
+      if (handled) return false
+      
       // Check if this is our callback URL (contains access_token or code)
       if (redirectUrl.startsWith('http://localhost') && 
           (redirectUrl.includes('access_token') || redirectUrl.includes('code=') || redirectUrl.includes('#'))) {
+        handled = true
         log('OAuth redirect detected:', redirectUrl.substring(0, 100) + '...')
-        // Load the callback URL in main window so Supabase can process the tokens
-        mainWindow?.loadURL(redirectUrl)
+        
+        // In production, we can't load localhost - extract tokens and send to renderer
+        if (isDev) {
+          // In dev, localhost server is running, so load the URL directly
+          mainWindow?.loadURL(redirectUrl)
+        } else {
+          // In production, extract tokens from the redirect URL and send to renderer
+          const url = new URL(redirectUrl)
+          const hashFragment = url.hash || ''
+          
+          // Parse the hash fragment to extract tokens
+          const hashParams = new URLSearchParams(hashFragment.substring(1))
+          const accessToken = hashParams.get('access_token')
+          const refreshToken = hashParams.get('refresh_token')
+          const expiresIn = hashParams.get('expires_in')
+          const expiresAt = hashParams.get('expires_at')
+          
+          if (accessToken && refreshToken) {
+            log('Extracted tokens, sending to renderer...')
+            // Send tokens to renderer to set session
+            mainWindow?.webContents.send('auth:set-session', {
+              access_token: accessToken,
+              refresh_token: refreshToken,
+              expires_in: expiresIn ? parseInt(expiresIn) : 3600,
+              expires_at: expiresAt ? parseInt(expiresAt) : undefined
+            })
+          } else {
+            log('No tokens found in redirect, loading file with hash...')
+            // Fallback: try loading file with hash
+            const prodPath = path.join(__dirname, '../dist/index.html')
+            const normalizedPath = prodPath.replace(/\\/g, '/')
+            const fileUrl = `file:///${normalizedPath}${hashFragment}`
+            mainWindow?.loadURL(fileUrl)
+          }
+        }
+        
         authWindow.close()
         resolve({ success: true })
         return true

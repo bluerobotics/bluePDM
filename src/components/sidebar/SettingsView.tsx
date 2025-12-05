@@ -286,7 +286,7 @@ export function SettingsView() {
                             </div>
                           </div>
                           {orgUser.role === 'admin' && (
-                            <Shield size={14} className="text-pdm-accent flex-shrink-0" title="Admin" />
+                            <span title="Admin"><Shield size={14} className="text-pdm-accent flex-shrink-0" /></span>
                           )}
                         </div>
                       ))}

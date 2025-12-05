@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2, Cloud } from 'lucide-react'
-import { usePDMStore, ToastMessage } from '../stores/pdmStore'
+import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2 } from 'lucide-react'
+import { usePDMStore, ToastMessage, ToastType } from '../stores/pdmStore'
 
 export function Toast() {
   const { toasts, removeToast, requestCancelProgressToast } = usePDMStore()
@@ -17,7 +17,6 @@ export function Toast() {
           key={toast.id} 
           toast={toast} 
           onCancel={() => requestCancelProgressToast(toast.id)}
-          onClose={() => removeToast(toast.id)} 
         />
       ))}
       {/* Regular toasts below */}
@@ -28,7 +27,7 @@ export function Toast() {
   )
 }
 
-function ProgressToastItem({ toast, onCancel, onClose }: { toast: ToastMessage; onCancel: () => void; onClose: () => void }) {
+function ProgressToastItem({ toast, onCancel }: { toast: ToastMessage; onCancel: () => void }) {
   const [showCancelDialog, setShowCancelDialog] = useState(false)
   const progress = toast.progress
   
@@ -152,25 +151,28 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
     }
   }
 
-  const icons = {
+  const icons: Record<ToastType, React.ReactNode> = {
     error: <AlertCircle size={16} />,
     success: <CheckCircle size={16} />,
     info: <Info size={16} />,
-    warning: <AlertTriangle size={16} />
+    warning: <AlertTriangle size={16} />,
+    progress: <Loader2 size={16} className="animate-spin" />
   }
 
-  const colors = {
+  const colors: Record<ToastType, string> = {
     error: 'bg-red-900/90 border-red-700 text-red-100',
     success: 'bg-green-900/90 border-green-700 text-green-100',
     info: 'bg-blue-900/90 border-blue-700 text-blue-100',
-    warning: 'bg-yellow-900/90 border-yellow-700 text-yellow-100'
+    warning: 'bg-yellow-900/90 border-yellow-700 text-yellow-100',
+    progress: 'bg-pdm-panel border-pdm-border text-pdm-fg'
   }
 
-  const iconColors = {
+  const iconColors: Record<ToastType, string> = {
     error: 'text-red-400',
     success: 'text-green-400',
     info: 'text-blue-400',
-    warning: 'text-yellow-400'
+    warning: 'text-yellow-400',
+    progress: 'text-pdm-accent'
   }
 
   return (

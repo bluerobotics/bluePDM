@@ -33,7 +33,6 @@ function App() {
     setVaultConnected,
     setFiles,
     setServerFiles,
-    isLoading,
     setIsLoading,
     statusMessage,
     setStatusMessage,
@@ -84,8 +83,8 @@ function App() {
         console.log('[Auth] Loading organization for:', session.user.email)
         linkUserToOrganization(session.user.id, session.user.email || '').then(({ org, error }) => {
           if (org) {
-            console.log('[Auth] Organization loaded:', org.name)
-            setOrganization(org)
+            console.log('[Auth] Organization loaded:', (org as any).name)
+            setOrganization(org as any)
           } else if (error) {
             console.log('[Auth] No organization found:', error)
           }
@@ -123,8 +122,8 @@ function App() {
           // Load organization
           linkUserToOrganization(session.user.id, session.user.email || '').then(({ org }) => {
             if (org) {
-              console.log('[Auth] Organization loaded on state change:', org.name)
-              setOrganization(org)
+              console.log('[Auth] Organization loaded on state change:', (org as any).name)
+              setOrganization(org as any)
             }
           })
         } else if (event === 'SIGNED_OUT') {
@@ -233,13 +232,13 @@ function App() {
           // These appear faded/greyed to indicate they're available but not downloaded
           const cloudFolders = new Set<string>()
           
-          for (const pdmFile of pdmFiles) {
+          for (const pdmFile of pdmFiles as any[]) {
             if (!localPathSet.has(pdmFile.file_path)) {
               // If file is checked out by current user but doesn't exist locally,
               // auto-release the checkout (user deleted it externally)
               if (pdmFile.checked_out_by === user?.id) {
                 console.log('[Auto-release] File deleted externally, releasing checkout:', pdmFile.file_name)
-                checkinFile(pdmFile.id, user.id).then(result => {
+                checkinFile(pdmFile.id, user!.id).then(result => {
                   if (result.success) {
                     console.log('[Auto-release] Released checkout for:', pdmFile.file_name)
                   } else {
@@ -305,7 +304,6 @@ function App() {
       // A folder should be 'cloud' if all its contents are cloud-only
       // Process folders bottom-up (deepest first) so parent folders see updated child statuses
       const folders = localFiles.filter(f => f.isDirectory)
-      const fileMap = new Map(localFiles.map(f => [f.relativePath.replace(/\\/g, '/'), f]))
       
       // Sort folders by depth (deepest first)
       folders.sort((a, b) => {

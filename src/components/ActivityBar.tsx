@@ -2,8 +2,7 @@ import {
   FolderTree, 
   ArrowDownUp, 
   History, 
-  Search,
-  Settings
+  Search
 } from 'lucide-react'
 import { usePDMStore, SidebarView } from '../stores/pdmStore'
 

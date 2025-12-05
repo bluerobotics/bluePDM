@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { usePDMStore } from '../stores/pdmStore'
-import { formatFileSize, STATE_INFO, getFileIconType } from '../types/pdm'
+import { formatFileSize, getFileIconType, STATE_INFO } from '../types/pdm'
 import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions, getRecentActivity } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
@@ -16,7 +16,6 @@ import {
   Info,
   Cloud,
   RotateCcw,
-  Check,
   Loader2,
   FileImage,
   FileSpreadsheet,

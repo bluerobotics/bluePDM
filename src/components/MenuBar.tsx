@@ -5,12 +5,12 @@ import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization
 import { SettingsModal } from './SettingsModal'
 
 interface MenuBarProps {
-  onOpenVault: () => void
-  onRefresh: () => void
+  onOpenVault?: () => void
+  onRefresh?: () => void
   minimal?: boolean  // Hide Sign In and Settings on welcome/signin screens
 }
 
-export function MenuBar({ onOpenVault, onRefresh, minimal = false }: MenuBarProps) {
+export function MenuBar({ minimal = false }: MenuBarProps) {
   const { user, organization, setUser, setOrganization, addToast, setSearchQuery, searchQuery, searchType, setSearchType } = usePDMStore()
   const [appVersion, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
@@ -275,8 +275,8 @@ export function MenuBar({ onOpenVault, onRefresh, minimal = false }: MenuBarProp
                           if (error) {
                             addToast('error', `Could not find org for @${user.email.split('@')[1]}`)
                           } else if (org) {
-                            setOrganization(org)
-                            addToast('success', `Linked to ${org.name}`)
+                            setOrganization(org as any)
+                            addToast('success', `Linked to ${(org as any).name}`)
                             setShowUserMenu(false)
                           }
                         }}

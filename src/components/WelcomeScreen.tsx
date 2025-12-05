@@ -83,18 +83,18 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
         
         // Load stats for each vault
         const vaultsWithStats = await Promise.all(
-          vaultsData.map(async (vault) => {
+          (vaultsData as any[]).map(async (vault: any) => {
             const { data: statsData } = await supabase
               .from('files')
-              .select('size')
+              .select('file_size')
               .eq('vault_id', vault.id)
             
             const stats: VaultStats = {
               fileCount: statsData?.length || 0,
-              totalSize: statsData?.reduce((acc, f) => acc + (f.size || 0), 0) || 0
+              totalSize: statsData?.reduce((acc: number, f: any) => acc + (f.file_size || 0), 0) || 0
             }
             
-            return { ...vault, stats }
+            return { ...vault, stats } as Vault
           })
         )
         
