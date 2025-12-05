@@ -60,6 +60,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     organization, 
     connectedVaults,
     activeVaultId,
+    files,
     addConnectedVault,
     removeConnectedVault,
     updateConnectedVault,
@@ -67,6 +68,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     setServerFiles,
     setFilesLoaded,
     setVaultPath,
+    setVaultConnected,
     setUser,
     setOrganization,
     addToast,
@@ -92,6 +94,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [deletingVault, setDeletingVault] = useState<Vault | null>(null)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
+  const [disconnectingVault, setDisconnectingVault] = useState<{ id: string; name: string } | null>(null)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
   
   // Load org users and vaults when organization tab is selected
   useEffect(() => {
@@ -402,8 +406,26 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
   }
   
-  const handleDisconnectVault = async (vaultId: string) => {
-    const connectedVault = connectedVaults.find(v => v.id === vaultId)
+  // Get files that need attention before disconnect
+  const getDisconnectWarnings = () => {
+    const checkedOutFiles = files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id)
+    const newFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'added')
+    const modifiedFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'modified')
+    return { checkedOutFiles, newFiles, modifiedFiles }
+  }
+  
+  const handleDisconnectVault = (vaultId: string) => {
+    const vault = connectedVaults.find(v => v.id === vaultId)
+    if (vault) {
+      setDisconnectingVault({ id: vault.id, name: vault.name })
+    }
+  }
+  
+  const confirmDisconnect = async () => {
+    if (!disconnectingVault) return
+    
+    setIsDisconnecting(true)
+    const connectedVault = connectedVaults.find(v => v.id === disconnectingVault.id)
     
     // Delete local folder
     let folderDeleted = false
@@ -431,19 +453,27 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
     
     // Clear file state if this was the active vault
-    if (vaultId === activeVaultId) {
+    if (disconnectingVault.id === activeVaultId) {
       setFiles([])
       setServerFiles([])
       setFilesLoaded(false)
       setVaultPath(null)
+      setVaultConnected(false)
     }
     
-    removeConnectedVault(vaultId)
+    removeConnectedVault(disconnectingVault.id)
+    setDisconnectingVault(null)
+    setIsDisconnecting(false)
+    
     if (folderDeleted) {
       addToast('success', 'Vault disconnected and local files deleted')
     } else {
       addToast('info', 'Vault disconnected (local folder may still exist)')
     }
+  }
+  
+  const cancelDisconnect = () => {
+    setDisconnectingVault(null)
   }
   
   const isVaultConnected = (vaultId: string) => {
@@ -1151,6 +1181,124 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <>
                     <Trash2 size={16} />
                     Delete Vault Permanently
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Disconnect Vault Confirmation Dialog */}
+      {disconnectingVault && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          onClick={cancelDisconnect}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-warning/50 rounded-xl shadow-2xl w-[480px] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-pdm-border bg-pdm-warning/10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-pdm-warning/20 rounded-full">
+                  <AlertTriangle size={24} className="text-pdm-warning" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-pdm-fg">Disconnect Vault</h3>
+                  <p className="text-sm text-pdm-fg-muted">"{disconnectingVault.name}"</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              {(() => {
+                const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                const hasWarnings = checkedOutFiles.length > 0 || newFiles.length > 0 || modifiedFiles.length > 0
+                
+                return (
+                  <>
+                    {hasWarnings ? (
+                      <div className="p-4 bg-pdm-warning/10 border border-pdm-warning/30 rounded-lg space-y-3">
+                        <p className="text-sm font-medium text-pdm-fg">
+                          You have unsaved work that will be lost:
+                        </p>
+                        
+                        {checkedOutFiles.length > 0 && (
+                          <div>
+                            <p className="text-sm text-pdm-fg-dim flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-accent rounded-full"></span>
+                              <strong>{checkedOutFiles.length}</strong> file{checkedOutFiles.length !== 1 ? 's' : ''} checked out by you
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">
+                              Consider checking these in first to save your changes
+                            </p>
+                          </div>
+                        )}
+                        
+                        {newFiles.length > 0 && (
+                          <div>
+                            <p className="text-sm text-pdm-fg-dim flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-success rounded-full"></span>
+                              <strong>{newFiles.length}</strong> new file{newFiles.length !== 1 ? 's' : ''} not synced
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">
+                              These files only exist locally and will be deleted
+                            </p>
+                          </div>
+                        )}
+                        
+                        {modifiedFiles.length > 0 && (
+                          <div>
+                            <p className="text-sm text-pdm-fg-dim flex items-center gap-2">
+                              <span className="w-2 h-2 bg-pdm-warning rounded-full"></span>
+                              <strong>{modifiedFiles.length}</strong> modified file{modifiedFiles.length !== 1 ? 's' : ''} not synced
+                            </p>
+                            <p className="text-xs text-pdm-fg-muted ml-4">
+                              Local changes will be lost unless checked in first
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-pdm-fg-dim">
+                        All files are synced. Disconnecting will delete the local folder and all files.
+                      </p>
+                    )}
+                    
+                    <p className="text-sm text-pdm-fg-muted">
+                      You can reconnect to this vault at any time to download files again.
+                    </p>
+                  </>
+                )
+              })()}
+            </div>
+            
+            {/* Actions */}
+            <div className="p-4 border-t border-pdm-border bg-pdm-bg flex justify-end gap-3">
+              <button
+                onClick={cancelDisconnect}
+                className="btn btn-ghost"
+                disabled={isDisconnecting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDisconnect}
+                disabled={isDisconnecting}
+                className="btn bg-pdm-warning hover:bg-pdm-warning/80 text-black disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isDisconnecting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Disconnecting...
+                  </>
+                ) : (
+                  <>
+                    <Link size={16} />
+                    Disconnect Vault
                   </>
                 )}
               </button>
