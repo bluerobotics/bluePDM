@@ -435,6 +435,13 @@ function App() {
     mountedRef.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only run on mount
+  
+  // Reset lastLoadKey when vault is disconnected so reconnecting triggers a fresh load
+  useEffect(() => {
+    if (!isVaultConnected) {
+      lastLoadKey.current = ''
+    }
+  }, [isVaultConnected])
 
   // Initialize working directory on startup (only if authenticated or offline)
   useEffect(() => {
