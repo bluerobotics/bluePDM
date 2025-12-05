@@ -50,6 +50,21 @@ import { syncFile, checkoutFile, checkinFile } from '../lib/supabase'
 import { downloadFile } from '../lib/storage'
 import { format } from 'date-fns'
 
+// Build full path using the correct separator for the platform
+function buildFullPath(vaultPath: string, relativePath: string): string {
+  // Detect platform from vaultPath - macOS/Linux use /, Windows uses \
+  const isWindows = vaultPath.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[/\\]/g, sep)
+  return `${vaultPath}${sep}${normalizedRelative}`
+}
+
+// Get parent directory from a path
+function getParentDir(fullPath: string): string {
+  const lastSlash = Math.max(fullPath.lastIndexOf('/'), fullPath.lastIndexOf('\\'))
+  return lastSlash > 0 ? fullPath.substring(0, lastSlash) : fullPath
+}
+
 interface FileBrowserProps {
   onRefresh: (silent?: boolean) => void
 }
@@ -127,6 +142,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<LocalFile | null>(null)
+  const [platform, setPlatform] = useState<string>('win32')
   const [customConfirm, setCustomConfirm] = useState<{
     title: string
     message: string
@@ -365,8 +381,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       try {
         const { data, error } = await downloadFile(organization.id, f.pdmData.content_hash)
         if (!error && data) {
-          const fullPath = `${vaultPath}\\${f.relativePath.replace(/\//g, '\\')}`
-          const parentDir = fullPath.substring(0, fullPath.lastIndexOf('\\'))
+          const fullPath = buildFullPath(vaultPath, f.relativePath)
+          const parentDir = getParentDir(fullPath)
           await window.electronAPI?.createFolder(parentDir)
           
           const arrayBuffer = await data.arrayBuffer()
@@ -709,8 +725,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
     const folderName = newFolderName.trim()
     const folderPath = currentPath 
-      ? `${vaultPath}\\${currentPath.replace(/\//g, '\\')}\\${folderName}`
-      : `${vaultPath}\\${folderName}`
+      ? buildFullPath(vaultPath, `${currentPath}/${folderName}`)
+      : buildFullPath(vaultPath, folderName)
 
     try {
       const result = await window.electronAPI.createFolder(folderPath)
@@ -1010,7 +1026,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     }
 
     const destFolder = currentPath 
-      ? `${vaultPath}\\${currentPath.replace(/\//g, '\\')}`
+      ? buildFullPath(vaultPath, currentPath)
       : vaultPath
 
     let succeeded = 0
@@ -1065,6 +1081,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
     onRefresh()
   }
+
+  // Get platform for UI text
+  useEffect(() => {
+    window.electronAPI?.getPlatform().then(setPlatform)
+  }, [])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1240,7 +1261,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       for (const file of result.files) {
         // Use relativePath if available (preserves folder structure), otherwise just the filename
         const targetPath = (file as any).relativePath || file.name
-        const destPath = `${vaultPath}\\${targetPath.replace(/\//g, '\\')}`
+        const destPath = buildFullPath(vaultPath, targetPath)
         console.log('[AddFiles] Copying:', file.path, '->', destPath)
 
         const copyResult = await window.electronAPI.copyFile(file.path, destPath)
@@ -1327,7 +1348,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
       for (const sourcePath of filePaths) {
         const fileName = sourcePath.split(/[/\\]/).pop() || 'unknown'
-        const destPath = `${vaultPath}\\${fileName}`
+        const destPath = buildFullPath(vaultPath, fileName)
 
         console.log('[Drop] Copying:', sourcePath, '->', destPath)
 
@@ -1796,7 +1817,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           <button
             onClick={() => {
               const fullPath = currentPath 
-                ? `${vaultPath}\\${currentPath.replace(/\//g, '\\')}`
+                ? buildFullPath(vaultPath!, currentPath)
                 : vaultPath || ''
               navigator.clipboard.writeText(fullPath)
               addToast('success', 'Path copied to clipboard')
@@ -1810,13 +1831,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             onClick={() => {
               if (window.electronAPI && vaultPath) {
                 const fullPath = currentPath 
-                  ? `${vaultPath}\\${currentPath.replace(/\//g, '\\')}`
+                  ? buildFullPath(vaultPath, currentPath)
                   : vaultPath
                 window.electronAPI.openInExplorer(fullPath)
               }
             }}
             className="btn btn-ghost btn-sm p-1"
-            title="Open in Explorer"
+            title={platform === 'darwin' ? 'Reveal in Finder' : 'Open in Explorer'}
           >
             <ExternalLink size={14} />
           </button>
@@ -2435,7 +2456,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       setContextMenu(null)
                     }}
                   >
-                    Show in Explorer
+                    {platform === 'darwin' ? 'Reveal in Finder' : 'Show in Explorer'}
                   </div>
                   
                   <div 

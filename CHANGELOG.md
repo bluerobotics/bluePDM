@@ -2,6 +2,28 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [0.10.2] - 2025-12-05
+
+### Added
+- Full macOS compatibility for vault paths and file operations
+- Platform-aware UI text ("Reveal in Finder" on macOS, "Show in Explorer" on Windows)
+
+### Fixed
+- Title bar padding now correctly positions for macOS window buttons (left side)
+- Vault folders now created in `~/Documents/BluePDM/` on macOS instead of `C:\BluePDM\`
+- File downloads now create proper folder hierarchy on macOS (was creating flat structure with backslashes in filenames)
+- Path separators now use `/` on macOS and `\` on Windows throughout the app
+- About page version now dynamically reads from package.json instead of hardcoded value
+
+### Changed
+- Context menu shows "Reveal in Finder" on macOS, "Show in Explorer" on Windows
+
+## [0.10.1] - 2025-12-05
+
+### Fixed
+- Supabase client no longer crashes when credentials are not configured (graceful fallback)
+- GitHub Actions workflow now includes Supabase secrets for CI/CD builds
+
 ## [0.10.0] - 2025-06-05
 
 ### Added

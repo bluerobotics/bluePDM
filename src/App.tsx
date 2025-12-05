@@ -11,6 +11,15 @@ import { WelcomeScreen } from './components/WelcomeScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
 
+// Build full path using the correct separator for the platform
+function buildFullPath(vaultPath: string, relativePath: string): string {
+  // Detect platform from vaultPath - macOS/Linux use /, Windows uses \
+  const isWindows = vaultPath.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[/\\]/g, sep)
+  return `${vaultPath}${sep}${normalizedRelative}`
+}
+
 function App() {
   const {
     user,
@@ -272,7 +281,7 @@ function App() {
               // Add the cloud-only file (not synced locally)
               localFiles.push({
                 name: pdmFile.file_name,
-                path: `${vaultPath}\\${pdmFile.file_path.replace(/\//g, '\\')}`,
+                path: buildFullPath(vaultPath, pdmFile.file_path),
                 relativePath: pdmFile.file_path,
                 isDirectory: false,
                 extension: pdmFile.extension,
@@ -290,7 +299,7 @@ function App() {
             const folderName = folderPath.split('/').pop() || folderPath
             localFiles.push({
               name: folderName,
-              path: `${vaultPath}\\${folderPath.replace(/\//g, '\\')}`,
+              path: buildFullPath(vaultPath, folderPath),
               relativePath: folderPath,
               isDirectory: true,
               extension: '',

@@ -2,7 +2,7 @@
 
 Open source Product Data Management for engineering teams. Built with Electron, React, TypeScript, and Supabase.
 
-![BluePDM](https://img.shields.io/badge/version-0.7.0-blue)
+![BluePDM](https://img.shields.io/badge/version-0.10.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Features
@@ -91,7 +91,10 @@ npm run build
 
 ### File Storage
 
-- **Local Vault**: Files are stored in `C:\BluePDM\{vault-name}`
+- **Local Vault**: Files are stored in platform-specific locations:
+  - **Windows**: `C:\BluePDM\{vault-name}`
+  - **macOS**: `~/Documents/BluePDM/{vault-name}`
+  - **Linux**: `~/BluePDM/{vault-name}`
 - **Cloud Sync**: File content synced to Supabase Storage
 - **Metadata**: File state, locks, and versions in PostgreSQL
 - **Real-time**: Instant sync of locks and state changes

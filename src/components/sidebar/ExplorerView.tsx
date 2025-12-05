@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { 
   FolderOpen, 
   ChevronRight, 
@@ -32,6 +32,21 @@ import { downloadFile } from '../../lib/storage'
 import { usePDMStore, LocalFile, ConnectedVault } from '../../stores/pdmStore'
 import { getFileIconType } from '../../types/pdm'
 import { FileContextMenu } from '../FileContextMenu'
+
+// Build full path using the correct separator for the platform
+function buildFullPath(vaultPath: string, relativePath: string): string {
+  // Detect platform from vaultPath - macOS/Linux use /, Windows uses \
+  const isWindows = vaultPath.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[/\\]/g, sep)
+  return `${vaultPath}${sep}${normalizedRelative}`
+}
+
+// Get parent directory from a path
+function getParentDir(fullPath: string): string {
+  const lastSlash = Math.max(fullPath.lastIndexOf('/'), fullPath.lastIndexOf('\\'))
+  return lastSlash > 0 ? fullPath.substring(0, lastSlash) : fullPath
+}
 
 interface ExplorerViewProps {
   onOpenVault: () => void
@@ -94,10 +109,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [lastClickPath, setLastClickPath] = useState<string | null>(null)
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
   const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
+  const [platform, setPlatform] = useState<string>('win32')
   const [renameValue, setRenameValue] = useState('')
   const [draggingPinIndex, setDraggingPinIndex] = useState<number | null>(null)
   const [dragOverPinIndex, setDragOverPinIndex] = useState<number | null>(null)
   const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
+  
+  // Get platform for UI text
+  useEffect(() => {
+    window.electronAPI?.getPlatform().then(setPlatform)
+  }, [])
   
   // @ts-ignore - Reserved for future use
   const handleDelete = async (file: LocalFile) => {
@@ -396,8 +417,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       try {
         const { data, error } = await downloadFile(organization.id, f.pdmData.content_hash)
         if (!error && data) {
-          const fullPath = `${vaultPath}\\${f.relativePath.replace(/\//g, '\\')}`
-          const parentDir = fullPath.substring(0, fullPath.lastIndexOf('\\'))
+          const fullPath = buildFullPath(vaultPath, f.relativePath)
+          const parentDir = getParentDir(fullPath)
           await window.electronAPI?.createFolder(parentDir)
           
           const arrayBuffer = await data.arrayBuffer()
@@ -1699,7 +1720,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               }}
             >
               <FolderOpenIcon size={14} />
-              Open in Explorer
+              {platform === 'darwin' ? 'Reveal in Finder' : 'Open in Explorer'}
             </button>
             <div className="border-t border-pdm-border my-1" />
             <button

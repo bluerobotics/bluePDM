@@ -17,10 +17,25 @@ import {
   AlertTriangle,
   Loader2
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { checkoutFile, checkinFile, syncFile, supabase } from '../lib/supabase'
 import { downloadFile } from '../lib/storage'
+
+// Build full path using the correct separator for the platform
+function buildFullPath(vaultPath: string, relativePath: string): string {
+  // Detect platform from vaultPath - macOS/Linux use /, Windows uses \
+  const isWindows = vaultPath.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[/\\]/g, sep)
+  return `${vaultPath}${sep}${normalizedRelative}`
+}
+
+// Get parent directory from a path
+function getParentDir(fullPath: string): string {
+  const lastSlash = Math.max(fullPath.lastIndexOf('/'), fullPath.lastIndexOf('\\'))
+  return lastSlash > 0 ? fullPath.substring(0, lastSlash) : fullPath
+}
 
 interface FileContextMenuProps {
   x: number
@@ -60,6 +75,12 @@ export function FileContextMenu({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<LocalFile[]>([])
   const [isDeleting, setIsDeleting] = useState(false)
+  const [platform, setPlatform] = useState<string>('win32')
+  
+  // Get platform for UI text
+  useEffect(() => {
+    window.electronAPI?.getPlatform().then(setPlatform)
+  }, [])
   
   if (contextFiles.length === 0) return null
   
@@ -444,9 +465,9 @@ export function FileContextMenu({
       try {
         const { data, error } = await downloadFile(organization.id, file.pdmData.content_hash)
         if (!error && data) {
-          // Construct path with proper separators
-          const fullPath = `${vaultPath}\\${file.relativePath.replace(/\//g, '\\')}`
-          const parentDir = fullPath.substring(0, fullPath.lastIndexOf('\\'))
+          // Construct path with platform-appropriate separators
+          const fullPath = buildFullPath(vaultPath, file.relativePath)
+          const parentDir = getParentDir(fullPath)
           await window.electronAPI?.createFolder(parentDir)
           
           // Convert Blob to base64 for IPC transfer
@@ -765,11 +786,11 @@ export function FileContextMenu({
           </div>
         )}
         
-        {/* Show in Explorer */}
+        {/* Show in Explorer/Finder */}
         {!allCloudOnly && (
           <div className="context-menu-item" onClick={handleShowInExplorer}>
             <FolderOpen size={14} />
-            Show in Explorer
+            {platform === 'darwin' ? 'Reveal in Finder' : 'Show in Explorer'}
           </div>
         )}
         

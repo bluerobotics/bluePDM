@@ -2,6 +2,15 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { PDMFile, FileState, Organization, User } from '../types/pdm'
 
+// Build full path using the correct separator for the platform
+function buildFullPath(vaultPath: string, relativePath: string): string {
+  // Detect platform from vaultPath - macOS/Linux use /, Windows uses \
+  const isWindows = vaultPath.includes('\\')
+  const sep = isWindows ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[/\\]/g, sep)
+  return `${vaultPath}${sep}${normalizedRelative}`
+}
+
 export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
@@ -837,7 +846,7 @@ export const usePDMStore = create<PDMState>()(
           .filter(sf => !localPaths.has(sf.file_path))
           .map(sf => ({
             name: sf.name,
-            path: `${vaultPath}\\${sf.file_path.replace(/\//g, '\\')}`,
+            path: buildFullPath(vaultPath, sf.file_path),
             relativePath: sf.file_path,
             isDirectory: false,
             extension: sf.extension,
