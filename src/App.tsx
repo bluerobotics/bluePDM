@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile } from './lib/supabase'
+import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile, getUserProfile } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -85,18 +85,23 @@ function App() {
       if (session?.user) {
         console.log('[Auth] Found existing session:', session.user.email)
         
-        // Set user from session data first (fast)
+        // Fetch user profile from database to get role
+        const { profile } = await getUserProfile(session.user.id)
+        const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+        
+        // Set user from profile (includes role) or fallback to session data
         const userData = {
           id: session.user.id,
           email: session.user.email || '',
-          full_name: session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-          avatar_url: session.user.user_metadata?.avatar_url || null,
-          org_id: null,
-          role: 'engineer' as const,
+          full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
+          avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+          org_id: userProfile?.org_id || null,
+          role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
           created_at: session.user.created_at,
-          last_sign_in: null
+          last_sign_in: userProfile?.last_sign_in || null
         }
         setUser(userData)
+        console.log('[Auth] User profile loaded:', { email: userData.email, role: userData.role })
         
         // Then load organization using the working linkUserToOrganization function
         console.log('[Auth] Loading organization for:', session.user.email)
@@ -126,17 +131,22 @@ function App() {
             setIsConnecting(true)
           }
           
-          // Set user from session
+          // Fetch user profile from database to get role
+          const { profile } = await getUserProfile(session.user.id)
+          const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+          
+          // Set user from profile (includes role) or fallback to session data
           setUser({
             id: session.user.id,
             email: session.user.email || '',
-            full_name: session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-            avatar_url: session.user.user_metadata?.avatar_url || null,
-            org_id: null,
-            role: 'engineer',
+            full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
+            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+            org_id: userProfile?.org_id || null,
+            role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
             created_at: session.user.created_at,
-            last_sign_in: null
+            last_sign_in: userProfile?.last_sign_in || null
           })
+          console.log('[Auth] User profile loaded:', { email: session.user.email, role: userProfile?.role || 'engineer' })
           
           if (event === 'SIGNED_IN') {
             setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
