@@ -59,7 +59,7 @@ npm run build
    - Go to Storage → New Bucket
    - Name it `vault`
    - Set to **Private** (not public)
-   - Add a policy for authenticated users (see `schema.sql` comments for details)
+   - Policies are created automatically by the schema
 
 5. **Create your organization:**
    ```sql

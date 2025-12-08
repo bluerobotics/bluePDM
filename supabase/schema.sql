@@ -445,23 +445,34 @@ CREATE TRIGGER log_file_changes
   FOR EACH ROW EXECUTE FUNCTION log_file_activity();
 
 -- ===========================================
--- STORAGE BUCKET SETUP (Run separately in Storage settings)
+-- STORAGE BUCKET SETUP
 -- ===========================================
--- 
--- 1. Go to Storage in Supabase dashboard
--- 2. Create a new bucket called "vault"
--- 3. Set it to PRIVATE (not public)
--- 4. Add policy for authenticated users to read/write their org's files:
---
--- Policy name: "Org members can access vault files"
--- Allowed operation: SELECT, INSERT, UPDATE, DELETE
--- Policy definition:
---   (bucket_id = 'vault' AND auth.uid() IN (
---     SELECT id FROM users WHERE org_id = (
---       split_part(name, '/', 1)::uuid
---     )
---   ))
---
+-- NOTE: Create the bucket FIRST in Supabase Dashboard (Storage → New Bucket → "vault" → Private)
+-- Then run this schema to set up the policies.
+
+-- Storage policies for the 'vault' bucket
+-- These allow authenticated users to access files in their organization's folder
+
+CREATE POLICY "Authenticated users can upload to vault"
+ON storage.objects FOR INSERT
+TO authenticated
+WITH CHECK (bucket_id = 'vault');
+
+CREATE POLICY "Authenticated users can read from vault"
+ON storage.objects FOR SELECT
+TO authenticated
+USING (bucket_id = 'vault');
+
+CREATE POLICY "Authenticated users can update vault files"
+ON storage.objects FOR UPDATE
+TO authenticated
+USING (bucket_id = 'vault');
+
+CREATE POLICY "Authenticated users can delete from vault"
+ON storage.objects FOR DELETE
+TO authenticated
+USING (bucket_id = 'vault');
+
 -- ===========================================
 
 -- ===========================================
