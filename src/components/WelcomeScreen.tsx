@@ -64,6 +64,7 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
     connectedVaults,
     addConnectedVault,
     removeConnectedVault,
+    setConnectedVaults,
     addToast,
     vaultsRefreshKey,
     isConnecting: isAuthConnecting  // Global auth connecting state
@@ -94,6 +95,15 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
       isConnecting: isAuthConnecting
     })
   }, [user, organization, isAuthConnecting])
+
+  // Clear connected vaults when not signed in (unless offline mode)
+  // This removes stale vaults from previous sessions
+  useEffect(() => {
+    if (!user && !isOfflineMode && connectedVaults.length > 0) {
+      uiLog('info', 'Clearing connected vaults - user signed out', { count: connectedVaults.length })
+      setConnectedVaults([])
+    }
+  }, [user, isOfflineMode])
 
   // Auto-connect on mount if we have connected vaults
   useEffect(() => {
