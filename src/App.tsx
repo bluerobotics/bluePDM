@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile, getUserProfile } from './lib/supabase'
+import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile, getUserProfile, setCurrentAccessToken } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -85,34 +85,43 @@ function App() {
       if (session?.user) {
         console.log('[Auth] Found existing session:', session.user.email)
         
-        // Fetch user profile from database to get role
-        const { profile } = await getUserProfile(session.user.id)
-        const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+        // Store access token for raw fetch calls
+        setCurrentAccessToken(session.access_token)
         
-        // Set user from profile (includes role) or fallback to session data
-        const userData = {
-          id: session.user.id,
-          email: session.user.email || '',
-          full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-          avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
-          org_id: userProfile?.org_id || null,
-          role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
-          created_at: session.user.created_at,
-          last_sign_in: userProfile?.last_sign_in || null
-        }
-        setUser(userData)
-        console.log('[Auth] User profile loaded:', { email: userData.email, role: userData.role })
-        
-        // Then load organization using the working linkUserToOrganization function
-        console.log('[Auth] Loading organization for:', session.user.email)
-        linkUserToOrganization(session.user.id, session.user.email || '').then(({ org, error }) => {
+        try {
+          // Fetch user profile from database to get role
+          const { profile, error: profileError } = await getUserProfile(session.user.id)
+          if (profileError) {
+            console.log('[Auth] Error fetching profile:', profileError)
+          }
+          const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+          
+          // Set user from profile (includes role) or fallback to session data
+          const userData = {
+            id: session.user.id,
+            email: session.user.email || '',
+            full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
+            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+            org_id: userProfile?.org_id || null,
+            role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
+            created_at: session.user.created_at,
+            last_sign_in: userProfile?.last_sign_in || null
+          }
+          setUser(userData)
+          console.log('[Auth] User profile loaded:', { email: userData.email, role: userData.role })
+          
+          // Then load organization using the working linkUserToOrganization function
+          console.log('[Auth] Loading organization for:', session.user.email)
+          const { org, error } = await linkUserToOrganization(session.user.id, session.user.email || '')
           if (org) {
             console.log('[Auth] Organization loaded:', (org as any).name)
             setOrganization(org as any)
           } else if (error) {
             console.log('[Auth] No organization found:', error)
           }
-        })
+        } catch (err) {
+          console.error('[Auth] Error loading user profile:', err)
+        }
       } else {
         console.log('[Auth] No existing session')
       }
@@ -123,7 +132,7 @@ function App() {
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('[Auth] Auth state changed:', event)
+        console.log('[Auth] Auth state changed:', event, { hasSession: !!session, hasUser: !!session?.user })
         
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Show connecting state while loading organization
@@ -131,41 +140,49 @@ function App() {
             setIsConnecting(true)
           }
           
-          // Fetch user profile from database to get role
-          const { profile } = await getUserProfile(session.user.id)
-          const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+          // Store access token for raw fetch calls (Supabase client methods hang)
+          setCurrentAccessToken(session.access_token)
           
-          // Set user from profile (includes role) or fallback to session data
-          setUser({
-            id: session.user.id,
-            email: session.user.email || '',
-            full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
-            org_id: userProfile?.org_id || null,
-            role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
-            created_at: session.user.created_at,
-            last_sign_in: userProfile?.last_sign_in || null
-          })
-          console.log('[Auth] User profile loaded:', { email: session.user.email, role: userProfile?.role || 'engineer' })
-          
-          if (event === 'SIGNED_IN') {
-            setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
-            setTimeout(() => setStatusMessage(''), 3000)
-          }
-          
-          // Load organization (setOrganization will clear isConnecting)
-          linkUserToOrganization(session.user.id, session.user.email || '').then(({ org, error }) => {
+          try {
+            // Fetch user profile from database to get role
+            console.log('[Auth] Fetching user profile...')
+            const { profile, error: profileError } = await getUserProfile(session.user.id)
+            console.log('[Auth] Profile fetch result:', { hasProfile: !!profile, error: profileError?.message })
+            
+            const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
+            
+            // Set user from profile (includes role) or fallback to session data
+            setUser({
+              id: session.user.id,
+              email: session.user.email || '',
+              full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
+              avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+              org_id: userProfile?.org_id || null,
+              role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
+              created_at: session.user.created_at,
+              last_sign_in: userProfile?.last_sign_in || null
+            })
+            console.log('[Auth] User set:', { email: session.user.email, role: userProfile?.role || 'engineer' })
+            
+            if (event === 'SIGNED_IN') {
+              setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
+              setTimeout(() => setStatusMessage(''), 3000)
+            }
+            
+            // Load organization (setOrganization will clear isConnecting)
+            console.log('[Auth] Loading organization...')
+            const { org, error: orgError } = await linkUserToOrganization(session.user.id, session.user.email || '')
             if (org) {
-              console.log('[Auth] Organization loaded on state change:', (org as any).name)
+              console.log('[Auth] Organization loaded:', (org as any).name)
               setOrganization(org as any)
             } else {
-              // No org found, clear connecting state
-              console.log('[Auth] No organization found:', error)
+              console.log('[Auth] No organization found:', orgError)
               setIsConnecting(false)
             }
-          }).catch(() => {
+          } catch (err) {
+            console.error('[Auth] Error in auth state handler:', err)
             setIsConnecting(false)
-          })
+          }
         } else if (event === 'SIGNED_OUT') {
           console.log('[Auth] Signed out')
           setUser(null)

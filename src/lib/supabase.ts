@@ -294,118 +294,146 @@ export async function getCurrentSession() {
 // User & Organization
 // ============================================
 
+// Store the current access token (set by setupSessionListener)
+let currentAccessToken: string | null = null
+
+export function setCurrentAccessToken(token: string | null) {
+  currentAccessToken = token
+}
+
 export async function getUserProfile(userId: string) {
-  const client = getSupabaseClient()
-  const { data, error } = await client
-    .from('users')
-    .select('*, organization:organizations(*)')
-    .eq('id', userId)
-    .single()
+  authLog('debug', 'getUserProfile called', { userId: userId?.substring(0, 8) + '...', hasToken: !!currentAccessToken })
   
-  return { profile: data, error }
+  // Use raw fetch - Supabase client methods hang
+  try {
+    const url = currentConfig?.url || import.meta.env.VITE_SUPABASE_URL
+    const key = currentConfig?.anonKey || import.meta.env.VITE_SUPABASE_ANON_KEY
+    const accessToken = currentAccessToken || key
+    
+    authLog('debug', 'Fetching profile...')
+    
+    const response = await fetch(`${url}/rest/v1/users?select=id,email,role,org_id,full_name,avatar_url&id=eq.${userId}`, {
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    const data = await response.json()
+    authLog('debug', 'Profile fetch result', { status: response.status, hasData: data?.length > 0 })
+    
+    if (data && data.length > 0) {
+      return { profile: data[0], error: null }
+    }
+    return { profile: null, error: new Error('User not found') }
+  } catch (err) {
+    authLog('error', 'getUserProfile failed', { error: String(err) })
+    return { profile: null, error: err as Error }
+  }
 }
 
 export async function getOrganization(orgId: string) {
-  const client = getSupabaseClient()
-  const { data, error } = await client
-    .from('organizations')
-    .select('*')
-    .eq('id', orgId)
-    .single()
-  
-  return { org: data, error }
+  // Use raw fetch - Supabase client methods hang
+  try {
+    const url = currentConfig?.url || import.meta.env.VITE_SUPABASE_URL
+    const key = currentConfig?.anonKey || import.meta.env.VITE_SUPABASE_ANON_KEY
+    const accessToken = currentAccessToken || key
+    
+    const response = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${orgId}`, {
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    const data = await response.json()
+    
+    if (data && data.length > 0) {
+      return { org: data[0], error: null }
+    }
+    return { org: null, error: new Error('Organization not found') }
+  } catch (err) {
+    return { org: null, error: err as Error }
+  }
 }
 
 // Find and link organization by email domain, or fetch existing org
 export async function linkUserToOrganization(userId: string, userEmail: string) {
-  const client = getSupabaseClient()
   authLog('info', 'linkUserToOrganization called', { userId: userId?.substring(0, 8) + '...', email: userEmail })
   
-  // First, check if user already has an org_id
-  const { data: userProfile, error: profileError } = await client
-    .from('users')
-    .select('org_id')
-    .eq('id', userId)
-    .single()
+  // Use raw fetch - Supabase client methods hang
+  const url = currentConfig?.url || import.meta.env.VITE_SUPABASE_URL
+  const key = currentConfig?.anonKey || import.meta.env.VITE_SUPABASE_ANON_KEY
+  const accessToken = currentAccessToken || key
   
-  authLog('info', 'User profile lookup result', { 
-    hasProfile: !!userProfile, 
-    hasOrgId: !!userProfile?.org_id,
-    orgId: userProfile?.org_id?.substring(0, 8) + '...',
-    error: profileError?.message
-  })
-  
-  if (userProfile?.org_id) {
-    // User already has org_id, just fetch the organization
-    authLog('info', 'User has org_id, fetching org details')
-    const { data: existingOrg, error: fetchError } = await client
-      .from('organizations')
-      .select('*')
-      .eq('id', userProfile.org_id)
-      .single()
+  try {
+    // First, check if user already has an org_id
+    const userResponse = await fetch(`${url}/rest/v1/users?select=org_id&id=eq.${userId}`, {
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    const userData = await userResponse.json()
+    const userProfile = userData?.[0]
     
-    if (existingOrg) {
-      authLog('info', 'Found existing org', { orgName: existingOrg.name })
-      return { org: existingOrg, error: null }
+    authLog('info', 'User profile lookup result', { 
+      hasProfile: !!userProfile, 
+      hasOrgId: !!userProfile?.org_id,
+      orgId: userProfile?.org_id?.substring(0, 8) + '...'
+    })
+    
+    if (userProfile?.org_id) {
+      // User already has org_id, just fetch the organization
+      authLog('info', 'User has org_id, fetching org details')
+      const orgResponse = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${userProfile.org_id}`, {
+        headers: {
+          'apikey': key,
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+      const orgData = await orgResponse.json()
+      
+      if (orgData && orgData.length > 0) {
+        authLog('info', 'Found existing org', { orgName: orgData[0].name })
+        return { org: orgData[0], error: null }
+      }
+      authLog('warn', 'Failed to fetch existing org, trying domain lookup')
     }
-    // If fetch failed, continue to try email domain lookup
-    authLog('warn', 'Failed to fetch existing org, trying domain lookup', { error: fetchError?.message })
-  }
-  
-  // Try to find org by email domain
-  const domain = userEmail.split('@')[1]
-  authLog('info', 'Looking up org by email domain', { domain })
-  
-  const { data: org, error: findError } = await client
-    .from('organizations')
-    .select('*')
-    .contains('email_domains', [domain])
-    .single()
-  
-  authLog('info', 'Domain lookup result', { found: !!org, error: findError?.message })
-  
-  if (findError || !org) {
-    // Try alternative query (in case contains doesn't work with array)
-    authLog('info', 'Primary lookup failed, trying alternative')
-    const { data: allOrgs } = await client
-      .from('organizations')
-      .select('*')
+    
+    // Try to find org by email domain
+    const domain = userEmail.split('@')[1]
+    authLog('info', 'Looking up org by email domain', { domain })
+    
+    // Fetch all orgs and filter by domain (contains filter is complex with REST API)
+    const allOrgsResponse = await fetch(`${url}/rest/v1/organizations?select=*`, {
+      headers: {
+        'apikey': key,
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    const allOrgs = await allOrgsResponse.json()
     
     authLog('info', 'Fetched all orgs', { count: allOrgs?.length })
     
-    const matchingOrg = allOrgs?.find(o => 
+    const matchingOrg = allOrgs?.find((o: { email_domains?: string[] }) => 
       o.email_domains?.includes(domain)
     )
     
     if (matchingOrg) {
-      authLog('info', 'Found matching org via alternative lookup', { orgName: matchingOrg.name })
-      
-      // Update user's org_id
-      const { error: updateError } = await client
-        .from('users')
-        .update({ org_id: matchingOrg.id })
-        .eq('id', userId)
-      
-      authLog('info', 'Updated user org_id', { success: !updateError, error: updateError?.message })
-      
+      authLog('info', 'Found matching org', { orgName: matchingOrg.name })
       return { org: matchingOrg, error: null }
     }
     
     authLog('warn', 'No organization found for domain', { domain })
     return { org: null, error: new Error(`No organization found for @${domain}`) }
+  } catch (err) {
+    authLog('error', 'linkUserToOrganization failed', { error: String(err) })
+    return { org: null, error: err as Error }
   }
-  
-  authLog('info', 'Found org via primary lookup', { orgName: org.name })
-  
-  // Update user's org_id
-  const { error: updateError } = await client
-    .from('users')
-    .update({ org_id: org.id })
-    .eq('id', userId)
-  
-  authLog('info', 'Updated user org_id', { success: !updateError, error: updateError?.message })
-  
-  return { org, error: null }
 }
 
 // ============================================
