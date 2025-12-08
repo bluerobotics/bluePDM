@@ -61,11 +61,13 @@ npm run build
    - Set to **Private** (not public)
    - Policies are created automatically by the schema
 
-5. **Create your organization:**
+5. **Create your organization** (one-time admin setup):
    ```sql
    INSERT INTO organizations (name, slug, email_domains)
    VALUES ('Your Company', 'your-company', ARRAY['yourcompany.com']);
    ```
+   Users with matching email domains will auto-join on sign-in.
+   Vaults can then be created through the app (Settings → Organization).
 
 6. **Verify the trigger exists:**
    ```sql
