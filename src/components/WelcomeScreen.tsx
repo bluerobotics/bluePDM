@@ -3,6 +3,15 @@ import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Databa
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
 
+// Helper to log to both console and electron log file
+const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
+  const logMsg = `[WelcomeScreen] ${message}`
+  if (level === 'error') console.error(logMsg, data || '')
+  else if (level === 'warn') console.warn(logMsg, data || '')
+  else console.log(logMsg, data || '')
+  window.electronAPI?.log?.(level, `[WelcomeScreen] ${message}`, data)
+}
+
 // Build vault path based on platform
 function buildVaultPath(platform: string, vaultSlug: string): string {
   if (platform === 'darwin') {
@@ -74,9 +83,21 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     }
   }, [])
 
+  // Log user/org state changes for debugging
+  useEffect(() => {
+    uiLog('info', 'User state changed', { 
+      hasUser: !!user, 
+      email: user?.email,
+      hasOrg: !!organization,
+      orgName: organization?.name,
+      isConnecting: isAuthConnecting
+    })
+  }, [user, organization, isAuthConnecting])
+
   // Auto-connect on mount if we have connected vaults
   useEffect(() => {
     if (connectedVaults.length > 0 && (user || isOfflineMode)) {
+      uiLog('info', 'Auto-connecting to vault', { vaultName: connectedVaults[0].name })
       // Auto-connect to first connected vault
       const vault = connectedVaults[0]
       onOpenRecentVault(vault.localPath)
@@ -132,22 +153,36 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   }, [organization?.id, vaultsRefreshKey]) // Refresh when vaultsRefreshKey changes
 
   const handleSignIn = async () => {
+    uiLog('info', 'Sign in button clicked')
+    
     if (!isSupabaseConfigured()) {
+      uiLog('warn', 'Supabase not configured')
       setStatusMessage('Supabase not configured')
       return
     }
     
     setIsSigningIn(true)
+    uiLog('info', 'Starting Google sign-in flow')
+    
     try {
-      const { error } = await signInWithGoogle()
+      const { data, error } = await signInWithGoogle()
+      uiLog('info', 'signInWithGoogle returned', { 
+        hasData: !!data, 
+        hasError: !!error,
+        errorMessage: error?.message 
+      })
+      
       if (error) {
-        console.error('Sign in error:', error)
+        uiLog('error', 'Sign in failed', { error: error.message })
         setStatusMessage(`Sign in failed: ${error.message}`)
+      } else {
+        uiLog('info', 'Sign in completed successfully')
       }
     } catch (err) {
-      console.error('Sign in error:', err)
+      uiLog('error', 'Sign in exception', { error: String(err) })
       setStatusMessage('Sign in failed')
     } finally {
+      uiLog('info', 'Sign in flow finished, resetting state')
       setIsSigningIn(false)
     }
   }
@@ -157,14 +192,22 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   }
 
   const handleConnectVault = async (vault: Vault) => {
-    if (!window.electronAPI) return
+    uiLog('info', 'Connect vault clicked', { vaultName: vault.name, vaultId: vault.id })
+    
+    if (!window.electronAPI) {
+      uiLog('error', 'electronAPI not available')
+      return
+    }
     
     setConnectingVaultId(vault.id)
     
     try {
       // Create vault folder based on platform
       const vaultPath = buildVaultPath(platform, vault.slug)
+      uiLog('info', 'Creating working directory', { vaultPath, platform })
+      
       const result = await window.electronAPI.createWorkingDir(vaultPath)
+      uiLog('info', 'createWorkingDir result', { success: result.success, path: result.path, error: result.error })
       
       if (result.success && result.path) {
         // Add to connected vaults
@@ -175,15 +218,17 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           isExpanded: true
         }
         addConnectedVault(connectedVault)
+        uiLog('info', 'Vault connected, opening', { vaultName: vault.name })
         
         // Open the vault
         onOpenRecentVault(result.path)
         addToast('success', `Connected to "${vault.name}"`)
       } else {
+        uiLog('error', 'Failed to create vault folder', { error: result.error })
         addToast('error', result.error || 'Failed to create vault folder')
       }
     } catch (err) {
-      console.error('Error connecting to vault:', err)
+      uiLog('error', 'Exception connecting to vault', { error: String(err) })
       addToast('error', 'Failed to connect to vault')
     } finally {
       setConnectingVaultId(null)

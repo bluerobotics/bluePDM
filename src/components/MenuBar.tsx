@@ -4,6 +4,15 @@ import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
 import { SettingsModal } from './SettingsModal'
 
+// Helper to log to both console and electron log file
+const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
+  const logMsg = `[MenuBar] ${message}`
+  if (level === 'error') console.error(logMsg, data || '')
+  else if (level === 'warn') console.warn(logMsg, data || '')
+  else console.log(logMsg, data || '')
+  window.electronAPI?.log?.(level, `[MenuBar] ${message}`, data)
+}
+
 interface MenuBarProps {
   onOpenVault?: () => void
   onRefresh?: () => void
@@ -49,31 +58,47 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   }, [])
 
   const handleSignIn = async () => {
-    if (!isSupabaseConfigured) {
+    uiLog('info', 'Sign in button clicked from MenuBar')
+    
+    if (!isSupabaseConfigured()) {
+      uiLog('warn', 'Supabase not configured')
       alert('Supabase is not configured. Please add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.')
       return
     }
     
     setIsSigningIn(true)
+    uiLog('info', 'Starting Google sign-in flow from MenuBar')
+    
     try {
-      const { error } = await signInWithGoogle()
+      const { data, error } = await signInWithGoogle()
+      uiLog('info', 'signInWithGoogle returned', { 
+        hasData: !!data, 
+        hasError: !!error,
+        errorMessage: error?.message 
+      })
+      
       if (error) {
-        console.error('Sign in error:', error)
+        uiLog('error', 'Sign in failed', { error: error.message })
         alert(`Sign in failed: ${error.message}`)
+      } else {
+        uiLog('info', 'Sign in completed successfully, auth state change will be handled by App')
       }
-      // The auth state change will be handled by the App component
     } catch (err) {
-      console.error('Sign in error:', err)
+      uiLog('error', 'Sign in exception', { error: String(err) })
       alert('Sign in failed. Check the console for details.')
     } finally {
+      uiLog('info', 'Sign in flow finished, resetting state')
       setIsSigningIn(false)
     }
   }
 
   const handleSignOut = async () => {
+    uiLog('info', 'Sign out clicked')
     const { error } = await signOut()
     if (error) {
-      console.error('Sign out error:', error)
+      uiLog('error', 'Sign out error', { error: error.message })
+    } else {
+      uiLog('info', 'Sign out successful')
     }
     setUser(null)
     setOrganization(null)
