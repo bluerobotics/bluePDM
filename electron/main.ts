@@ -591,34 +591,19 @@ ipcMain.handle('logs:get-path', () => {
 
 ipcMain.handle('logs:export', async () => {
   try {
-    if (!logFilePath || !fs.existsSync(logFilePath)) {
-      return { success: false, error: 'No log file available' }
-    }
+    // Export current session logs from memory buffer
+    let sessionLogs = `BluePDM Session Logs\nExported: ${new Date().toISOString()}\nVersion: ${app.getVersion()}\nPlatform: ${process.platform} ${process.arch}\nEntries: ${logBuffer.length}\n${'='.repeat(60)}\n\n`
     
-    // Flush the stream first
-    if (logStream) {
-      await new Promise<void>((resolve) => logStream!.write('', resolve))
-    }
-    
-    // Read all log files and combine them
-    const logsDir = path.dirname(logFilePath)
-    const logFiles = fs.readdirSync(logsDir)
-      .filter(f => f.startsWith('bluepdm') && f.endsWith('.log'))
-      .sort()
-      .reverse() // Newest first
-    
-    let combinedLogs = `BluePDM Logs Export\nExported: ${new Date().toISOString()}\nVersion: ${app.getVersion()}\nPlatform: ${process.platform} ${process.arch}\n${'='.repeat(60)}\n\n`
-    
-    for (const file of logFiles) {
-      const filePath = path.join(logsDir, file)
-      const content = fs.readFileSync(filePath, 'utf-8')
-      combinedLogs += `\n--- ${file} ---\n${content}\n`
+    // Format each log entry
+    for (const entry of logBuffer) {
+      const dataStr = entry.data !== undefined ? ` ${JSON.stringify(entry.data)}` : ''
+      sessionLogs += `[${entry.timestamp}] [${entry.level.toUpperCase()}] ${entry.message}${dataStr}\n`
     }
     
     // Show save dialog
     const result = await dialog.showSaveDialog(mainWindow!, {
-      title: 'Export Logs',
-      defaultPath: `bluepdm-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`,
+      title: 'Export Session Logs',
+      defaultPath: `bluepdm-session-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`,
       filters: [
         { name: 'Text Files', extensions: ['txt'] },
         { name: 'Log Files', extensions: ['log'] }
@@ -629,7 +614,7 @@ ipcMain.handle('logs:export', async () => {
       return { success: false, canceled: true }
     }
     
-    fs.writeFileSync(result.filePath, combinedLogs)
+    fs.writeFileSync(result.filePath, sessionLogs)
     log('Logs exported to: ' + result.filePath)
     
     return { success: true, path: result.filePath }
