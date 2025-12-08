@@ -168,8 +168,24 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
         const serverVaultIds = new Set(vaultsData.map((v: any) => v.id))
         const staleVaults = connectedVaults.filter(cv => !serverVaultIds.has(cv.id))
         if (staleVaults.length > 0) {
-          uiLog('info', 'Removing stale connected vaults', { count: staleVaults.length, ids: staleVaults.map(v => v.id) })
+          uiLog('info', 'Removing stale connected vaults (not on server)', { count: staleVaults.length, ids: staleVaults.map(v => v.id) })
           staleVaults.forEach(v => removeConnectedVault(v.id))
+        }
+        
+        // Also clean up connected vaults where local folder no longer exists
+        if (window.electronAPI) {
+          const validVaults = connectedVaults.filter(cv => serverVaultIds.has(cv.id))
+          for (const cv of validVaults) {
+            try {
+              const exists = await window.electronAPI.fileExists(cv.localPath)
+              if (!exists) {
+                uiLog('info', 'Removing connected vault (local folder missing)', { vaultName: cv.name, path: cv.localPath })
+                removeConnectedVault(cv.id)
+              }
+            } catch {
+              // If we can't check, leave it alone
+            }
+          }
         }
       } catch (err) {
         console.error('Error loading vaults:', err)
