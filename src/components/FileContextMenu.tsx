@@ -552,8 +552,10 @@ export function FileContextMenu({
       // Track folders being processed for spinner display
       foldersBeingProcessed.forEach(p => addProcessingFolder(p))
       
-      // Get files to remove - synced files that exist locally
-      const filesToRemove = syncedFilesInSelection.filter(f => f.diffStatus !== 'cloud')
+      // Get files to remove - both synced files that exist locally AND unsynced local files
+      const syncedLocalFiles = syncedFilesInSelection.filter(f => f.diffStatus !== 'cloud')
+      const unsyncedLocalFiles = unsyncedFilesInSelection.filter(f => !f.isDirectory)
+      const filesToRemove = [...syncedLocalFiles, ...unsyncedLocalFiles]
       
       if (filesToRemove.length === 0) {
         foldersBeingProcessed.forEach(p => removeProcessingFolder(p))

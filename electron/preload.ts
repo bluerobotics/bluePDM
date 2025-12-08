@@ -105,6 +105,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameItem: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs:rename', oldPath, newPath),
   copyFile: (sourcePath: string, destPath: string) => ipcRenderer.invoke('fs:copy-file', sourcePath, destPath),
   openInExplorer: (path: string) => ipcRenderer.invoke('fs:open-in-explorer', path),
+  showInExplorer: (path: string) => ipcRenderer.invoke('fs:open-in-explorer', path), // Alias
   openFile: (path: string) => ipcRenderer.invoke('fs:open-file', path),
   setReadonly: (path: string, readonly: boolean) => ipcRenderer.invoke('fs:set-readonly', path, readonly),
   startDrag: (filePaths: string[]) => ipcRenderer.send('fs:start-drag', filePaths),
