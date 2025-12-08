@@ -41,16 +41,48 @@ npm install
 npm run build
 ```
 
-### Configuration
+### Supabase Setup
 
-Create a `.env` file with your Supabase credentials:
+1. **Create a Supabase project** at [supabase.com](https://supabase.com)
+
+2. **Run the database schema:**
+   - Go to SQL Editor in your Supabase dashboard
+   - Copy and run the contents of `supabase/schema.sql`
+
+3. **Set up Google OAuth:**
+   - Go to Authentication → Providers → Google
+   - Enable Google provider
+   - Add your Google OAuth credentials (from [Google Cloud Console](https://console.cloud.google.com/apis/credentials))
+   - Add `http://localhost` to Redirect URLs (for Electron app)
+
+4. **Create a storage bucket:**
+   - Go to Storage → New Bucket
+   - Name it `vault`
+   - Set to **Private** (not public)
+   - Add a policy for authenticated users (see `schema.sql` comments for details)
+
+5. **Create your organization:**
+   ```sql
+   INSERT INTO organizations (name, slug, email_domains)
+   VALUES ('Your Company', 'your-company', ARRAY['yourcompany.com']);
+   ```
+
+6. **Verify the trigger exists:**
+   ```sql
+   SELECT tgname FROM pg_trigger WHERE tgname = 'on_auth_user_created';
+   ```
+   If empty, the trigger didn't attach. Re-run the trigger creation from `schema.sql`.
+
+### Configuration (Optional)
+
+For development, create a `.env` file:
 
 ```
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-Run the schema from `supabase/schema.sql` in your Supabase SQL Editor.
+For production builds, users configure Supabase credentials through the app's setup screen on first launch.
 
 ## File Storage
 
