@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Database, Link } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
+import { SettingsModal } from './SettingsModal'
 
 // Helper to log to both console and electron log file
 const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
@@ -70,7 +71,8 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   
   const [isConnectingVault, setIsConnectingVault] = useState(false)  // Local vault connection state
   const [isSigningIn, setIsSigningIn] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false)
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
   const [isLoadingVaults, setIsLoadingVaults] = useState(false)
   const [connectingVaultId, setConnectingVaultId] = useState<string | null>(null)
@@ -107,8 +109,12 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   // Load organization vaults with stats
   useEffect(() => {
     const loadOrgVaults = async () => {
-      if (!organization?.id) return
+      if (!organization?.id) {
+        uiLog('debug', 'No organization ID, skipping vault load')
+        return
+      }
       
+      uiLog('info', 'Loading vaults for organization', { orgId: organization.id, orgName: organization.name })
       setIsLoadingVaults(true)
       try {
         // Load vaults
@@ -119,8 +125,14 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           .order('is_default', { ascending: false })
           .order('name')
         
+        uiLog('info', 'Vaults query result', { 
+          count: vaultsData?.length || 0, 
+          error: vaultsError?.message,
+          errorCode: vaultsError?.code 
+        })
+        
         if (vaultsError || !vaultsData) {
-          console.error('Error loading vaults:', vaultsError)
+          uiLog('error', 'Error loading vaults', { error: vaultsError })
           return
         }
         
@@ -608,14 +620,14 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
         {/* Settings Button */}
         <div className="mb-6">
           <button
-            onClick={() => setShowSettings(!showSettings)}
+            onClick={() => setShowSettingsModal(true)}
             className="w-full btn btn-secondary gap-2 justify-center py-3"
           >
             <Settings size={18} />
             Settings
           </button>
           
-          {showSettings && (
+          {showAdvancedOptions && (
             <div className="mt-4 space-y-2">
               <button
                 onClick={onOpenVault}
@@ -647,6 +659,11 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           Made with 💙 by Blue Robotics
         </div>
       </div>
+      
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <SettingsModal onClose={() => setShowSettingsModal(false)} />
+      )}
     </div>
   )
 }
