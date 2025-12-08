@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { 
   User, 
   Building2, 
-  FolderCog, 
   X,
   Users,
   Mail,
@@ -15,7 +14,6 @@ import {
   Star,
   Pencil,
   Check,
-  FolderOpen,
   Link,
   Unlink,
   AlertTriangle,
@@ -47,7 +45,7 @@ function buildVaultPath(platform: string, vaultSlug: string): string {
   }
 }
 
-type SettingsTab = 'account' | 'vault' | 'organization' | 'preferences' | 'about'
+type SettingsTab = 'account' | 'organization' | 'preferences' | 'about'
 
 interface OrgUser {
   id: string
@@ -131,11 +129,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   
   // Load org users and vaults when organization tab is selected
   useEffect(() => {
-    if ((activeTab === 'organization' || activeTab === 'vault') && organization) {
+    if (activeTab === 'organization' && organization) {
       loadOrgVaults()
-      if (activeTab === 'organization') {
-        loadOrgUsers()
-      }
+      loadOrgUsers()
     }
   }, [activeTab, organization])
   
@@ -519,13 +515,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     return connectedVaults.some(v => v.id === vaultId)
   }
   
-  const getConnectedPath = (vaultId: string) => {
-    return connectedVaults.find(v => v.id === vaultId)?.localPath
-  }
-  
   const tabs = [
     { id: 'account' as SettingsTab, icon: User, label: 'Account' },
-    { id: 'vault' as SettingsTab, icon: FolderCog, label: 'Local Vaults' },
     { id: 'organization' as SettingsTab, icon: Building2, label: 'Organization' },
     { id: 'preferences' as SettingsTab, icon: Settings, label: 'Preferences' },
     { id: 'about' as SettingsTab, icon: Info, label: 'About' },
@@ -618,112 +609,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 ) : (
                   <div className="text-center py-12 text-pdm-fg-muted">
                     Not signed in
-                  </div>
-                )}
-              </div>
-            )}
-            
-            {activeTab === 'vault' && (
-              <div className="space-y-6">
-                {organization ? (
-                  <>
-                    <p className="text-sm text-pdm-fg-muted">
-                      Select which organization vaults to connect locally. Each vault will create a folder on your computer.
-                    </p>
-                    
-                    {isLoadingVaults ? (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
-                      </div>
-                    ) : orgVaults.length === 0 ? (
-                      <div className="text-center py-8 text-pdm-fg-muted text-sm">
-                        No vaults available. Create one in Organization settings.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {orgVaults.map(vault => {
-                          const connected = isVaultConnected(vault.id)
-                          const localPath = getConnectedPath(vault.id)
-                          const isConnecting = connectingVaultId === vault.id
-                          
-                          return (
-                            <div 
-                              key={vault.id}
-                              className={`p-4 rounded-lg border transition-colors ${
-                                connected 
-                                  ? 'bg-pdm-accent/10 border-pdm-accent' 
-                                  : 'bg-pdm-bg border-pdm-border hover:border-pdm-border-light'
-                              }`}
-                            >
-                              <div className="flex items-center gap-3">
-                                <FolderOpen size={20} className={connected ? 'text-pdm-accent' : 'text-pdm-fg-muted'} />
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-pdm-fg truncate">
-                                      {vault.name}
-                                    </span>
-                                    {vault.is_default && (
-                                      <span className="px-1.5 py-0.5 bg-pdm-accent/20 text-pdm-accent text-xs rounded">
-                                        Default
-                                      </span>
-                                    )}
-                                    {connected && (
-                                      <Check size={14} className="text-pdm-success" />
-                                    )}
-                                  </div>
-                                  {vault.description && (
-                                    <div className="text-xs text-pdm-fg-muted truncate">
-                                      {vault.description}
-                                    </div>
-                                  )}
-                                  {localPath && (
-                                    <div className="text-xs text-pdm-fg-dim font-mono mt-1">
-                                      {localPath}
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                {connected ? (
-                                  <button
-                                    onClick={() => handleDisconnectVault(vault.id)}
-                                    className="btn btn-ghost btn-sm flex items-center gap-1 text-pdm-warning"
-                                    title="Disconnect vault"
-                                  >
-                                    <Unlink size={14} />
-                                    Disconnect
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleConnectVault(vault)}
-                                    disabled={isConnecting}
-                                    className="btn btn-primary btn-sm flex items-center gap-1"
-                                  >
-                                    {isConnecting ? (
-                                      <Loader2 size={14} className="animate-spin" />
-                                    ) : (
-                                      <Link size={14} />
-                                    )}
-                                    Connect
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                    
-                    {connectedVaults.length > 0 && (
-                      <div className="pt-4 border-t border-pdm-border">
-                        <div className="text-xs text-pdm-fg-muted">
-                          {connectedVaults.length} vault{connectedVaults.length > 1 ? 's' : ''} connected
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-center py-12 text-pdm-fg-muted">
-                    Sign in to an organization to manage vaults
                   </div>
                 )}
               </div>
@@ -881,33 +766,63 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                                 )}
                               </div>
                               {renamingVaultId !== vault.id && (
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    onClick={() => {
-                                      setRenameValue(vault.name)
-                                      setRenamingVaultId(vault.id)
-                                    }}
-                                    className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
-                                    title="Rename vault"
-                                  >
-                                    <Pencil size={14} className="text-pdm-fg-muted" />
-                                  </button>
-                                  {!vault.is_default && (
+                                <div className="flex items-center gap-2">
+                                  {/* Connect/Disconnect button */}
+                                  {isVaultConnected(vault.id) ? (
                                     <button
-                                      onClick={() => handleSetDefaultVault(vault.id)}
-                                      className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
-                                      title="Set as default"
+                                      onClick={() => handleDisconnectVault(vault.id)}
+                                      className="btn btn-ghost btn-sm flex items-center gap-1 text-pdm-warning"
+                                      title="Disconnect vault"
                                     >
-                                      <Star size={14} className="text-pdm-fg-muted" />
+                                      <Unlink size={14} />
+                                      Disconnect
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleConnectVault(vault)}
+                                      disabled={connectingVaultId === vault.id}
+                                      className="btn btn-primary btn-sm flex items-center gap-1"
+                                    >
+                                      {connectingVaultId === vault.id ? (
+                                        <Loader2 size={14} className="animate-spin" />
+                                      ) : (
+                                        <Link size={14} />
+                                      )}
+                                      Connect
                                     </button>
                                   )}
-                                  <button
-                                    onClick={() => openDeleteDialog(vault)}
-                                    className="p-1.5 hover:bg-pdm-error/20 rounded transition-colors"
-                                    title="Delete vault"
-                                  >
-                                    <Trash2 size={14} className="text-pdm-error" />
-                                  </button>
+                                  
+                                  {/* Admin actions */}
+                                  {user?.role === 'admin' && (
+                                    <div className="flex items-center gap-1 border-l border-pdm-border pl-2">
+                                      <button
+                                        onClick={() => {
+                                          setRenameValue(vault.name)
+                                          setRenamingVaultId(vault.id)
+                                        }}
+                                        className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                                        title="Rename vault"
+                                      >
+                                        <Pencil size={14} className="text-pdm-fg-muted" />
+                                      </button>
+                                      {!vault.is_default && (
+                                        <button
+                                          onClick={() => handleSetDefaultVault(vault.id)}
+                                          className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                                          title="Set as default"
+                                        >
+                                          <Star size={14} className="text-pdm-fg-muted" />
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => openDeleteDialog(vault)}
+                                        className="p-1.5 hover:bg-pdm-error/20 rounded transition-colors"
+                                        title="Delete vault"
+                                      >
+                                        <Trash2 size={14} className="text-pdm-error" />
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
