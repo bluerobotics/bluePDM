@@ -70,7 +70,13 @@ declare global {
       getPathForFile: (file: File) => string
       
       // OAuth
-      openOAuthWindow: (url: string) => Promise<{ success: boolean; canceled?: boolean }>
+      openOAuthWindow: (url: string) => Promise<{ success: boolean; canceled?: boolean; error?: string }>
+      
+      // Logging
+      getLogs: () => Promise<Array<{ timestamp: string; level: string; message: string; data?: unknown }>>
+      getLogPath: () => Promise<string | null>
+      exportLogs: () => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
+      log: (level: string, message: string, data?: unknown) => void
       
       // Window controls
       minimize: () => void
@@ -131,6 +137,9 @@ declare global {
       
       // File change events
       onFilesChanged: (callback: (files: string[]) => void) => () => void
+      
+      // Auth session events (for OAuth callback in production)
+      onSetSession: (callback: (tokens: { access_token: string; refresh_token: string; expires_in?: number; expires_at?: number }) => void) => () => void
     }
   }
 }
