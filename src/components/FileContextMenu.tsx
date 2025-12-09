@@ -67,7 +67,7 @@ export function FileContextMenu({
   onRename,
   onNewFolder
 }: FileContextMenuProps) {
-  const { user, organization, vaultPath, activeVaultId, addToast, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addProcessingFolder, removeProcessingFolder, queueOperation, hasPathConflict, updateFileInStore, startSync, updateSyncProgress, endSync } = usePDMStore()
+  const { user, organization, vaultPath, activeVaultId, addToast, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addProcessingFolder, removeProcessingFolder, queueOperation, hasPathConflict, updateFileInStore } = usePDMStore()
   
   const [showProperties, setShowProperties] = useState(false)
   const [folderSize, setFolderSize] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
@@ -388,7 +388,10 @@ export function FileContextMenu({
     const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
     foldersBeingProcessed.forEach(p => addProcessingFolder(p))
     
-    startSync(filesToSync.length, 'upload')
+    // Show progress toast
+    const toastId = `first-checkin-${Date.now()}`
+    addProgressToast(toastId, `Uploading ${filesToSync.length} file${filesToSync.length > 1 ? 's' : ''}...`, filesToSync.length)
+    
     let succeeded = 0
     let failed = 0
     
@@ -420,12 +423,12 @@ export function FileContextMenu({
       } catch {
         failed++
       }
-      updateSyncProgress(i + 1, Math.round(((i + 1) / filesToSync.length) * 100), '')
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToSync.length) * 100))
     }
     
     // Clean up
     foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
-    endSync()
+    removeToast(toastId)
     
     if (failed > 0) {
       addToast('warning', `Synced ${succeeded}/${filesToSync.length} files`)
@@ -747,19 +750,23 @@ export function FileContextMenu({
     setIsDeleting(true)
     
     const total = deleteConfirmFiles.length
-    startSync(total, 'upload')
+    const toastId = `delete-server-${Date.now()}`
+    addProgressToast(toastId, `Deleting ${total} file${total > 1 ? 's' : ''} from server...`, total)
     
     let deleted = 0
     let failed = 0
     
-    for (const file of deleteConfirmFiles) {
+    for (let i = 0; i < deleteConfirmFiles.length; i++) {
+      const file = deleteConfirmFiles[i]
+      
       // Check for cancellation
-      if (usePDMStore.getState().syncProgress.cancelRequested) {
+      if (isProgressToastCancelled(toastId)) {
         break
       }
       
       if (!file.pdmData?.id) {
         failed++
+        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
         continue
       }
       
@@ -783,11 +790,10 @@ export function FileContextMenu({
         failed++
       }
       
-      const percent = Math.round(((deleted + failed) / total) * 100)
-      updateSyncProgress(deleted + failed, percent, '')
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
     }
     
-    endSync()
+    removeToast(toastId)
     setIsDeleting(false)
     setShowDeleteConfirm(false)
     setDeleteConfirmFiles([])
