@@ -2,6 +2,23 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.1.0] - 2025-01-09
+
+### Added
+- New 'moved' diff status to distinguish moved files from modified files
+- Visual indicators for moved files (blue accent color, → arrow icon in folder counts)
+- Cross-view drag-and-drop between Explorer sidebar and File Browser
+- Drop zone for vault root in Explorer (drop anywhere in vault contents area)
+- Drop zone for expanded folder children (drop anywhere in folder's content area)
+
+### Changed
+- Moved files no longer show version increment (version stays same since content unchanged)
+- Drag overlay only shows for external file drops (from outside the app)
+- Folder diff counts now track moved files separately
+
+### Fixed
+- TypeScript build errors (renameFile → moveFile API)
+
 ## [1.0.0] - 2025-01-09
 
 ### Added
