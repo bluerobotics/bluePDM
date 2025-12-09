@@ -682,46 +682,65 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const getStatusIcon = (file: LocalFile) => {
     const { user } = usePDMStore.getState()
     
-    // For folders - show stacked avatars of users with checkouts
+    // For folders - show stacked avatars of users with checkouts, or cloud status
     if (file.isDirectory) {
       const checkoutUsers = getFolderCheckoutUsers(file.relativePath)
-      if (checkoutUsers.length === 0) return null
       
-      const maxShow = 3
-      const shown = checkoutUsers.slice(0, maxShow)
-      const extra = checkoutUsers.length - maxShow
-      
-      return (
-        <span className="flex items-center flex-shrink-0 -space-x-1.5" title={checkoutUsers.map(u => u.name).join(', ')}>
-          {shown.map((u, i) => (
-            u.avatar_url ? (
-              <img 
-                key={u.id}
-                src={u.avatar_url} 
-                alt={u.name}
-                className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg`}
-                style={{ zIndex: maxShow - i }}
-              />
-            ) : (
+      // If has checkout users, show avatars
+      if (checkoutUsers.length > 0) {
+        const maxShow = 3
+        const shown = checkoutUsers.slice(0, maxShow)
+        const extra = checkoutUsers.length - maxShow
+        
+        return (
+          <span className="flex items-center flex-shrink-0 -space-x-1.5" title={checkoutUsers.map(u => u.name).join(', ')}>
+            {shown.map((u, i) => (
+              u.avatar_url ? (
+                <img 
+                  key={u.id}
+                  src={u.avatar_url} 
+                  alt={u.name}
+                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg`}
+                  style={{ zIndex: maxShow - i }}
+                />
+              ) : (
+                <div 
+                  key={u.id}
+                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] bg-pdm-bg`}
+                  style={{ zIndex: maxShow - i }}
+                >
+                  {u.name.charAt(0).toUpperCase()}
+                </div>
+              )
+            ))}
+            {extra > 0 && (
               <div 
-                key={u.id}
-                className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] bg-pdm-bg`}
-                style={{ zIndex: maxShow - i }}
+                className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
+                style={{ zIndex: 0 }}
               >
-                {u.name.charAt(0).toUpperCase()}
+                +{extra}
               </div>
-            )
-          ))}
-          {extra > 0 && (
-            <div 
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
-              style={{ zIndex: 0 }}
-            >
-              +{extra}
-            </div>
-          )}
-        </span>
+            )}
+          </span>
+        )
+      }
+      
+      // Cloud-only folder (all contents are cloud-only)
+      if (file.diffStatus === 'cloud') {
+        return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
+      }
+      
+      // Synced folder (has files with pdmData) - show green cloud
+      const hasSyncedFiles = files.some(f => 
+        !f.isDirectory && 
+        f.pdmData && 
+        f.relativePath.startsWith(file.relativePath + '/')
       )
+      if (hasSyncedFiles) {
+        return <Cloud size={12} className="text-pdm-success flex-shrink-0" />
+      }
+      
+      return null
     }
     
     // For files:

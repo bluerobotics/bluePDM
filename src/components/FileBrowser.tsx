@@ -1604,14 +1604,38 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             )}
             
             
-            {!file.isDirectory && !fileStatusColumnVisible && (
-              <span 
-                className={`flex-shrink-0 ${isSynced ? 'text-pdm-success' : 'text-pdm-fg-muted'}`}
-                title={isSynced ? 'Synced with cloud' : 'Local only - not synced'}
-              >
-                {isSynced ? <Cloud size={12} /> : <HardDrive size={12} />}
-              </span>
-            )}
+            {!fileStatusColumnVisible && (() => {
+              if (file.isDirectory) {
+                // Check if folder has synced files
+                const hasSyncedFilesInFolder = files.some(f => 
+                  !f.isDirectory && f.pdmData && f.relativePath.startsWith(file.relativePath + '/')
+                )
+                if (file.diffStatus === 'cloud') {
+                  return (
+                    <span className="flex-shrink-0 text-pdm-fg-muted" title="Cloud only - not downloaded">
+                      <Cloud size={12} />
+                    </span>
+                  )
+                }
+                if (hasSyncedFilesInFolder) {
+                  return (
+                    <span className="flex-shrink-0 text-pdm-success" title="Synced with cloud">
+                      <Cloud size={12} />
+                    </span>
+                  )
+                }
+                return null
+              }
+              // For files
+              return (
+                <span 
+                  className={`flex-shrink-0 ${isSynced ? 'text-pdm-success' : 'text-pdm-fg-muted'}`}
+                  title={isSynced ? 'Synced with cloud' : 'Local only - not synced'}
+                >
+                  {isSynced ? <Cloud size={12} /> : <HardDrive size={12} />}
+                </span>
+              )
+            })()}
           </div>
         )
       case 'state':
