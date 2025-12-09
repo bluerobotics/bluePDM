@@ -87,13 +87,25 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      - name: Extract changelog for version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Extract the section for this version from CHANGELOG.md
+          # Finds content between ## [VERSION] and the next ## [ or end of file
+          CHANGELOG=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          # Handle multi-line output for GitHub Actions
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           name: ${{ steps.get_version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
           draft: false
           prerelease: false
-          generate_release_notes: true
           files: |
             dist/windows/*
             dist/macos/*
