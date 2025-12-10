@@ -1650,6 +1650,7 @@ autoUpdater.on('checking-for-update', () => {
 autoUpdater.on('update-available', (info: UpdateInfo) => {
   log('Update available:', info.version)
   updateAvailable = info
+  isUserInitiatedCheck = false
   mainWindow?.webContents.send('updater:available', {
     version: info.version,
     releaseDate: info.releaseDate,
@@ -1660,6 +1661,7 @@ autoUpdater.on('update-available', (info: UpdateInfo) => {
 autoUpdater.on('update-not-available', (info: UpdateInfo) => {
   log('No update available, current version is latest')
   updateAvailable = null
+  isUserInitiatedCheck = false
   mainWindow?.webContents.send('updater:not-available', {
     version: info.version
   })
@@ -1686,12 +1688,20 @@ autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
   })
 })
 
+// Track if this is a user-initiated check (vs auto-check on startup)
+let isUserInitiatedCheck = false
+
 autoUpdater.on('error', (error: Error) => {
   logError('Auto-updater error', { error: error.message })
   downloadProgress = null
-  mainWindow?.webContents.send('updater:error', {
-    message: error.message
-  })
+  // Only show error to user if they manually triggered the check
+  // Suppress errors from automatic startup checks (network issues, release not ready, etc.)
+  if (isUserInitiatedCheck) {
+    mainWindow?.webContents.send('updater:error', {
+      message: error.message
+    })
+  }
+  isUserInitiatedCheck = false
 })
 
 // IPC handlers for update operations
@@ -1701,10 +1711,12 @@ ipcMain.handle('updater:check', async () => {
       log('Skipping update check in development mode')
       return { success: false, error: 'Updates disabled in development' }
     }
+    isUserInitiatedCheck = true  // Mark as user-initiated so errors are shown
     const result = await autoUpdater.checkForUpdates()
     return { success: true, updateInfo: result?.updateInfo }
   } catch (err) {
     logError('Failed to check for updates', { error: String(err) })
+    isUserInitiatedCheck = false
     return { success: false, error: String(err) }
   }
 })
