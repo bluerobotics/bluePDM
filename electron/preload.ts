@@ -134,6 +134,43 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hideEDrawingsPreview: () => ipcRenderer.invoke('edrawings:hide-preview'),
   destroyEDrawingsPreview: () => ipcRenderer.invoke('edrawings:destroy-preview'),
 
+  // Auto Updater
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  downloadUpdate: () => ipcRenderer.invoke('updater:download'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  getUpdateStatus: () => ipcRenderer.invoke('updater:get-status'),
+  
+  // Update event listeners
+  onUpdateChecking: (callback: () => void) => {
+    ipcRenderer.on('updater:checking', callback)
+    return () => ipcRenderer.removeListener('updater:checking', callback)
+  },
+  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => {
+    const handler = (_: unknown, info: { version: string; releaseDate?: string; releaseNotes?: string }) => callback(info)
+    ipcRenderer.on('updater:available', handler)
+    return () => ipcRenderer.removeListener('updater:available', handler)
+  },
+  onUpdateNotAvailable: (callback: (info: { version: string }) => void) => {
+    const handler = (_: unknown, info: { version: string }) => callback(info)
+    ipcRenderer.on('updater:not-available', handler)
+    return () => ipcRenderer.removeListener('updater:not-available', handler)
+  },
+  onUpdateDownloadProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => {
+    const handler = (_: unknown, progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => callback(progress)
+    ipcRenderer.on('updater:download-progress', handler)
+    return () => ipcRenderer.removeListener('updater:download-progress', handler)
+  },
+  onUpdateDownloaded: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => {
+    const handler = (_: unknown, info: { version: string; releaseDate?: string; releaseNotes?: string }) => callback(info)
+    ipcRenderer.on('updater:downloaded', handler)
+    return () => ipcRenderer.removeListener('updater:downloaded', handler)
+  },
+  onUpdateError: (callback: (error: { message: string }) => void) => {
+    const handler = (_: unknown, error: { message: string }) => callback(error)
+    ipcRenderer.on('updater:error', handler)
+    return () => ipcRenderer.removeListener('updater:error', handler)
+  },
+
   // Menu event listeners
   onMenuEvent: (callback: (event: string) => void) => {
     const events = [
@@ -249,6 +286,24 @@ declare global {
       showEDrawingsPreview: () => Promise<{ success: boolean }>
       hideEDrawingsPreview: () => Promise<{ success: boolean }>
       destroyEDrawingsPreview: () => Promise<{ success: boolean }>
+      
+      // Auto Updater
+      checkForUpdates: () => Promise<{ success: boolean; updateInfo?: unknown; error?: string }>
+      downloadUpdate: () => Promise<{ success: boolean; error?: string }>
+      installUpdate: () => Promise<{ success: boolean; error?: string }>
+      getUpdateStatus: () => Promise<{
+        updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string } | null
+        updateDownloaded: boolean
+        downloadProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
+      }>
+      
+      // Update event listeners
+      onUpdateChecking: (callback: () => void) => () => void
+      onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void
+      onUpdateNotAvailable: (callback: (info: { version: string }) => void) => () => void
+      onUpdateDownloadProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
+      onUpdateDownloaded: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void
+      onUpdateError: (callback: (error: { message: string }) => void) => () => void
       
       // Menu events
       onMenuEvent: (callback: (event: string) => void) => () => void

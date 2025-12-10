@@ -947,13 +947,25 @@ export function FileContextMenu({
                 <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+C</span>
               </div>
             )}
-            {onCut && (
-              <div className="context-menu-item" onClick={() => { onCut(); onClose(); }}>
-                <Scissors size={14} />
-                Cut
-                <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+X</span>
-              </div>
-            )}
+            {onCut && (() => {
+              // Check if files can be cut - need checkout for synced files
+              const canCut = contextFiles.every(f => 
+                f.isDirectory || 
+                !f.pdmData || 
+                f.pdmData.checked_out_by === user?.id
+              )
+              return (
+                <div 
+                  className={`context-menu-item ${!canCut ? 'disabled' : ''}`}
+                  onClick={() => { if (canCut) { onCut(); onClose(); } }}
+                  title={!canCut ? 'Check out files first to move them' : undefined}
+                >
+                  <Scissors size={14} />
+                  Cut
+                  <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+X</span>
+                </div>
+              )
+            })()}
             {onPaste && (
               <div 
                 className={`context-menu-item ${!clipboard ? 'disabled' : ''}`}

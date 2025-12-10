@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
+    "electron-updater": "^6.3.9",
     "@tanstack/react-query": "^5.14.0",
     "@tanstack/react-table": "^8.11.0",
     "chokidar": "^5.0.0",
@@ -51,7 +52,11 @@
       "dist/**/*",
       "dist-electron/**/*"
     ],
-    "publish": null,
+    "publish": {
+      "provider": "github",
+      "owner": "bluerobotics",
+      "repo": "blue-pdm"
+    },
     "win": {
       "target": [
         {

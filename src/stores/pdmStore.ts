@@ -14,7 +14,7 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
 export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
-export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress'
+export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'moved'
 
 // Connected vault - an org vault that's connected locally
@@ -173,6 +173,12 @@ interface PDMState {
   // Toasts
   toasts: ToastMessage[]
   
+  // Update state
+  updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string } | null
+  updateDownloading: boolean
+  updateDownloaded: boolean
+  updateProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
+  
   // Recent vaults
   recentVaults: string[]
   autoConnect: boolean
@@ -203,6 +209,14 @@ interface PDMState {
   requestCancelProgressToast: (id: string) => void
   isProgressToastCancelled: (id: string) => boolean
   removeToast: (id: string) => void
+  
+  // Actions - Update
+  setUpdateAvailable: (info: { version: string; releaseDate?: string; releaseNotes?: string } | null) => void
+  setUpdateDownloading: (downloading: boolean) => void
+  setUpdateDownloaded: (downloaded: boolean) => void
+  setUpdateProgress: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null) => void
+  showUpdateToast: (version: string) => void
+  dismissUpdateToast: () => void
   
   // Actions - Auth
   setUser: (user: User | null) => void
@@ -401,6 +415,11 @@ export const usePDMStore = create<PDMState>()(
       
       toasts: [],
       
+      updateAvailable: null,
+      updateDownloading: false,
+      updateDownloaded: false,
+      updateProgress: null,
+      
       recentVaults: [],
       autoConnect: true,
       cadPreviewMode: 'thumbnail',
@@ -451,6 +470,25 @@ export const usePDMStore = create<PDMState>()(
       },
       removeToast: (id) => {
         set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }))
+      },
+      
+      // Actions - Update
+      setUpdateAvailable: (info) => set({ updateAvailable: info }),
+      setUpdateDownloading: (downloading) => set({ updateDownloading: downloading }),
+      setUpdateDownloaded: (downloaded) => set({ updateDownloaded: downloaded }),
+      setUpdateProgress: (progress) => set({ updateProgress: progress }),
+      showUpdateToast: (version) => {
+        const id = 'update-available'
+        // Remove existing update toast if any
+        set(state => ({
+          toasts: [
+            ...state.toasts.filter(t => t.id !== id),
+            { id, type: 'update' as ToastType, message: `Version ${version} is available`, duration: 0 }
+          ]
+        }))
+      },
+      dismissUpdateToast: () => {
+        set(state => ({ toasts: state.toasts.filter(t => t.id !== 'update-available') }))
       },
       
       // Actions - Auth

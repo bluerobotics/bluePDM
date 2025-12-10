@@ -268,6 +268,22 @@ CREATE POLICY "Users can update own profile"
   USING (id = auth.uid())
   WITH CHECK (id = auth.uid());
 
+-- Allow admins to update users in their organization (change role, remove from org)
+CREATE POLICY "Admins can update users in their org"
+  ON users FOR UPDATE
+  TO authenticated
+  USING (
+    -- Target user is in the same org as the admin
+    org_id IN (
+      SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'
+    )
+  )
+  WITH CHECK (
+    -- Admins can only modify users to stay in their org or be removed (org_id = null)
+    org_id IS NULL OR 
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')
+  );
+
 -- Files: authenticated users can access (org filtering done in queries)
 CREATE POLICY "Authenticated users can view files"
   ON files FOR SELECT

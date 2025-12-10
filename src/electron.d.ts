@@ -132,6 +132,24 @@ declare global {
       hideEDrawingsPreview: () => Promise<{ success: boolean }>
       destroyEDrawingsPreview: () => Promise<{ success: boolean }>
       
+      // Auto Updater
+      checkForUpdates: () => Promise<{ success: boolean; updateInfo?: unknown; error?: string }>
+      downloadUpdate: () => Promise<{ success: boolean; error?: string }>
+      installUpdate: () => Promise<{ success: boolean; error?: string }>
+      getUpdateStatus: () => Promise<{
+        updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string } | null
+        updateDownloaded: boolean
+        downloadProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
+      }>
+      
+      // Update event listeners
+      onUpdateChecking: (callback: () => void) => () => void
+      onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void
+      onUpdateNotAvailable: (callback: (info: { version: string }) => void) => () => void
+      onUpdateDownloadProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
+      onUpdateDownloaded: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void
+      onUpdateError: (callback: (error: { message: string }) => void) => () => void
+      
       // Menu events
       onMenuEvent: (callback: (event: string) => void) => () => void
       

@@ -26,10 +26,14 @@ import {
   Copy,
   Key,
   Eye,
-  Download
+  Download,
+  UserMinus,
+  ChevronDown,
+  Wrench,
+  RefreshCw
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
-import { supabase, signOut, getCurrentConfig } from '../lib/supabase'
+import { supabase, signOut, getCurrentConfig, updateUserRole, removeUserFromOrg } from '../lib/supabase'
 import { generateOrgCode, clearConfig } from '../lib/supabaseConfig'
 
 // Build vault path based on platform
@@ -118,6 +122,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [showOrgCode, setShowOrgCode] = useState(false)
   const [orgCode, setOrgCode] = useState<string | null>(null)
   const [codeCopied, setCodeCopied] = useState(false)
+  
+  // User management state
+  const [showInviteDialog, setShowInviteDialog] = useState(false)
+  const [inviteCopied, setInviteCopied] = useState(false)
+  const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null)
+  const [removingUser, setRemovingUser] = useState<OrgUser | null>(null)
+  const [isRemoving, setIsRemoving] = useState(false)
+  const [roleDropdownOpen, setRoleDropdownOpen] = useState<string | null>(null)
   
   // Get app version and platform
   useEffect(() => {
@@ -515,6 +527,94 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     return connectedVaults.some(v => v.id === vaultId)
   }
   
+  // User management handlers
+  const generateInviteMessage = () => {
+    const config = getCurrentConfig()
+    if (!config || !organization) return ''
+    
+    const code = generateOrgCode(config)
+    return `You've been invited to join ${organization.name} on BluePDM!
+
+BluePDM is a Product Data Management tool for engineering teams.
+
+To get started:
+1. Download BluePDM from: https://github.com/bluerobotics/blue-pdm/releases
+2. Install and open the app
+3. When prompted, enter this organization code:
+
+${code}
+
+4. Sign in with your Google account
+
+See you on the team!`
+  }
+  
+  const handleCopyInvite = async () => {
+    const message = generateInviteMessage()
+    try {
+      await navigator.clipboard.writeText(message)
+      setInviteCopied(true)
+      setTimeout(() => setInviteCopied(false), 2000)
+      addToast('success', 'Invite copied! Paste it in an email to send.')
+    } catch (err) {
+      addToast('error', 'Failed to copy invite')
+    }
+  }
+  
+  const handleChangeRole = async (targetUser: OrgUser, newRole: 'admin' | 'engineer' | 'viewer') => {
+    if (!organization || targetUser.role === newRole) {
+      setRoleDropdownOpen(null)
+      return
+    }
+    
+    setChangingRoleUserId(targetUser.id)
+    try {
+      const result = await updateUserRole(targetUser.id, newRole, organization.id)
+      if (result.success) {
+        addToast('success', `Changed ${targetUser.full_name || targetUser.email}'s role to ${newRole}`)
+        setOrgUsers(orgUsers.map(u => 
+          u.id === targetUser.id ? { ...u, role: newRole } : u
+        ))
+      } else {
+        addToast('error', result.error || 'Failed to change role')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to change role')
+    } finally {
+      setChangingRoleUserId(null)
+      setRoleDropdownOpen(null)
+    }
+  }
+  
+  const handleRemoveUser = async () => {
+    if (!removingUser || !organization) return
+    
+    setIsRemoving(true)
+    try {
+      const result = await removeUserFromOrg(removingUser.id, organization.id)
+      if (result.success) {
+        addToast('success', `Removed ${removingUser.full_name || removingUser.email} from organization`)
+        setOrgUsers(orgUsers.filter(u => u.id !== removingUser.id))
+        setRemovingUser(null)
+      } else {
+        addToast('error', result.error || 'Failed to remove user')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to remove user')
+    } finally {
+      setIsRemoving(false)
+    }
+  }
+  
+  const getRoleIcon = (role: string) => {
+    switch (role) {
+      case 'admin': return Shield
+      case 'engineer': return Wrench
+      case 'viewer': return Eye
+      default: return User
+    }
+  }
+  
   const tabs = [
     { id: 'account' as SettingsTab, icon: User, label: 'Account' },
     { id: 'organization' as SettingsTab, icon: Building2, label: 'Organization' },
@@ -843,9 +943,28 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     
                     {/* Users */}
                     <div className="space-y-3">
-                      <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
-                        <Users size={14} />
-                        Members ({orgUsers.length})
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
+                          <Users size={14} />
+                          Members ({orgUsers.length})
+                          <button
+                            onClick={loadOrgUsers}
+                            disabled={isLoadingUsers}
+                            className="p-1 rounded hover:bg-pdm-highlight transition-colors text-pdm-fg-muted hover:text-pdm-fg disabled:opacity-50"
+                            title="Refresh members"
+                          >
+                            <RefreshCw size={12} className={isLoadingUsers ? 'animate-spin' : ''} />
+                          </button>
+                        </div>
+                        {user?.role === 'admin' && (
+                          <button
+                            onClick={() => setShowInviteDialog(true)}
+                            className="btn btn-primary btn-sm flex items-center gap-1"
+                          >
+                            <Mail size={14} />
+                            Invite User
+                          </button>
+                        )}
                       </div>
                       
                       {isLoadingUsers ? (
@@ -853,49 +972,139 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                           <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
                         </div>
                       ) : (
-                        <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                          {orgUsers.map(orgUser => (
-                            <div 
-                              key={orgUser.id}
-                              className="flex items-center gap-3 p-3 rounded-lg hover:bg-pdm-highlight transition-colors"
-                            >
-                              {orgUser.avatar_url ? (
-                                <>
-                                  <img 
-                                    src={orgUser.avatar_url} 
-                                    alt={orgUser.full_name || orgUser.email}
-                                    className="w-10 h-10 rounded-full"
-                                    onError={(e) => {
-                                      const target = e.target as HTMLImageElement
-                                      target.style.display = 'none'
-                                      target.nextElementSibling?.classList.remove('hidden')
-                                    }}
-                                  />
-                                  <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium hidden">
+                        <div className="space-y-1 max-h-[280px] overflow-y-auto">
+                          {orgUsers.map(orgUser => {
+                            const RoleIcon = getRoleIcon(orgUser.role)
+                            const isCurrentUser = orgUser.id === user?.id
+                            const canManage = user?.role === 'admin' && !isCurrentUser
+                            
+                            return (
+                              <div 
+                                key={orgUser.id}
+                                className="flex items-center gap-3 p-3 rounded-lg hover:bg-pdm-highlight transition-colors group"
+                              >
+                                {orgUser.avatar_url ? (
+                                  <>
+                                    <img 
+                                      src={orgUser.avatar_url} 
+                                      alt={orgUser.full_name || orgUser.email}
+                                      className="w-10 h-10 rounded-full"
+                                      onError={(e) => {
+                                        const target = e.target as HTMLImageElement
+                                        target.style.display = 'none'
+                                        target.nextElementSibling?.classList.remove('hidden')
+                                      }}
+                                    />
+                                    <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium hidden">
+                                      {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium">
                                     {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
                                   </div>
-                                </>
-                              ) : (
-                                <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium">
-                                  {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm text-pdm-fg truncate flex items-center gap-2">
+                                    {orgUser.full_name || orgUser.email}
+                                    {isCurrentUser && (
+                                      <span className="text-xs text-pdm-fg-dim">(you)</span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-pdm-fg-muted truncate">
+                                    {orgUser.email}
+                                  </div>
                                 </div>
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm text-pdm-fg truncate">
-                                  {orgUser.full_name || orgUser.email}
+                                
+                                {/* Role badge / dropdown */}
+                                <div className="relative">
+                                  {canManage ? (
+                                    <>
+                                      <button
+                                        onClick={() => setRoleDropdownOpen(roleDropdownOpen === orgUser.id ? null : orgUser.id)}
+                                        disabled={changingRoleUserId === orgUser.id}
+                                        className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                                          orgUser.role === 'admin' ? 'bg-pdm-accent/20 text-pdm-accent' :
+                                          orgUser.role === 'engineer' ? 'bg-pdm-success/20 text-pdm-success' :
+                                          'bg-pdm-fg-muted/20 text-pdm-fg-muted'
+                                        } hover:opacity-80`}
+                                      >
+                                        {changingRoleUserId === orgUser.id ? (
+                                          <Loader2 size={12} className="animate-spin" />
+                                        ) : (
+                                          <RoleIcon size={12} />
+                                        )}
+                                        {orgUser.role.charAt(0).toUpperCase() + orgUser.role.slice(1)}
+                                        <ChevronDown size={12} />
+                                      </button>
+                                      
+                                      {/* Dropdown menu */}
+                                      {roleDropdownOpen === orgUser.id && (
+                                        <div className="absolute right-0 top-full mt-1 z-50 bg-pdm-bg-light border border-pdm-border rounded-lg shadow-xl py-1 min-w-[140px]">
+                                          {(['viewer', 'engineer', 'admin'] as const).map(role => (
+                                            <button
+                                              key={role}
+                                              onClick={() => handleChangeRole(orgUser, role)}
+                                              className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-pdm-highlight ${
+                                                orgUser.role === role ? 'text-pdm-accent' : 'text-pdm-fg'
+                                              }`}
+                                            >
+                                              {role === 'admin' && <Shield size={14} />}
+                                              {role === 'engineer' && <Wrench size={14} />}
+                                              {role === 'viewer' && <Eye size={14} />}
+                                              {role.charAt(0).toUpperCase() + role.slice(1)}
+                                              {orgUser.role === role && <Check size={14} className="ml-auto" />}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs ${
+                                      orgUser.role === 'admin' ? 'bg-pdm-accent/20 text-pdm-accent' :
+                                      orgUser.role === 'engineer' ? 'bg-pdm-success/20 text-pdm-success' :
+                                      'bg-pdm-fg-muted/20 text-pdm-fg-muted'
+                                    }`}>
+                                      <RoleIcon size={12} />
+                                      {orgUser.role.charAt(0).toUpperCase() + orgUser.role.slice(1)}
+                                    </div>
+                                  )}
                                 </div>
-                                <div className="text-xs text-pdm-fg-muted truncate">
-                                  {orgUser.email}
-                                </div>
+                                
+                                {/* Remove button */}
+                                {canManage && (
+                                  <button
+                                    onClick={() => setRemovingUser(orgUser)}
+                                    className="p-1.5 text-pdm-fg-muted hover:text-pdm-error hover:bg-pdm-error/10 rounded opacity-0 group-hover:opacity-100 transition-all"
+                                    title="Remove from organization"
+                                  >
+                                    <UserMinus size={16} />
+                                  </button>
+                                )}
                               </div>
-                              {orgUser.role === 'admin' && (
-                                <div className="flex items-center gap-1 px-2 py-1 bg-pdm-accent/20 rounded text-xs text-pdm-accent">
-                                  <Shield size={12} />
-                                  Admin
-                                </div>
-                              )}
+                            )
+                          })}
+                        </div>
+                      )}
+                      
+                      {/* Role permissions info */}
+                      {user?.role === 'admin' && (
+                        <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                          <p className="text-xs text-pdm-fg-muted mb-2 font-medium">Role Permissions:</p>
+                          <div className="space-y-1 text-xs text-pdm-fg-dim">
+                            <div className="flex items-center gap-2">
+                              <Shield size={12} className="text-pdm-accent" />
+                              <span><strong>Admin:</strong> Full access, manage users & vaults</span>
                             </div>
-                          ))}
+                            <div className="flex items-center gap-2">
+                              <Wrench size={12} className="text-pdm-success" />
+                              <span><strong>Engineer:</strong> Check out, check in, modify files</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Eye size={12} className="text-pdm-fg-muted" />
+                              <span><strong>Viewer:</strong> View and download files only</span>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1456,6 +1665,177 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </button>
                 ) : null
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Remove User Confirmation Dialog */}
+      {removingUser && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          onClick={() => !isRemoving && setRemovingUser(null)}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-error/50 rounded-xl shadow-2xl w-[420px] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-pdm-border bg-pdm-error/10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-pdm-error/20 rounded-full">
+                  <UserMinus size={24} className="text-pdm-error" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-pdm-fg">Remove User</h3>
+                  <p className="text-sm text-pdm-fg-muted">From {organization?.name}</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-3 p-3 bg-pdm-bg rounded-lg">
+                {removingUser.avatar_url ? (
+                  <img 
+                    src={removingUser.avatar_url} 
+                    alt={removingUser.full_name || removingUser.email}
+                    className="w-12 h-12 rounded-full"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-lg font-medium">
+                    {(removingUser.full_name || removingUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div>
+                  <div className="text-sm font-medium text-pdm-fg">
+                    {removingUser.full_name || removingUser.email}
+                  </div>
+                  <div className="text-xs text-pdm-fg-muted">
+                    {removingUser.email}
+                  </div>
+                </div>
+              </div>
+              
+              <p className="text-sm text-pdm-fg-muted">
+                This will remove the user from your organization. They will no longer have access to vaults or files.
+              </p>
+              <p className="text-sm text-pdm-fg-muted">
+                The user can rejoin if they sign in with an email matching your organization's domain, or if you add them back manually.
+              </p>
+            </div>
+            
+            {/* Actions */}
+            <div className="p-4 border-t border-pdm-border bg-pdm-bg flex justify-end gap-3">
+              <button
+                onClick={() => setRemovingUser(null)}
+                className="btn btn-ghost"
+                disabled={isRemoving}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRemoveUser}
+                disabled={isRemoving}
+                className="btn bg-pdm-error hover:bg-pdm-error/80 text-white disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isRemoving ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Removing...
+                  </>
+                ) : (
+                  <>
+                    <UserMinus size={16} />
+                    Remove User
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Invite User Dialog */}
+      {showInviteDialog && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          onClick={() => setShowInviteDialog(false)}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-accent/50 rounded-xl shadow-2xl w-[520px] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-pdm-border bg-pdm-accent/10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-pdm-accent/20 rounded-full">
+                  <Mail size={24} className="text-pdm-accent" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-pdm-fg">Invite User</h3>
+                  <p className="text-sm text-pdm-fg-muted">to {organization?.name}</p>
+                </div>
+              </div>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-pdm-fg-muted">
+                Copy the invite message below and send it via email, Slack, or any messaging app. 
+                It includes download instructions and your organization code.
+              </p>
+              
+              <div className="relative">
+                <div className="font-mono text-xs bg-pdm-bg border border-pdm-border rounded-lg p-4 pr-12 whitespace-pre-wrap text-pdm-fg max-h-[280px] overflow-y-auto">
+                  {generateInviteMessage()}
+                </div>
+                <button
+                  onClick={handleCopyInvite}
+                  className="absolute top-3 right-3 p-2 hover:bg-pdm-highlight rounded transition-colors"
+                  title="Copy to clipboard"
+                >
+                  {inviteCopied ? (
+                    <Check size={18} className="text-pdm-success" />
+                  ) : (
+                    <Copy size={18} className="text-pdm-fg-muted" />
+                  )}
+                </button>
+              </div>
+              
+              <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                <p className="text-xs text-pdm-fg-dim">
+                  <strong>Note:</strong> Once the user installs BluePDM, enters the code, and signs in with Google, 
+                  they'll automatically join your organization. Their default role will be <strong>Engineer</strong> — 
+                  you can change it after they join.
+                </p>
+              </div>
+            </div>
+            
+            {/* Actions */}
+            <div className="p-4 border-t border-pdm-border bg-pdm-bg flex justify-end gap-3">
+              <button
+                onClick={() => setShowInviteDialog(false)}
+                className="btn btn-ghost"
+              >
+                Close
+              </button>
+              <button
+                onClick={handleCopyInvite}
+                className="btn btn-primary flex items-center gap-2"
+              >
+                {inviteCopied ? (
+                  <>
+                    <Check size={16} />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy size={16} />
+                    Copy Invite
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

@@ -775,6 +775,70 @@ function App() {
     return cleanup
   }, [vaultPath, loadFiles])
 
+  // Auto-updater event listeners
+  useEffect(() => {
+    if (!window.electronAPI) return
+    
+    const { 
+      showUpdateToast, 
+      setUpdateAvailable, 
+      setUpdateDownloading, 
+      setUpdateDownloaded, 
+      setUpdateProgress,
+      addToast 
+    } = usePDMStore.getState()
+    
+    const cleanups: (() => void)[] = []
+    
+    // Update available - show toast notification
+    cleanups.push(
+      window.electronAPI.onUpdateAvailable((info) => {
+        console.log('[Update] Update available:', info.version)
+        setUpdateAvailable(info)
+        showUpdateToast(info.version)
+      })
+    )
+    
+    // Update not available
+    cleanups.push(
+      window.electronAPI.onUpdateNotAvailable(() => {
+        console.log('[Update] No update available')
+        setUpdateAvailable(null)
+      })
+    )
+    
+    // Download progress
+    cleanups.push(
+      window.electronAPI.onUpdateDownloadProgress((progress) => {
+        setUpdateProgress(progress)
+      })
+    )
+    
+    // Download completed
+    cleanups.push(
+      window.electronAPI.onUpdateDownloaded((info) => {
+        console.log('[Update] Update downloaded:', info.version)
+        setUpdateDownloading(false)
+        setUpdateDownloaded(true)
+        setUpdateProgress(null)
+      })
+    )
+    
+    // Error
+    cleanups.push(
+      window.electronAPI.onUpdateError((error) => {
+        console.error('[Update] Error:', error.message)
+        setUpdateDownloading(false)
+        setUpdateProgress(null)
+        addToast('error', `Update error: ${error.message}`)
+      })
+    )
+    
+    return () => {
+      cleanups.forEach(cleanup => cleanup())
+    }
+  }, [])
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

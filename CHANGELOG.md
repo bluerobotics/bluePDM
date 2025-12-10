@@ -2,6 +2,26 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.3.0] - 2025-12-10
+
+### Added
+- **Admin User Management** in Organization Settings:
+  - **Invite Users** - Generate invite message with download link and org code, copy and send via email/Slack
+  - **Change user roles** (Admin, Engineer, Viewer) with role permission descriptions
+  - **Remove users** from organization with confirmation dialog
+  - Role dropdown with visual indicators and icons
+- New database RLS policies for admin user management
+- **Refresh button** for organization members list to reload avatars
+
+### Changed
+- Members section now shows interactive role controls for admins
+- Role badges are now clickable dropdowns for admins to change roles
+- Added visual distinction between Admin (blue), Engineer (green), and Viewer (gray) roles
+- **Status bar**: Removed file/folder/synced counts for cleaner UI
+- **Status bar icons**: Vault connection now shows Cloud icon, organization shows Building icon
+- **Checkout avatars**: Now shows all users with checkouts (including you) in vault header with total count
+- **Avatar ring colors**: Consistent blue accent ring for your avatar, neutral ring for others (across all views)
+
 ## [1.2.3] - 2025-12-10
 
 ### Fixed

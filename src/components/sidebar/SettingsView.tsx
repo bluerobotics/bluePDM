@@ -11,7 +11,10 @@ import {
   Loader2,
   Settings,
   Image,
-  ExternalLink
+  ExternalLink,
+  RefreshCw,
+  Download,
+  CheckCircle
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, signOut } from '../../lib/supabase'
@@ -45,6 +48,9 @@ export function SettingsView() {
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
   const [editingVaultName, setEditingVaultName] = useState(false)
   const [vaultNameInput, setVaultNameInput] = useState('')
+  const [appVersion, setAppVersion] = useState<string>('')
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+  const [updateCheckResult, setUpdateCheckResult] = useState<'none' | 'available' | 'error' | null>(null)
   
   const displayName = vaultName || vaultPath?.split(/[/\\]/).pop() || 'vault'
   
@@ -54,6 +60,39 @@ export function SettingsView() {
       loadOrgUsers()
     }
   }, [activeTab, organization])
+  
+  // Get app version on mount
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.getVersion().then(setAppVersion)
+    }
+  }, [])
+  
+  // Handle manual update check
+  const handleCheckForUpdates = async () => {
+    if (!window.electronAPI || isCheckingUpdate) return
+    
+    setIsCheckingUpdate(true)
+    setUpdateCheckResult(null)
+    
+    try {
+      const result = await window.electronAPI.checkForUpdates()
+      if (result.success && result.updateInfo) {
+        setUpdateCheckResult('available')
+      } else if (result.success) {
+        setUpdateCheckResult('none')
+      } else {
+        setUpdateCheckResult('error')
+      }
+    } catch (err) {
+      console.error('Update check error:', err)
+      setUpdateCheckResult('error')
+    } finally {
+      setIsCheckingUpdate(false)
+      // Clear result after 5 seconds
+      setTimeout(() => setUpdateCheckResult(null), 5000)
+    }
+  }
   
   const loadOrgUsers = async () => {
     if (!organization) return
@@ -314,6 +353,61 @@ export function SettingsView() {
         
         {activeTab === 'preferences' && (
           <div className="space-y-4">
+            {/* App Updates */}
+            <div className="space-y-2">
+              <label className="text-xs text-pdm-fg-muted uppercase tracking-wide">
+                Application Updates
+              </label>
+              <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-pdm-fg">
+                      BluePDM {appVersion || '...'}
+                    </div>
+                    <div className="text-xs text-pdm-fg-muted">
+                      {updateCheckResult === 'none' && 'You have the latest version'}
+                      {updateCheckResult === 'available' && 'Update available! Check the notification.'}
+                      {updateCheckResult === 'error' && 'Could not check for updates'}
+                      {updateCheckResult === null && !isCheckingUpdate && 'Check for new versions'}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCheckForUpdates}
+                    disabled={isCheckingUpdate}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      updateCheckResult === 'none'
+                        ? 'bg-green-600/20 text-green-400 border border-green-600/30'
+                        : updateCheckResult === 'available'
+                        ? 'bg-pdm-accent/20 text-pdm-accent border border-pdm-accent/30'
+                        : 'bg-pdm-highlight text-pdm-fg-muted hover:text-pdm-fg hover:bg-pdm-highlight/80'
+                    }`}
+                  >
+                    {isCheckingUpdate ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Checking...
+                      </>
+                    ) : updateCheckResult === 'none' ? (
+                      <>
+                        <CheckCircle size={12} />
+                        Up to date
+                      </>
+                    ) : updateCheckResult === 'available' ? (
+                      <>
+                        <Download size={12} />
+                        Available
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={12} />
+                        Check for Updates
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+            
             {/* CAD Preview Mode */}
             <div className="space-y-2">
               <label className="text-xs text-pdm-fg-muted uppercase tracking-wide">

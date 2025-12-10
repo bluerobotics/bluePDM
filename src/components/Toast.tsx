@@ -1,17 +1,26 @@
 import { useEffect, useState } from 'react'
-import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2 } from 'lucide-react'
+import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2, Download, RefreshCw, ArrowDownToLine } from 'lucide-react'
 import { usePDMStore, ToastMessage, ToastType } from '../stores/pdmStore'
 
 export function Toast() {
-  const { toasts, removeToast, requestCancelProgressToast } = usePDMStore()
+  const { toasts, removeToast, requestCancelProgressToast, dismissUpdateToast } = usePDMStore()
   
-  // Separate progress toasts from regular toasts
+  // Separate different toast types
+  const updateToasts = toasts.filter(t => t.type === 'update')
   const progressToasts = toasts.filter(t => t.type === 'progress')
-  const regularToasts = toasts.filter(t => t.type !== 'progress')
+  const regularToasts = toasts.filter(t => t.type !== 'progress' && t.type !== 'update')
 
   return (
     <div className="fixed bottom-8 left-4 z-50 flex flex-col gap-2 max-w-md">
-      {/* Progress toasts at the top */}
+      {/* Update toasts at the very top */}
+      {updateToasts.map(toast => (
+        <UpdateToastItem 
+          key={toast.id} 
+          toast={toast} 
+          onDismiss={dismissUpdateToast}
+        />
+      ))}
+      {/* Progress toasts next */}
       {progressToasts.map(toast => (
         <ProgressToastItem 
           key={toast.id} 
@@ -23,6 +32,136 @@ export function Toast() {
       {regularToasts.map(toast => (
         <ToastItem key={toast.id} toast={toast} onClose={() => removeToast(toast.id)} />
       ))}
+    </div>
+  )
+}
+
+function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => void }) {
+  const { updateDownloading, updateDownloaded, updateProgress, setUpdateDownloading } = usePDMStore()
+  const [isExiting, setIsExiting] = useState(false)
+
+  const handleDownload = async () => {
+    if (updateDownloading || updateDownloaded) return
+    
+    setUpdateDownloading(true)
+    try {
+      const result = await window.electronAPI.downloadUpdate()
+      if (!result.success) {
+        console.error('Download failed:', result.error)
+        setUpdateDownloading(false)
+      }
+    } catch (err) {
+      console.error('Download error:', err)
+      setUpdateDownloading(false)
+    }
+  }
+
+  const handleInstall = async () => {
+    try {
+      await window.electronAPI.installUpdate()
+    } catch (err) {
+      console.error('Install error:', err)
+    }
+  }
+
+  const handleDismiss = () => {
+    setIsExiting(true)
+    setTimeout(onDismiss, 200)
+  }
+
+  // Format bytes to human readable
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const formatSpeed = (bytesPerSecond: number) => {
+    return `${formatBytes(bytesPerSecond)}/s`
+  }
+
+  return (
+    <div
+      className={`
+        flex flex-col gap-2 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm min-w-[320px]
+        bg-gradient-to-r from-pdm-accent/20 to-cyan-500/10 border-pdm-accent/50
+        ${isExiting ? 'animate-slide-out' : 'animate-slide-in'}
+      `}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ArrowDownToLine size={16} className="text-pdm-accent" />
+          <span className="text-sm font-medium text-pdm-fg">{toast.message}</span>
+        </div>
+        {!updateDownloading && !updateDownloaded && (
+          <button
+            onClick={handleDismiss}
+            className="opacity-60 hover:opacity-100 transition-opacity text-pdm-fg-muted"
+            title="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+      
+      {/* Download Progress */}
+      {updateDownloading && updateProgress && (
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-2 bg-pdm-bg-dark rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-pdm-accent transition-all duration-200 ease-out"
+              style={{ width: `${updateProgress.percent}%` }}
+            />
+          </div>
+          <span className="text-xs text-pdm-fg-muted tabular-nums whitespace-nowrap">
+            {updateProgress.percent.toFixed(0)}%
+          </span>
+          <span className="text-xs text-pdm-fg-muted whitespace-nowrap">
+            {formatSpeed(updateProgress.bytesPerSecond)}
+          </span>
+        </div>
+      )}
+      
+      {/* Action Buttons */}
+      <div className="flex items-center gap-2">
+        {!updateDownloading && !updateDownloaded && (
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+              bg-pdm-accent text-white hover:bg-pdm-accent/90 transition-colors"
+          >
+            <Download size={12} />
+            Download Update
+          </button>
+        )}
+        
+        {updateDownloading && !updateDownloaded && (
+          <div className="flex items-center gap-2 text-xs text-pdm-fg-muted">
+            <Loader2 size={12} className="animate-spin text-pdm-accent" />
+            <span>Downloading...</span>
+          </div>
+        )}
+        
+        {updateDownloaded && (
+          <button
+            onClick={handleInstall}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+              bg-green-600 text-white hover:bg-green-500 transition-colors"
+          >
+            <RefreshCw size={12} />
+            Restart & Install
+          </button>
+        )}
+        
+        {updateDownloaded && (
+          <button
+            onClick={handleDismiss}
+            className="px-3 py-1.5 rounded-md text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+          >
+            Later
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -156,7 +295,8 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
     success: <CheckCircle size={16} />,
     info: <Info size={16} />,
     warning: <AlertTriangle size={16} />,
-    progress: <Loader2 size={16} className="animate-spin" />
+    progress: <Loader2 size={16} className="animate-spin" />,
+    update: <ArrowDownToLine size={16} />
   }
 
   const colors: Record<ToastType, string> = {
@@ -164,7 +304,8 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
     success: 'bg-green-900/90 border-green-700 text-green-100',
     info: 'bg-blue-900/90 border-blue-700 text-blue-100',
     warning: 'bg-yellow-900/90 border-yellow-700 text-yellow-100',
-    progress: 'bg-pdm-panel border-pdm-border text-pdm-fg'
+    progress: 'bg-pdm-panel border-pdm-border text-pdm-fg',
+    update: 'bg-pdm-accent/20 border-pdm-accent/50 text-pdm-fg'
   }
 
   const iconColors: Record<ToastType, string> = {
@@ -172,7 +313,8 @@ function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => voi
     success: 'text-green-400',
     info: 'text-blue-400',
     warning: 'text-yellow-400',
-    progress: 'text-pdm-accent'
+    progress: 'text-pdm-accent',
+    update: 'text-pdm-accent'
   }
 
   return (

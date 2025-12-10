@@ -1,5 +1,5 @@
 import { usePDMStore } from '../stores/pdmStore'
-import { Cloud, CloudOff, Wifi } from 'lucide-react'
+import { Cloud, CloudOff, Building2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 export function StatusBar() {
@@ -7,8 +7,6 @@ export function StatusBar() {
     vaultPath, 
     isVaultConnected, 
     connectedVaults,
-    files, 
-    selectedFiles,
     statusMessage,
     isLoading,
     user,
@@ -30,10 +28,6 @@ export function StatusBar() {
     ? (connectedVaults.length === 1 ? connectedVaults[0].name : `${connectedVaults.length} vaults`)
     : (vaultName || vaultPath?.split(/[/\\]/).pop() || 'vault')
 
-  const fileCount = files.filter(f => !f.isDirectory).length
-  const folderCount = files.filter(f => f.isDirectory).length
-  const syncedCount = files.filter(f => !f.isDirectory && f.pdmData).length
-
   // Show minimal status bar when no vault connected (splash screens)
   if (!hasVaultConnected) {
     return (
@@ -48,7 +42,7 @@ export function StatusBar() {
       <div className="flex items-center gap-4 flex-1 min-w-0">
         {/* Vault status */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <Wifi size={12} className="text-pdm-success" />
+          <Cloud size={12} className="text-pdm-success" />
           <span className="text-pdm-fg-dim">
             Connected to {displayName}
           </span>
@@ -63,18 +57,11 @@ export function StatusBar() {
       </div>
 
       <div className="flex items-center gap-4 flex-shrink-0">
-        {/* File count */}
-        <span>
-          {fileCount} files, {folderCount} folders
-          {syncedCount > 0 && ` • ${syncedCount} synced`}
-          {selectedFiles.length > 0 && ` • ${selectedFiles.length} selected`}
-        </span>
-
-        {/* Cloud status */}
+        {/* Organization status */}
         <div className="flex items-center gap-1.5">
           {user ? (
             <>
-              <Cloud size={12} className="text-pdm-success" />
+              <Building2 size={12} className="text-pdm-success" />
               <span>{organization?.name || user.email}</span>
             </>
           ) : (

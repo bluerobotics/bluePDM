@@ -1244,13 +1244,35 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     }
   }
 
-  // Cut files
+  // Cut files - only allow if checked out by current user
   const handleCut = () => {
     const selectedFileObjects = files.filter(f => selectedFiles.includes(f.path))
-    if (selectedFileObjects.length > 0) {
-      setClipboard({ files: selectedFileObjects, operation: 'cut' })
-      addToast('info', `Cut ${selectedFileObjects.length} item${selectedFileObjects.length > 1 ? 's' : ''}`)
+    if (selectedFileObjects.length === 0) return
+    
+    // Check if all selected files are either:
+    // 1. Directories (always allowed)
+    // 2. Not synced (local-only files, always allowed)
+    // 3. Checked out by current user
+    const notAllowed = selectedFileObjects.filter(f => 
+      !f.isDirectory && 
+      f.pdmData && 
+      f.pdmData.checked_out_by !== user?.id
+    )
+    
+    if (notAllowed.length > 0) {
+      const checkedOutByOthers = notAllowed.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+      const notCheckedOut = notAllowed.filter(f => !f.pdmData?.checked_out_by)
+      
+      if (checkedOutByOthers.length > 0) {
+        addToast('error', `Cannot move: ${checkedOutByOthers.length} file${checkedOutByOthers.length > 1 ? 's are' : ' is'} checked out by others`)
+      } else if (notCheckedOut.length > 0) {
+        addToast('error', `Cannot move: ${notCheckedOut.length} file${notCheckedOut.length > 1 ? 's are' : ' is'} not checked out. Check out first to move.`)
+      }
+      return
     }
+    
+    setClipboard({ files: selectedFileObjects, operation: 'cut' })
+    addToast('info', `Cut ${selectedFileObjects.length} item${selectedFileObjects.length > 1 ? 's' : ''}`)
   }
 
   // Generate unique filename if file already exists
@@ -2082,7 +2104,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           <img 
                             src={u.avatar_url} 
                             alt={u.name}
-                            className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg object-cover`}
+                            className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
                             onError={(e) => {
                               // On error, replace with initial fallback
                               const target = e.target as HTMLImageElement
@@ -2092,7 +2114,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           />
                         ) : null}
                         <div 
-                          className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
+                          className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent' : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
                         >
                           {u.name.charAt(0).toUpperCase()}
                         </div>
@@ -2974,6 +2996,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         // Check if any files are cloud-only (exist on server but not locally)
         const allCloudOnly = contextFiles.every(f => f.diffStatus === 'cloud')
         
+        // Check if files can be cut (moved) - need checkout for synced files
+        // Can cut if: directory, unsynced (local-only), or checked out by current user
+        const canCut = contextFiles.every(f => 
+          f.isDirectory || 
+          !f.pdmData || 
+          f.pdmData.checked_out_by === user?.id
+        )
+        
         // Count cloud-only files (for download count) - includes files inside folders
         const getCloudOnlyFilesCount = (): number => {
           let count = 0
@@ -3342,11 +3372,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 <span className="text-xs text-pdm-fg-muted ml-auto">Ctrl+C</span>
               </div>
               <div 
-                className="context-menu-item"
+                className={`context-menu-item ${!canCut ? 'disabled' : ''}`}
                 onClick={() => {
-                  handleCut()
-                  setContextMenu(null)
+                  if (canCut) {
+                    handleCut()
+                    setContextMenu(null)
+                  }
                 }}
+                title={!canCut ? 'Check out files first to move them' : undefined}
               >
                 <Scissors size={14} />
                 Cut

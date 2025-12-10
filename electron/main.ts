@@ -6,6 +6,7 @@ import http from 'http'
 import { fileURLToPath } from 'url'
 import chokidar from 'chokidar'
 import type { AddressInfo } from 'net'
+import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -1622,6 +1623,133 @@ ipcMain.handle('edrawings:destroy-preview', () => {
 })
 
 // ============================================
+// Auto Updater
+// ============================================
+
+// Configure auto-updater
+autoUpdater.autoDownload = false  // Don't auto-download, let user decide
+autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.logger = {
+  info: (message: string) => writeLog('info', `[AutoUpdater] ${message}`),
+  warn: (message: string) => writeLog('warn', `[AutoUpdater] ${message}`),
+  error: (message: string) => writeLog('error', `[AutoUpdater] ${message}`),
+  debug: (message: string) => writeLog('debug', `[AutoUpdater] ${message}`)
+}
+
+// Track update state
+let updateAvailable: UpdateInfo | null = null
+let updateDownloaded = false
+let downloadProgress: ProgressInfo | null = null
+
+// Auto-updater event handlers
+autoUpdater.on('checking-for-update', () => {
+  log('Checking for updates...')
+  mainWindow?.webContents.send('updater:checking')
+})
+
+autoUpdater.on('update-available', (info: UpdateInfo) => {
+  log('Update available:', info.version)
+  updateAvailable = info
+  mainWindow?.webContents.send('updater:available', {
+    version: info.version,
+    releaseDate: info.releaseDate,
+    releaseNotes: info.releaseNotes
+  })
+})
+
+autoUpdater.on('update-not-available', (info: UpdateInfo) => {
+  log('No update available, current version is latest')
+  updateAvailable = null
+  mainWindow?.webContents.send('updater:not-available', {
+    version: info.version
+  })
+})
+
+autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+  downloadProgress = progress
+  mainWindow?.webContents.send('updater:download-progress', {
+    percent: progress.percent,
+    bytesPerSecond: progress.bytesPerSecond,
+    transferred: progress.transferred,
+    total: progress.total
+  })
+})
+
+autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+  log('Update downloaded:', info.version)
+  updateDownloaded = true
+  downloadProgress = null
+  mainWindow?.webContents.send('updater:downloaded', {
+    version: info.version,
+    releaseDate: info.releaseDate,
+    releaseNotes: info.releaseNotes
+  })
+})
+
+autoUpdater.on('error', (error: Error) => {
+  logError('Auto-updater error', { error: error.message })
+  downloadProgress = null
+  mainWindow?.webContents.send('updater:error', {
+    message: error.message
+  })
+})
+
+// IPC handlers for update operations
+ipcMain.handle('updater:check', async () => {
+  try {
+    if (isDev) {
+      log('Skipping update check in development mode')
+      return { success: false, error: 'Updates disabled in development' }
+    }
+    const result = await autoUpdater.checkForUpdates()
+    return { success: true, updateInfo: result?.updateInfo }
+  } catch (err) {
+    logError('Failed to check for updates', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('updater:download', async () => {
+  try {
+    if (!updateAvailable) {
+      return { success: false, error: 'No update available' }
+    }
+    log('Starting update download...')
+    await autoUpdater.downloadUpdate()
+    return { success: true }
+  } catch (err) {
+    logError('Failed to download update', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('updater:install', () => {
+  if (!updateDownloaded) {
+    return { success: false, error: 'No update downloaded' }
+  }
+  log('Installing update and restarting...')
+  autoUpdater.quitAndInstall(false, true)
+  return { success: true }
+})
+
+ipcMain.handle('updater:get-status', () => {
+  return {
+    updateAvailable: updateAvailable ? {
+      version: updateAvailable.version,
+      releaseDate: updateAvailable.releaseDate,
+      releaseNotes: updateAvailable.releaseNotes
+    } : null,
+    updateDownloaded,
+    downloadProgress: downloadProgress ? {
+      percent: downloadProgress.percent,
+      bytesPerSecond: downloadProgress.bytesPerSecond,
+      transferred: downloadProgress.transferred,
+      total: downloadProgress.total
+    } : null
+  }
+})
+
+// ============================================
 // App Lifecycle
 // ============================================
 
@@ -1644,6 +1772,16 @@ app.whenReady().then(() => {
       createWindow()
     }
   })
+  
+  // Check for updates after a short delay (let the app fully load first)
+  if (!isDev) {
+    setTimeout(() => {
+      log('Auto-checking for updates...')
+      autoUpdater.checkForUpdates().catch(err => {
+        logError('Auto update check failed', { error: String(err) })
+      })
+    }, 5000) // 5 second delay
+  }
 }).catch(err => {
   logError('Error during app ready', { error: String(err) })
 })

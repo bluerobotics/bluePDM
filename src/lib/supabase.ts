@@ -1092,6 +1092,132 @@ export async function undoCheckout(fileId: string, userId: string) {
 // Update file metadata - NOW ONLY USED FOR STATE CHANGES (syncs immediately)
 // Item number, description, revision are saved locally and synced on check-in
 // State changes do NOT require checkout
+// ============================================
+// User Management (Admin only)
+// ============================================
+
+/**
+ * Update a user's role (admin only)
+ * Only admins can change roles of users in their organization
+ */
+export async function updateUserRole(
+  targetUserId: string,
+  newRole: 'admin' | 'engineer' | 'viewer',
+  adminOrgId: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Verify target user is in same org
+  const { data: targetUser, error: fetchError } = await client
+    .from('users')
+    .select('id, org_id, role')
+    .eq('id', targetUserId)
+    .single()
+  
+  if (fetchError || !targetUser) {
+    return { success: false, error: 'User not found' }
+  }
+  
+  if (targetUser.org_id !== adminOrgId) {
+    return { success: false, error: 'User is not in your organization' }
+  }
+  
+  // Update the role
+  const { error } = await client
+    .from('users')
+    .update({ role: newRole })
+    .eq('id', targetUserId)
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true }
+}
+
+/**
+ * Remove a user from the organization (admin only)
+ * Sets the user's org_id to null - they can rejoin if they have the org code
+ */
+export async function removeUserFromOrg(
+  targetUserId: string,
+  adminOrgId: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Verify target user is in same org
+  const { data: targetUser, error: fetchError } = await client
+    .from('users')
+    .select('id, org_id, email')
+    .eq('id', targetUserId)
+    .single()
+  
+  if (fetchError || !targetUser) {
+    return { success: false, error: 'User not found' }
+  }
+  
+  if (targetUser.org_id !== adminOrgId) {
+    return { success: false, error: 'User is not in your organization' }
+  }
+  
+  // Remove from org by setting org_id to null
+  const { error } = await client
+    .from('users')
+    .update({ org_id: null, role: 'engineer' }) // Reset to default role
+    .eq('id', targetUserId)
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true }
+}
+
+/**
+ * Add a user to the organization by email (admin only)
+ * The user must already have an account (signed in at least once)
+ */
+export async function addUserToOrg(
+  email: string,
+  orgId: string,
+  role: 'admin' | 'engineer' | 'viewer' = 'engineer'
+): Promise<{ success: boolean; user?: any; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Find user by email
+  const { data: existingUser, error: fetchError } = await client
+    .from('users')
+    .select('id, email, org_id, full_name')
+    .eq('email', email.toLowerCase().trim())
+    .single()
+  
+  if (fetchError || !existingUser) {
+    return { success: false, error: 'No user found with that email. They must sign in to BluePDM at least once first.' }
+  }
+  
+  if (existingUser.org_id === orgId) {
+    return { success: false, error: 'User is already a member of this organization' }
+  }
+  
+  if (existingUser.org_id) {
+    return { success: false, error: 'User is already a member of another organization' }
+  }
+  
+  // Add user to org
+  const { data, error } = await client
+    .from('users')
+    .update({ org_id: orgId, role })
+    .eq('id', existingUser.id)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true, user: data }
+}
+
 export async function updateFileMetadata(
   fileId: string,
   userId: string,

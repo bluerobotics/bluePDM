@@ -259,8 +259,21 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   
   const handleCut = () => {
     if (!contextMenu?.file) return
-    setClipboard({ files: [contextMenu.file], operation: 'cut' })
-    addToast('info', `Cut ${contextMenu.file.name}`)
+    const file = contextMenu.file
+    
+    // Check if file can be cut - need checkout for synced files
+    // Can cut if: directory, unsynced (local-only), or checked out by current user
+    if (!file.isDirectory && file.pdmData && file.pdmData.checked_out_by !== user?.id) {
+      if (file.pdmData.checked_out_by) {
+        addToast('error', 'Cannot move: file is checked out by someone else')
+      } else {
+        addToast('error', 'Cannot move: check out the file first')
+      }
+      return
+    }
+    
+    setClipboard({ files: [file], operation: 'cut' })
+    addToast('info', `Cut ${file.name}`)
   }
   
   const handlePaste = async () => {
@@ -732,7 +745,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   <img 
                     src={u.avatar_url} 
                     alt={u.name}
-                    className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg object-cover`}
+                    className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
                     onError={(e) => {
                       const target = e.target as HTMLImageElement
                       target.style.display = 'none'
@@ -741,7 +754,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   />
                 ) : null}
                 <div 
-                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
+                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent' : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
                 >
                   {u.name.charAt(0).toUpperCase()}
                 </div>
@@ -778,7 +791,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     }
     
     // For files:
-    // Checked out by me - show my avatar with orange ring
+    // Checked out by me - show my avatar with accent ring
     if (file.pdmData?.checked_out_by === user?.id) {
       const myInitial = (user?.full_name || user?.email?.split('@')[0] || '?').charAt(0).toUpperCase()
       return (
@@ -787,7 +800,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             <img 
               src={user.avatar_url} 
               alt="You"
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-warning object-cover"
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-accent object-cover"
               onError={(e) => {
                 const target = e.target as HTMLImageElement
                 target.style.display = 'none'
@@ -796,7 +809,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           ) : null}
           <div 
-            className={`w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+            className={`w-4 h-4 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
           >
             {myInitial}
           </div>
@@ -804,7 +817,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       )
     }
     
-    // Checked out by someone else - show their avatar with red ring
+    // Checked out by someone else - show their avatar with neutral ring
     if (file.pdmData?.checked_out_by) {
       const checkedOutUser = (file.pdmData as any).checked_out_user
       const avatarUrl = checkedOutUser?.avatar_url
@@ -816,7 +829,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             <img 
               src={avatarUrl} 
               alt={displayName}
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-bg-light object-cover"
               onError={(e) => {
                 const target = e.target as HTMLImageElement
                 target.style.display = 'none'
@@ -825,7 +838,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           ) : null}
           <div 
-            className={`w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+            className={`w-4 h-4 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
           >
             {displayName.charAt(0).toUpperCase()}
           </div>
@@ -1503,14 +1516,46 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     // Calculate vault stats when active
     const cloudFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length : 0
     const checkedOutByMeCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length : 0
+    const checkedOutByOthersCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length : 0
     const checkedOutByOthers = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id) : []
     
-    // Get unique users who have files checked out (excluding me)
-    const otherCheckoutUsers = isActive ? [...new Map(
-      checkedOutByOthers
-        .filter(f => f.pdmData?.checked_out_user)
-        .map(f => [f.pdmData!.checked_out_by, f.pdmData!.checked_out_user])
-    ).values()] : []
+    // Get ALL unique users who have files checked out (including me)
+    const allCheckoutUsers: { id: string; name: string; avatar_url?: string; isMe: boolean; count: number }[] = []
+    
+    // Add current user if they have checkouts
+    if (isActive && checkedOutByMeCount > 0 && user) {
+      allCheckoutUsers.push({
+        id: user.id,
+        name: 'You',
+        avatar_url: user.avatar_url || undefined,
+        isMe: true,
+        count: checkedOutByMeCount
+      })
+    }
+    
+    // Add other users
+    if (isActive) {
+      const othersMap = new Map<string, { id: string; name: string; avatar_url?: string; count: number }>()
+      for (const f of checkedOutByOthers) {
+        const checkoutUserId = f.pdmData!.checked_out_by!
+        const checkedOutUser = (f.pdmData as any).checked_out_user
+        if (othersMap.has(checkoutUserId)) {
+          othersMap.get(checkoutUserId)!.count++
+        } else {
+          othersMap.set(checkoutUserId, {
+            id: checkoutUserId,
+            name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
+            avatar_url: checkedOutUser?.avatar_url,
+            count: 1
+          })
+        }
+      }
+      for (const u of othersMap.values()) {
+        allCheckoutUsers.push({ ...u, isMe: false })
+      }
+    }
+    
+    const totalCheckouts = checkedOutByMeCount + checkedOutByOthersCount
     
     return (
       <div key={vault.id} className="border-b border-pdm-border last:border-b-0">
@@ -1548,44 +1593,47 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           {/* Inline badges and actions */}
           {isActive && (
             <div className="flex items-center gap-1">
-              {/* Stacked avatars of users with checkouts */}
-              {otherCheckoutUsers.length > 0 && (
-                <div className="flex -space-x-1.5" title={`${otherCheckoutUsers.length} user${otherCheckoutUsers.length > 1 ? 's' : ''} have files checked out`}>
-                  {otherCheckoutUsers.slice(0, 3).map((u: any, i) => (
-                    <div key={i} className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light overflow-hidden flex-shrink-0 relative">
-                      {u?.avatar_url ? (
-                        <img 
-                          src={u.avatar_url} 
-                          alt="" 
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement
-                            target.style.display = 'none'
-                            target.nextElementSibling?.classList.remove('hidden')
-                          }}
-                        />
-                      ) : null}
-                      <div className={`w-full h-full bg-pdm-accent/30 flex items-center justify-center text-[10px] font-medium text-pdm-accent absolute inset-0 ${u?.avatar_url ? 'hidden' : ''}`}>
-                        {u?.full_name?.[0] || u?.email?.[0] || '?'}
-                      </div>
-                    </div>
-                  ))}
-                  {otherCheckoutUsers.length > 3 && (
-                    <div className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light bg-pdm-bg-light flex items-center justify-center text-[9px] text-pdm-fg-muted flex-shrink-0">
-                      +{otherCheckoutUsers.length - 3}
-                    </div>
-                  )}
-                </div>
-              )}
-              
-              {/* My checkouts indicator - moved left */}
-              {checkedOutByMeCount > 0 && (
+              {/* Stacked avatars of all users with checkouts */}
+              {allCheckoutUsers.length > 0 && (
                 <div 
-                  className="flex items-center gap-0.5 text-[10px] text-pdm-accent bg-pdm-accent/10 px-1.5 py-0.5 rounded"
-                  title={`${checkedOutByMeCount} files checked out by you`}
+                  className="flex items-center gap-1"
+                  title={allCheckoutUsers.map(u => `${u.name}: ${u.count} file${u.count > 1 ? 's' : ''}`).join('\n')}
                 >
-                  <Lock size={10} />
-                  <span>{checkedOutByMeCount}</span>
+                  <div className="flex -space-x-1.5">
+                    {allCheckoutUsers.slice(0, 3).map((u) => (
+                      <div 
+                        key={u.id} 
+                        className={`w-5 h-5 rounded-full ring-1 overflow-hidden flex-shrink-0 relative ${
+                          u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'
+                        }`}
+                      >
+                        {u.avatar_url ? (
+                          <img 
+                            src={u.avatar_url} 
+                            alt="" 
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              target.style.display = 'none'
+                              target.nextElementSibling?.classList.remove('hidden')
+                            }}
+                          />
+                        ) : null}
+                        <div className={`w-full h-full ${u.isMe ? 'bg-pdm-accent/30' : 'bg-pdm-fg-muted/30'} flex items-center justify-center text-[10px] font-medium ${u.isMe ? 'text-pdm-accent' : 'text-pdm-fg'} absolute inset-0 ${u.avatar_url ? 'hidden' : ''}`}>
+                          {u.name[0]}
+                        </div>
+                      </div>
+                    ))}
+                    {allCheckoutUsers.length > 3 && (
+                      <div className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light bg-pdm-bg-light flex items-center justify-center text-[9px] text-pdm-fg-muted flex-shrink-0">
+                        +{allCheckoutUsers.length - 3}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted">
+                    <Lock size={10} />
+                    <span>{totalCheckouts}</span>
+                  </div>
                 </div>
               )}
               
@@ -1812,7 +1860,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           <img 
                             src={user.avatar_url} 
                             alt="You"
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-warning object-cover"
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-accent object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.display = 'none'
@@ -1821,7 +1869,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           />
                         ) : null}
                         <div 
-                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
                         >
                           {myInitial}
                         </div>
@@ -1839,7 +1887,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           <img 
                             src={avatarUrl} 
                             alt={displayName}
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-bg-light object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.display = 'none'
@@ -1848,7 +1896,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           />
                         ) : null}
                         <div 
-                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
                         >
                           {displayName.charAt(0).toUpperCase()}
                         </div>
