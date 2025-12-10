@@ -2,6 +2,11 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.1.1] - 2025-01-10
+
+### Fixed
+- Corrected misleading tooltip on disabled "Check Out" menu item (now says "Download files first" instead of "Check in files first")
+
 ## [1.1.0] - 2025-01-09
 
 ### Added

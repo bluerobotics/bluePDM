@@ -1,5 +1,5 @@
 import { usePDMStore } from '../stores/pdmStore'
-import { Cloud, CloudOff, Wifi, Lock } from 'lucide-react'
+import { Cloud, CloudOff, Wifi } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 export function StatusBar() {
@@ -32,7 +32,6 @@ export function StatusBar() {
 
   const fileCount = files.filter(f => !f.isDirectory).length
   const folderCount = files.filter(f => f.isDirectory).length
-  const checkedOutCount = files.filter(f => f.pdmData?.checked_out_by).length
   const syncedCount = files.filter(f => !f.isDirectory && f.pdmData).length
 
   // Show minimal status bar when no vault connected (splash screens)
@@ -54,14 +53,6 @@ export function StatusBar() {
             Connected to {displayName}
           </span>
         </div>
-
-        {/* Checked out status */}
-        {checkedOutCount > 0 && (
-          <div className="flex items-center gap-1.5 text-pdm-warning flex-shrink-0">
-            <Lock size={12} />
-            <span>{checkedOutCount} checked out</span>
-          </div>
-        )}
 
         {/* Status message */}
         {statusMessage && (

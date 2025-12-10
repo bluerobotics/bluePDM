@@ -995,11 +995,11 @@ export function FileContextMenu({
             if (!anySynced || allCheckedOut) return
             handleCheckout()
           }}
-          title={!anySynced ? 'Check in files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
+          title={!anySynced ? 'Download files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
         >
           <ArrowDown size={14} className={!anySynced ? 'text-pdm-fg-muted' : 'text-pdm-warning'} />
           Check Out {allFolders && !multiSelect && checkoutableCount > 0 ? `${checkoutableCount} files` : countLabel}
-          {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(check in first)</span>}
+          {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(download first)</span>}
           {anySynced && allCheckedOut && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
         </div>
         

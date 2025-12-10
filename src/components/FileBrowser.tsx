@@ -3551,11 +3551,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                     handleCheckoutFolder(firstFile)
                     setContextMenu(null)
                   }}
-                  title={!anySynced ? 'Check in files first to enable checkout' : checkoutableCount === 0 ? 'All files already checked out' : ''}
+                  title={!anySynced ? 'Download files first to enable checkout' : checkoutableCount === 0 ? 'All files already checked out' : ''}
                 >
                   <ArrowDown size={14} className={!anySynced || checkoutableCount === 0 ? 'text-pdm-fg-muted' : 'text-pdm-warning'} />
                   Check Out {checkoutableCount > 0 ? `${checkoutableCount} files` : ''}
-                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(check in first)</span>}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(download first)</span>}
                   {anySynced && checkoutableCount === 0 && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
                 </div>
               ) : (
@@ -3631,11 +3631,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                     }
                     onRefresh(true) // Silent refresh after checkout
                   }}
-                  title={!anySynced ? 'Check in files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
+                  title={!anySynced ? 'Download files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
                 >
                   <ArrowDown size={14} className={!anySynced ? 'text-pdm-fg-muted' : 'text-pdm-warning'} />
                   Check Out {multiSelect ? countLabel : ''}
-                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(check in first)</span>}
+                  {!anySynced && <span className="text-xs text-pdm-fg-muted ml-auto">(download first)</span>}
                   {anySynced && allCheckedOut && <span className="text-xs text-pdm-fg-muted ml-auto">(already out)</span>}
                 </div>
               )}
