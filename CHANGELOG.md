@@ -2,6 +2,11 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.3.4] - 2025-12-10
+
+### Fixed
+- Critical: Fixed app crash on startup due to variable initialization order in supabase.ts
+
 ## [1.3.3] - 2025-12-10
 
 ### Added

@@ -29,6 +29,10 @@ const authLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, da
 let currentConfig: SupabaseConfig | null = null
 let supabaseClient: SupabaseClient<Database> | null = null
 
+// Session listener state (must be declared before initializeClient)
+let sessionResolver: ((success: boolean) => void) | null = null
+let sessionListenerCleanup: (() => void) | null = null
+
 // Initialize from stored config or env variables (for dev)
 function initializeClient() {
   // First, try to load from stored config
@@ -124,9 +128,6 @@ initializeClient()
 // ============================================
 // Session Listener Setup
 // ============================================
-
-let sessionResolver: ((success: boolean) => void) | null = null
-let sessionListenerCleanup: (() => void) | null = null
 
 function setupSessionListener() {
   if (typeof window !== 'undefined' && window.electronAPI?.onSetSession) {
