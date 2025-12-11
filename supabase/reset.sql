@@ -15,6 +15,7 @@ DROP TABLE IF EXISTS activity CASCADE;
 DROP TABLE IF EXISTS file_references CASCADE;
 DROP TABLE IF EXISTS file_versions CASCADE;
 DROP TABLE IF EXISTS files CASCADE;
+DROP TABLE IF EXISTS vault_access CASCADE;
 DROP TABLE IF EXISTS vaults CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS organizations CASCADE;
@@ -34,6 +35,7 @@ DROP TYPE IF EXISTS file_state;
 -- ===========================================
 DROP FUNCTION IF EXISTS handle_new_user();
 DROP FUNCTION IF EXISTS log_file_activity();
+DROP FUNCTION IF EXISTS cleanup_old_trash();
 
 -- ===========================================
 -- DROP STORAGE POLICIES

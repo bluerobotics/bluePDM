@@ -14,8 +14,8 @@ const __dirname = path.dirname(__filename)
 // ============================================
 // File-based Logging System
 // ============================================
-const LOG_MAX_SIZE = 5 * 1024 * 1024 // 5MB max log file size
-const LOG_MAX_FILES = 3 // Keep 3 log files (current + 2 rotated)
+const LOG_MAX_FILES = 100 // Keep max 100 log files (10MB each = 1GB max total)
+const LOG_MAX_SIZE = 10 * 1024 * 1024 // 10MB max per log file
 
 interface LogEntry {
   timestamp: string
@@ -30,6 +30,17 @@ const LOG_BUFFER_MAX = 1000 // Keep last 1000 entries in memory
 
 let logFilePath: string | null = null
 let logStream: fs.WriteStream | null = null
+let currentLogSize = 0 // Track current log file size in bytes
+
+function formatDateForFilename(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`
+}
 
 function initializeLogging() {
   try {
@@ -38,47 +49,80 @@ function initializeLogging() {
       fs.mkdirSync(logsDir, { recursive: true })
     }
     
-    logFilePath = path.join(logsDir, 'bluepdm.log')
+    // Create a new log file for this session with timestamp
+    const sessionTimestamp = formatDateForFilename(new Date())
+    logFilePath = path.join(logsDir, `bluepdm-${sessionTimestamp}.log`)
     
-    // Rotate logs if current file is too large
-    if (fs.existsSync(logFilePath)) {
-      const stats = fs.statSync(logFilePath)
-      if (stats.size > LOG_MAX_SIZE) {
-        rotateLogFiles(logsDir)
-      }
-    }
+    // Clean up old log files if we have too many
+    cleanupOldLogFiles(logsDir)
     
-    // Open log file for appending
-    logStream = fs.createWriteStream(logFilePath, { flags: 'a' })
+    // Open log file for writing (new file for each session)
+    logStream = fs.createWriteStream(logFilePath, { flags: 'w' })
+    currentLogSize = 0
     
     // Write startup header
-    const startupHeader = `\n${'='.repeat(60)}\n[${new Date().toISOString()}] BluePDM Starting - v${app.getVersion()}\nPlatform: ${process.platform} ${process.arch}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\n${'='.repeat(60)}\n`
+    const startupHeader = `${'='.repeat(60)}\nBluePDM Session Log\nStarted: ${new Date().toISOString()}\nVersion: ${app.getVersion()}\nPlatform: ${process.platform} ${process.arch}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\n${'='.repeat(60)}\n\n`
     logStream.write(startupHeader)
+    currentLogSize += Buffer.byteLength(startupHeader, 'utf8')
   } catch (err) {
     console.error('Failed to initialize logging:', err)
   }
 }
 
-function rotateLogFiles(logsDir: string) {
+function cleanupOldLogFiles(logsDir: string) {
   try {
-    // Delete oldest log if we have too many
-    for (let i = LOG_MAX_FILES - 1; i >= 1; i--) {
-      const oldFile = path.join(logsDir, `bluepdm.${i}.log`)
-      const newFile = path.join(logsDir, `bluepdm.${i + 1}.log`)
-      if (fs.existsSync(oldFile)) {
-        if (i === LOG_MAX_FILES - 1) {
-          fs.unlinkSync(oldFile) // Delete oldest
-        } else {
-          fs.renameSync(oldFile, newFile)
+    // Get all log files sorted by modified time (newest first)
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('bluepdm-') && f.endsWith('.log'))
+      .map(filename => ({
+        name: filename,
+        path: path.join(logsDir, filename),
+        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
+      }))
+      .sort((a, b) => b.mtime - a.mtime)
+    
+    // Delete files beyond the limit (keeping newest LOG_MAX_FILES - 1 to make room for new one)
+    if (logFiles.length >= LOG_MAX_FILES) {
+      const filesToDelete = logFiles.slice(LOG_MAX_FILES - 1)
+      for (const file of filesToDelete) {
+        try {
+          fs.unlinkSync(file.path)
+          console.log(`Deleted old log file: ${file.name}`)
+        } catch (err) {
+          console.error(`Failed to delete old log file ${file.name}:`, err)
         }
       }
     }
-    // Rename current to .1
-    if (logFilePath && fs.existsSync(logFilePath)) {
-      fs.renameSync(logFilePath, path.join(logsDir, 'bluepdm.1.log'))
-    }
   } catch (err) {
-    console.error('Failed to rotate log files:', err)
+    console.error('Failed to cleanup old log files:', err)
+  }
+}
+
+function rotateLogFile() {
+  try {
+    // Close current log stream
+    if (logStream) {
+      logStream.end()
+      logStream = null
+    }
+    
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    
+    // Clean up old log files before creating new one
+    cleanupOldLogFiles(logsDir)
+    
+    // Create new log file with current timestamp
+    const newTimestamp = formatDateForFilename(new Date())
+    logFilePath = path.join(logsDir, `bluepdm-${newTimestamp}.log`)
+    logStream = fs.createWriteStream(logFilePath, { flags: 'w' })
+    currentLogSize = 0
+    
+    // Write continuation header
+    const header = `${'='.repeat(60)}\nBluePDM Log (continued)\nRotated: ${new Date().toISOString()}\nVersion: ${app.getVersion()}\n${'='.repeat(60)}\n\n`
+    logStream.write(header)
+    currentLogSize += Buffer.byteLength(header, 'utf8')
+  } catch (err) {
+    console.error('Failed to rotate log file:', err)
   }
 }
 
@@ -98,20 +142,28 @@ function writeLog(level: LogEntry['level'], message: string, data?: unknown) {
   
   // Format for file/console
   const dataStr = data !== undefined ? ` ${JSON.stringify(data)}` : ''
-  const logLine = `[${entry.timestamp}] [${level.toUpperCase()}] ${message}${dataStr}`
+  const logLine = `[${entry.timestamp}] [${level.toUpperCase()}] ${message}${dataStr}\n`
   
   // Write to console
   if (level === 'error') {
-    console.error(logLine)
+    console.error(logLine.trim())
   } else if (level === 'warn') {
-    console.warn(logLine)
+    console.warn(logLine.trim())
   } else {
-    console.log(logLine)
+    console.log(logLine.trim())
   }
   
   // Write to file
   if (logStream) {
-    logStream.write(logLine + '\n')
+    const lineBytes = Buffer.byteLength(logLine, 'utf8')
+    
+    // Check if we need to rotate before writing
+    if (currentLogSize + lineBytes > LOG_MAX_SIZE) {
+      rotateLogFile()
+    }
+    
+    logStream.write(logLine)
+    currentLogSize += lineBytes
   }
 }
 
@@ -350,6 +402,10 @@ function createAppMenu() {
           label: 'Add Files...',
           accelerator: 'CmdOrCtrl+Shift+A',
           click: () => mainWindow?.webContents.send('menu:add-files')
+        },
+        {
+          label: 'Add Folder...',
+          click: () => mainWindow?.webContents.send('menu:add-folder')
         },
         { type: 'separator' },
         {
@@ -968,6 +1024,101 @@ ipcMain.handle('logs:export', async () => {
   }
 })
 
+ipcMain.handle('logs:get-dir', () => {
+  return path.join(app.getPath('userData'), 'logs')
+})
+
+ipcMain.handle('logs:list-files', async () => {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    if (!fs.existsSync(logsDir)) {
+      return { success: true, files: [] }
+    }
+    
+    const files = fs.readdirSync(logsDir)
+      .filter(f => f.endsWith('.log'))
+      .map(filename => {
+        const filePath = path.join(logsDir, filename)
+        const stats = fs.statSync(filePath)
+        return {
+          name: filename,
+          path: filePath,
+          size: stats.size,
+          modifiedTime: stats.mtime.toISOString(),
+          isCurrentSession: logFilePath ? path.normalize(filePath) === path.normalize(logFilePath) : false
+        }
+      })
+      .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime())
+    
+    return { success: true, files }
+  } catch (err) {
+    logError('Failed to list log files', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('logs:read-file', async (_, filePath: string) => {
+  try {
+    // Security check: ensure file is in logs directory
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    const normalizedPath = path.normalize(filePath)
+    if (!normalizedPath.startsWith(logsDir)) {
+      return { success: false, error: 'Access denied: file is not in logs directory' }
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: 'File not found' }
+    }
+    
+    const content = fs.readFileSync(filePath, 'utf-8')
+    return { success: true, content }
+  } catch (err) {
+    logError('Failed to read log file', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('logs:open-dir', async () => {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true })
+    }
+    await shell.openPath(logsDir)
+    return { success: true }
+  } catch (err) {
+    logError('Failed to open logs directory', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+ipcMain.handle('logs:delete-file', async (_, filePath: string) => {
+  try {
+    // Security check: ensure file is in logs directory
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    const normalizedPath = path.normalize(filePath)
+    if (!normalizedPath.startsWith(logsDir)) {
+      return { success: false, error: 'Access denied: file is not in logs directory' }
+    }
+    
+    // Don't allow deleting current session log
+    if (normalizedPath === logFilePath) {
+      return { success: false, error: 'Cannot delete current session log' }
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: 'File not found' }
+    }
+    
+    fs.unlinkSync(filePath)
+    log('Deleted log file: ' + filePath)
+    return { success: true }
+  } catch (err) {
+    logError('Failed to delete log file', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
 // Log from renderer process
 ipcMain.on('logs:write', (_, level: string, message: string, data?: unknown) => {
   const validLevel = ['info', 'warn', 'error', 'debug'].includes(level) ? level as LogEntry['level'] : 'info'
@@ -999,6 +1150,7 @@ ipcMain.handle('working-dir:select', async () => {
   
   if (!result.canceled && result.filePaths.length > 0) {
     workingDirectory = result.filePaths[0]
+    hashCache.clear() // Clear hash cache when changing working directory
     log('Working directory set:', workingDirectory)
     startFileWatcher(workingDirectory)
     return { success: true, path: workingDirectory }
@@ -1012,12 +1164,14 @@ ipcMain.handle('working-dir:clear', () => {
   log('Clearing working directory and stopping file watcher')
   stopFileWatcher()
   workingDirectory = null
+  hashCache.clear() // Clear hash cache
   return { success: true }
 })
 
 ipcMain.handle('working-dir:set', async (_, newPath: string) => {
   if (fs.existsSync(newPath)) {
     workingDirectory = newPath
+    hashCache.clear() // Clear hash cache when changing working directory
     startFileWatcher(newPath)
     return { success: true, path: workingDirectory }
   }
@@ -1039,6 +1193,7 @@ ipcMain.handle('working-dir:create', async (_, newPath: string) => {
       log('Created working directory:', expandedPath)
     }
     workingDirectory = expandedPath
+    hashCache.clear() // Clear hash cache when changing working directory
     startFileWatcher(expandedPath)
     return { success: true, path: workingDirectory }
   } catch (err) {
@@ -1206,6 +1361,95 @@ ipcMain.handle('fs:write-file', async (_, filePath: string, base64Data: string) 
   }
 })
 
+// Download file directly in main process (bypasses IPC for large files)
+ipcMain.handle('fs:download-url', async (event, url: string, destPath: string) => {
+  try {
+    // Ensure directory exists
+    const dir = path.dirname(destPath)
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    
+    const https = await import('https')
+    const http = await import('http')
+    const client = url.startsWith('https') ? https : http
+    
+    return new Promise((resolve) => {
+      const request = client.get(url, (response) => {
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          // Handle redirect
+          const redirectUrl = response.headers.location
+          if (redirectUrl) {
+            const redirectClient = redirectUrl.startsWith('https') ? https : http
+            redirectClient.get(redirectUrl, (redirectResponse) => {
+              handleResponse(redirectResponse)
+            }).on('error', (err) => {
+              resolve({ success: false, error: String(err) })
+            })
+            return
+          }
+        }
+        handleResponse(response)
+      })
+      
+      request.on('error', (err) => {
+        resolve({ success: false, error: String(err) })
+      })
+      
+      function handleResponse(response: any) {
+        if (response.statusCode !== 200) {
+          resolve({ success: false, error: `HTTP ${response.statusCode}` })
+          return
+        }
+        
+        const contentLength = parseInt(response.headers['content-length'] || '0', 10)
+        const writeStream = fs.createWriteStream(destPath)
+        const hashStream = crypto.createHash('sha256')
+        
+        let downloaded = 0
+        let lastProgressTime = Date.now()
+        let lastDownloaded = 0
+        
+        response.on('data', (chunk: Buffer) => {
+          downloaded += chunk.length
+          hashStream.update(chunk)
+          
+          // Send progress every 100ms
+          const now = Date.now()
+          if (now - lastProgressTime >= 100) {
+            const bytesSinceLast = downloaded - lastDownloaded
+            const timeSinceLast = (now - lastProgressTime) / 1000
+            const speed = timeSinceLast > 0 ? bytesSinceLast / timeSinceLast : 0
+            
+            // Send progress to renderer
+            event.sender.send('download-progress', {
+              loaded: downloaded,
+              total: contentLength,
+              speed
+            })
+            
+            lastProgressTime = now
+            lastDownloaded = downloaded
+          }
+        })
+        
+        response.pipe(writeStream)
+        
+        writeStream.on('finish', () => {
+          const hash = hashStream.digest('hex')
+          resolve({ success: true, hash, size: downloaded })
+        })
+        
+        writeStream.on('error', (err) => {
+          resolve({ success: false, error: String(err) })
+        })
+      }
+    })
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+})
+
 ipcMain.handle('fs:file-exists', async (_, filePath: string) => {
   return fs.existsSync(filePath)
 })
@@ -1292,12 +1536,17 @@ ipcMain.handle('fs:list-dir-files', async (_, dirPath: string) => {
   return { success: true, files }
 })
 
+// Hash cache to avoid recomputing hashes for unchanged files
+// Key: relativePath, Value: { size, mtime, hash }
+const hashCache = new Map<string, { size: number; mtime: number; hash: string }>()
+
 ipcMain.handle('fs:list-working-files', async () => {
   if (!workingDirectory) {
     return { success: false, error: 'No working directory set' }
   }
   
   const files: LocalFileInfo[] = []
+  const seenPaths = new Set<string>() // Track which paths we've seen this scan
   
   function walkDir(dir: string, baseDir: string) {
     try {
@@ -1325,14 +1574,27 @@ ipcMain.handle('fs:list-working-files', async () => {
           // Recurse into folder
           walkDir(fullPath, baseDir)
         } else {
-          // Add file entry with hash for comparison
+          seenPaths.add(relativePath)
+          
+          // Check hash cache - reuse if file size and mtime haven't changed
           let fileHash: string | undefined
-          try {
-            // Compute hash for files (needed for diff detection)
-            const fileData = fs.readFileSync(fullPath)
-            fileHash = crypto.createHash('sha256').update(fileData).digest('hex')
-          } catch {
-            // Skip hash if file can't be read
+          const cached = hashCache.get(relativePath)
+          const mtimeMs = stats.mtime.getTime()
+          
+          if (cached && cached.size === stats.size && cached.mtime === mtimeMs) {
+            // File unchanged, reuse cached hash
+            fileHash = cached.hash
+          } else {
+            // File changed or new, compute hash
+            try {
+              const fileData = fs.readFileSync(fullPath)
+              fileHash = crypto.createHash('sha256').update(fileData).digest('hex')
+              // Update cache
+              hashCache.set(relativePath, { size: stats.size, mtime: mtimeMs, hash: fileHash })
+            } catch {
+              // Skip hash if file can't be read
+              hashCache.delete(relativePath)
+            }
           }
           
           files.push({
@@ -1353,6 +1615,13 @@ ipcMain.handle('fs:list-working-files', async () => {
   }
   
   walkDir(workingDirectory, workingDirectory)
+  
+  // Clean up cache entries for files that no longer exist
+  for (const cachedPath of hashCache.keys()) {
+    if (!seenPaths.has(cachedPath)) {
+      hashCache.delete(cachedPath)
+    }
+  }
   
   // Sort: folders first, then by name
   files.sort((a, b) => {
@@ -1382,19 +1651,33 @@ ipcMain.handle('fs:delete', async (_, targetPath: string) => {
       return { success: false, error: 'Path does not exist' }
     }
     
-    // If deleting the working directory (or a parent), stop the file watcher first
-    if (workingDirectory && (targetPath === workingDirectory || workingDirectory.startsWith(targetPath))) {
-      log('Stopping file watcher before deleting working directory')
+    // If deleting anything inside the working directory, pause the file watcher
+    // to release file handles that might block deletion
+    const needsWatcherPause = workingDirectory && (
+      targetPath === workingDirectory || 
+      workingDirectory.startsWith(targetPath) ||
+      targetPath.startsWith(workingDirectory)
+    )
+    
+    if (needsWatcherPause) {
+      log('Pausing file watcher before delete')
       stopFileWatcher()
-      workingDirectory = null
       // Give OS time to release file handles
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
     
-    // Move to Recycle Bin instead of permanent delete
-    await shell.trashItem(targetPath)
-    log('Successfully moved to Recycle Bin:', targetPath)
-    return { success: true }
+    try {
+      // Move to Recycle Bin instead of permanent delete
+      await shell.trashItem(targetPath)
+      log('Successfully moved to Recycle Bin:', targetPath)
+      return { success: true }
+    } finally {
+      // Restart the file watcher if we paused it (and we didn't delete the working directory itself)
+      if (needsWatcherPause && workingDirectory && fs.existsSync(workingDirectory)) {
+        log('Restarting file watcher after delete')
+        startFileWatcher(workingDirectory)
+      }
+    }
   } catch (err) {
     log('Failed to delete:', targetPath, err)
     return { success: false, error: String(err) }
@@ -1680,6 +1963,32 @@ ipcMain.handle('dialog:select-files', async () => {
     }
     
     return { success: true, files: allFiles }
+  }
+  return { success: false, canceled: true }
+})
+
+// Select a folder to add (returns all files within the folder with relative paths preserved)
+ipcMain.handle('dialog:select-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Select Folder to Add',
+    properties: ['openDirectory']
+  })
+  
+  if (!result.canceled && result.filePaths.length > 0) {
+    const folderPath = result.filePaths[0]
+    const folderName = path.basename(folderPath)
+    
+    // Get all files in the folder recursively
+    const allFiles = getAllFilesInDir(folderPath, folderName)
+    
+    log('Selected folder:', folderPath, 'with', allFiles.length, 'files')
+    
+    return { 
+      success: true, 
+      folderName,
+      folderPath,
+      files: allFiles 
+    }
   }
   return { success: false, canceled: true }
 })

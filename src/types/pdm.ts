@@ -86,6 +86,10 @@ export interface PDMFile {
   
   // Custom properties (from SolidWorks custom properties)
   custom_properties: Record<string, string | number | null>
+  
+  // Soft delete (trash bin)
+  deleted_at: string | null
+  deleted_by: string | null
 }
 
 // Assembly/part relationships for where-used
@@ -107,8 +111,7 @@ export interface FileVersion {
   file_id: string
   version: number
   revision: string
-  git_hash: string
-  lfs_oid: string | null
+  content_hash: string
   file_size: number
   comment: string | null
   state: FileState
@@ -122,8 +125,6 @@ export interface Organization {
   name: string                // "Blue Robotics"
   slug: string                // "bluerobotics"
   email_domains: string[]     // ["bluerobotics.com"]
-  vault_path: string          // Local path to Git vault
-  git_remote_url: string | null
   revision_scheme: RevisionScheme
   settings: OrgSettings
   created_at: string
@@ -137,6 +138,7 @@ export interface OrgSettings {
   allowed_extensions: string[]
   require_description: boolean
   require_approval_for_release: boolean
+  max_file_size_mb: number
 }
 
 // User with org membership
@@ -228,9 +230,35 @@ export interface ActivityEntry {
   file_id: string | null
   user_id: string
   user_email: string
-  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
+  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
   details: Record<string, unknown>
   created_at: string
+}
+
+// Deleted file info (for trash bin)
+export interface DeletedFile {
+  id: string
+  file_path: string
+  file_name: string
+  extension: string
+  file_type: 'part' | 'assembly' | 'drawing' | 'document' | 'other'
+  part_number: string | null
+  description: string | null
+  revision: string
+  version: number
+  content_hash: string | null
+  file_size: number
+  state: FileState
+  deleted_at: string
+  deleted_by: string | null
+  vault_id: string
+  org_id: string
+  updated_at: string
+  deleted_by_user?: {
+    email: string
+    full_name: string | null
+    avatar_url: string | null
+  } | null
 }
 
 // Helper to get next revision letter
@@ -389,5 +417,57 @@ export const STATE_INFO: Record<FileState, { label: string; color: string; descr
     color: 'pdm-inactive',
     description: 'File is no longer active'
   }
+}
+
+// Get initials from a name (1-2 characters)
+// "John Doe" -> "JD", "john.doe@email.com" -> "JD", "John" -> "JO"
+export function getInitials(name: string | null | undefined): string {
+  if (!name) return '?'
+  
+  // If it's an email, extract the part before @
+  const displayName = name.includes('@') ? name.split('@')[0] : name
+  
+  // Split by spaces, dots, underscores, or hyphens
+  const parts = displayName.trim().split(/[\s._-]+/).filter(p => p.length > 0)
+  
+  if (parts.length >= 2) {
+    // First letter of first and last parts
+    return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
+  } else if (parts.length === 1 && parts[0].length >= 2) {
+    // Single word - take first 2 characters
+    return parts[0].substring(0, 2).toUpperCase()
+  } else if (parts.length === 1) {
+    return parts[0].charAt(0).toUpperCase() || '?'
+  }
+  
+  return '?'
+}
+
+// Avatar color palette for fallback avatars (when no profile picture)
+// These are tailwind-compatible color classes
+const AVATAR_COLORS = [
+  { bg: 'bg-blue-500/20', text: 'text-blue-400', ring: 'ring-blue-500/50' },
+  { bg: 'bg-emerald-500/20', text: 'text-emerald-400', ring: 'ring-emerald-500/50' },
+  { bg: 'bg-amber-500/20', text: 'text-amber-400', ring: 'ring-amber-500/50' },
+  { bg: 'bg-rose-500/20', text: 'text-rose-400', ring: 'ring-rose-500/50' },
+  { bg: 'bg-violet-500/20', text: 'text-violet-400', ring: 'ring-violet-500/50' },
+  { bg: 'bg-cyan-500/20', text: 'text-cyan-400', ring: 'ring-cyan-500/50' },
+  { bg: 'bg-orange-500/20', text: 'text-orange-400', ring: 'ring-orange-500/50' },
+  { bg: 'bg-pink-500/20', text: 'text-pink-400', ring: 'ring-pink-500/50' },
+]
+
+// Get consistent avatar color based on name/id (same person always gets same color)
+export function getAvatarColor(identifier: string | null | undefined): { bg: string; text: string; ring: string } {
+  if (!identifier) return AVATAR_COLORS[0]
+  
+  // Simple hash function to get consistent index
+  let hash = 0
+  for (let i = 0; i < identifier.length; i++) {
+    hash = ((hash << 5) - hash) + identifier.charCodeAt(i)
+    hash = hash & hash // Convert to 32bit integer
+  }
+  
+  const index = Math.abs(hash) % AVATAR_COLORS.length
+  return AVATAR_COLORS[index]
 }
 

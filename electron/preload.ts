@@ -51,6 +51,19 @@ interface FileSelectResult extends OperationResult {
   }>
 }
 
+interface FolderSelectResult extends OperationResult {
+  folderName?: string
+  folderPath?: string
+  files?: Array<{
+    name: string
+    path: string
+    relativePath: string
+    extension: string
+    size: number
+    modifiedTime: string
+  }>
+}
+
 interface SaveDialogResult extends OperationResult {
   filePath?: string
 }
@@ -77,6 +90,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLogPath: () => ipcRenderer.invoke('logs:get-path'),
   exportLogs: () => ipcRenderer.invoke('logs:export'),
   log: (level: string, message: string, data?: unknown) => ipcRenderer.send('logs:write', level, message, data),
+  getLogsDir: () => ipcRenderer.invoke('logs:get-dir'),
+  listLogFiles: () => ipcRenderer.invoke('logs:list-files'),
+  readLogFile: (filePath: string) => ipcRenderer.invoke('logs:read-file', filePath),
+  openLogsDir: () => ipcRenderer.invoke('logs:open-dir'),
+  deleteLogFile: (filePath: string) => ipcRenderer.invoke('logs:delete-file', filePath),
   
   // Get file path from dropped File object (for drag & drop)
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
@@ -97,6 +115,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File system operations
   readFile: (path: string) => ipcRenderer.invoke('fs:read-file', path),
   writeFile: (path: string, base64Data: string) => ipcRenderer.invoke('fs:write-file', path, base64Data),
+  downloadUrl: (url: string, destPath: string) => ipcRenderer.invoke('fs:download-url', url, destPath),
   fileExists: (path: string) => ipcRenderer.invoke('fs:file-exists', path),
   getFileHash: (path: string) => ipcRenderer.invoke('fs:get-hash', path),
   listWorkingFiles: () => ipcRenderer.invoke('fs:list-working-files'),
@@ -112,9 +131,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setReadonly: (path: string, readonly: boolean) => ipcRenderer.invoke('fs:set-readonly', path, readonly),
   startDrag: (filePaths: string[]) => ipcRenderer.send('fs:start-drag', filePaths),
   isReadonly: (path: string) => ipcRenderer.invoke('fs:is-readonly', path),
+  
+  // Download progress listener (for fs:download-url)
+  onDownloadProgress: (callback: (progress: { loaded: number; total: number; speed: number }) => void) => {
+    const handler = (_: unknown, progress: { loaded: number; total: number; speed: number }) => callback(progress)
+    ipcRenderer.on('download-progress', handler)
+    return () => ipcRenderer.removeListener('download-progress', handler)
+  },
 
   // Dialogs
   selectFiles: () => ipcRenderer.invoke('dialog:select-files'),
+  selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
   showSaveDialog: (defaultName: string) => ipcRenderer.invoke('dialog:save-file', defaultName),
 
   // eDrawings preview
@@ -177,6 +204,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const events = [
       'menu:set-working-dir',
       'menu:add-files',
+      'menu:add-folder',
       'menu:checkout',
       'menu:checkin',
       'menu:refresh',
@@ -237,6 +265,11 @@ declare global {
       getLogPath: () => Promise<string | null>
       exportLogs: () => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
       log: (level: string, message: string, data?: unknown) => void
+      getLogsDir: () => Promise<string>
+      listLogFiles: () => Promise<{ success: boolean; files?: Array<{ name: string; path: string; size: number; modifiedTime: string; isCurrentSession: boolean }>; error?: string }>
+      readLogFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
+      openLogsDir: () => Promise<{ success: boolean; error?: string }>
+      deleteLogFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
       
       // Window controls
       minimize: () => void
@@ -254,6 +287,7 @@ declare global {
       // File system operations
       readFile: (path: string) => Promise<FileReadResult>
       writeFile: (path: string, base64Data: string) => Promise<FileWriteResult>
+      downloadUrl: (url: string, destPath: string) => Promise<FileWriteResult>
       fileExists: (path: string) => Promise<boolean>
       getFileHash: (path: string) => Promise<HashResult>
       listWorkingFiles: () => Promise<FilesListResult>
@@ -266,9 +300,11 @@ declare global {
       openFile: (path: string) => Promise<OperationResult>
       setReadonly: (path: string, readonly: boolean) => Promise<OperationResult>
       isReadonly: (path: string) => Promise<{ success: boolean; readonly?: boolean; error?: string }>
+      onDownloadProgress: (callback: (progress: { loaded: number; total: number; speed: number }) => void) => () => void
       
       // Dialogs
       selectFiles: () => Promise<FileSelectResult>
+      selectFolder: () => Promise<FolderSelectResult>
       showSaveDialog: (defaultName: string) => Promise<SaveDialogResult>
       
       // eDrawings preview

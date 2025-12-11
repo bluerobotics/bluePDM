@@ -464,6 +464,7 @@ export async function getFiles(orgId: string, options?: {
   state?: string[]
   search?: string
   checkedOutByMe?: string  // user ID
+  includeDeleted?: boolean  // Include soft-deleted files (default: false)
 }) {
   const client = getSupabaseClient()
   let query = client
@@ -475,6 +476,11 @@ export async function getFiles(orgId: string, options?: {
     `)
     .eq('org_id', orgId)
     .order('file_path', { ascending: true })
+  
+  // Filter out soft-deleted files by default
+  if (!options?.includeDeleted) {
+    query = query.is('deleted_at', null)
+  }
   
   // Filter by vault if specified
   if (options?.vaultId) {
@@ -508,9 +514,57 @@ export async function getFiles(orgId: string, options?: {
 /**
  * Lightweight file fetch for initial vault sync - only essential columns, no joins
  * Much faster than getFiles() for large vaults
+ * Automatically filters out soft-deleted files (deleted_at is set)
  */
 export async function getFilesLightweight(orgId: string, vaultId?: string) {
+  const logFn = typeof window !== 'undefined' && (window as any).electronAPI?.log
+    ? (level: string, msg: string, data?: any) => (window as any).electronAPI.log(level, msg, data)
+    : () => {}
+  
+  logFn('debug', '[getFilesLightweight] Querying', { orgId, vaultId })
+  
   const client = getSupabaseClient()
+  
+  // DEBUG: First check what files exist for this vault (ignoring org_id AND deleted_at)
+  if (vaultId) {
+    // Query WITHOUT deleted_at filter to see if files exist but are soft-deleted
+    const { data: allVaultFiles, error: allErr } = await client
+      .from('files')
+      .select('id, org_id, file_path, deleted_at')
+      .eq('vault_id', vaultId)
+      .limit(5)
+    
+    if (allVaultFiles && allVaultFiles.length > 0) {
+      const hasDeletedFiles = allVaultFiles.some(f => f.deleted_at)
+      const hasWrongOrg = allVaultFiles.some(f => f.org_id !== orgId)
+      
+      if (hasDeletedFiles) {
+        logFn('error', '[getFilesLightweight] FILES ARE SOFT-DELETED! They have deleted_at set!', {
+          vaultId,
+          sampleFiles: allVaultFiles.map(f => ({ 
+            id: f.id, 
+            org_id: f.org_id, 
+            path: f.file_path,
+            deleted_at: f.deleted_at 
+          }))
+        })
+      } else if (hasWrongOrg) {
+        logFn('warn', '[getFilesLightweight] Files exist but have wrong org_id!', {
+          vaultId,
+          expectedOrgId: orgId,
+          sampleFiles: allVaultFiles.map(f => ({ id: f.id, org_id: f.org_id, path: f.file_path }))
+        })
+      } else {
+        logFn('debug', '[getFilesLightweight] Files exist and look correct', {
+          count: allVaultFiles.length,
+          sampleFiles: allVaultFiles.map(f => ({ id: f.id, path: f.file_path }))
+        })
+      }
+    } else {
+      logFn('debug', '[getFilesLightweight] No files found in vault at all (even deleted)', { vaultId, allErr: allErr?.message })
+    }
+  }
+  
   let query = client
     .from('files')
     .select(`
@@ -531,6 +585,7 @@ export async function getFilesLightweight(orgId: string, vaultId?: string) {
       updated_at
     `)
     .eq('org_id', orgId)
+    .is('deleted_at', null)  // Filter out soft-deleted files
     .order('file_path', { ascending: true })
   
   if (vaultId) {
@@ -538,6 +593,13 @@ export async function getFilesLightweight(orgId: string, vaultId?: string) {
   }
   
   const { data, error } = await query
+  
+  logFn('debug', '[getFilesLightweight] Result', { 
+    fileCount: data?.length || 0, 
+    hasError: !!error,
+    errorMsg: error?.message 
+  })
+  
   return { files: data, error }
 }
 
@@ -729,18 +791,31 @@ export async function syncFile(
 ) {
   const client = getSupabaseClient()
   
+  // Debug: Log sync attempt
+  const logFn = typeof window !== 'undefined' && (window as any).electronAPI?.log
+    ? (level: string, msg: string, data?: any) => (window as any).electronAPI.log(level, msg, data)
+    : () => {}
+  
+  logFn('debug', '[syncFile] Starting sync', { orgId, vaultId, filePath, fileName })
+  
   try {
     // 1. Upload file content to storage (using content hash as filename for deduplication)
     // Use subdirectory based on first 2 chars of hash to prevent too many files in one folder
     const storagePath = `${orgId}/${contentHash.substring(0, 2)}/${contentHash}`
     
     // Check if this content already exists (deduplication)
-    const { data: existingFile } = await client.storage
+    logFn('debug', '[syncFile] Checking storage', { filePath, storagePath })
+    const { data: existingFile, error: listError } = await client.storage
       .from('vault')
       .list(`${orgId}/${contentHash.substring(0, 2)}`, { search: contentHash })
     
+    if (listError) {
+      logFn('error', '[syncFile] Storage list error', { filePath, error: listError.message })
+    }
+    
     if (!existingFile || existingFile.length === 0) {
       // Convert base64 to blob
+      logFn('debug', '[syncFile] Uploading to storage', { filePath, size: base64Content.length })
       const binaryString = atob(base64Content)
       const bytes = new Uint8Array(binaryString.length)
       for (let i = 0; i < binaryString.length; i++) {
@@ -757,23 +832,41 @@ export async function syncFile(
         })
       
       if (uploadError && !uploadError.message.includes('already exists')) {
+        logFn('error', '[syncFile] Storage upload failed', { filePath, error: uploadError.message })
         throw uploadError
       }
+      logFn('debug', '[syncFile] Storage upload complete', { filePath })
+    } else {
+      logFn('debug', '[syncFile] Content already exists in storage', { filePath })
     }
     
     // 2. Determine file type from extension
     const fileType = getFileTypeFromExtension(extension)
     
     // 3. Check if file already exists in database (by vault and path)
-    const { data: existingDbFile } = await client
+    // Note: This intentionally finds soft-deleted files too, so we can "resurrect" them
+    logFn('debug', '[syncFile] Checking DB for existing file', { filePath, vaultId })
+    const { data: existingDbFile, error: checkError } = await client
       .from('files')
-      .select('id, version')
+      .select('id, version, deleted_at')
       .eq('vault_id', vaultId)
       .eq('file_path', filePath)
       .single()
     
+    if (checkError && checkError.code !== 'PGRST116') {
+      // PGRST116 = no rows returned, which is expected for new files
+      logFn('error', '[syncFile] DB check error', { filePath, error: checkError.message, code: checkError.code })
+    }
+    
     if (existingDbFile) {
-      // Update existing file
+      // Update existing file - also clear deleted_at to "undelete" if it was soft-deleted
+      const wasDeleted = !!existingDbFile.deleted_at
+      logFn('debug', '[syncFile] Updating existing file', { 
+        filePath, 
+        existingId: existingDbFile.id,
+        wasDeleted,
+        action: wasDeleted ? 'UNDELETING' : 'updating'
+      })
       const { data, error } = await client
         .from('files')
         .update({
@@ -781,13 +874,18 @@ export async function syncFile(
           file_size: fileSize,
           version: existingDbFile.version + 1,
           updated_at: new Date().toISOString(),
-          updated_by: userId
+          updated_by: userId,
+          deleted_at: null,  // Clear soft-delete flag - file is being re-uploaded
+          deleted_by: null
         })
         .eq('id', existingDbFile.id)
         .select()
         .single()
       
-      if (error) throw error
+      if (error) {
+        logFn('error', '[syncFile] Update failed', { filePath, error: error.message })
+        throw error
+      }
       
       // Create version record
       await client.from('file_versions').insert({
@@ -800,9 +898,11 @@ export async function syncFile(
         created_by: userId
       })
       
+      logFn('info', '[syncFile] Update SUCCESS', { filePath, fileId: existingDbFile.id })
       return { file: data, error: null, isNew: false }
     } else {
       // Create new file record
+      logFn('debug', '[syncFile] Inserting new file', { filePath, vaultId, orgId })
       const { data, error } = await client
         .from('files')
         .insert({
@@ -823,7 +923,13 @@ export async function syncFile(
         .select()
         .single()
       
-      if (error) throw error
+      if (error) {
+        logFn('error', '[syncFile] Insert failed', { filePath, error: error.message, code: (error as any).code })
+        throw error
+      }
+      
+      // Debug: Log successful insert
+      logFn('info', '[syncFile] Insert SUCCESS', { filePath, fileId: data.id, vaultId })
       
       // Create initial version record
       await client.from('file_versions').insert({
@@ -839,6 +945,7 @@ export async function syncFile(
       return { file: data, error: null, isNew: true }
     }
   } catch (error) {
+    logFn('error', '[syncFile] Exception', { filePath, error: String(error) })
     console.error('Error syncing file:', error)
     return { file: null, error, isNew: false }
   }
@@ -1091,6 +1198,79 @@ export async function undoCheckout(fileId: string, userId: string) {
   }
   
   return { success: true, file: data, error: null }
+}
+
+// ============================================
+// Admin Force Check-In Operations
+// ============================================
+
+/**
+ * Admin force discard checkout - discards the checkout without saving changes
+ * Use this when the user is offline or unresponsive
+ */
+export async function adminForceDiscardCheckout(
+  fileId: string,
+  adminUserId: string
+): Promise<{ success: boolean; file?: any; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Verify admin
+  const { data: adminUser, error: adminError } = await client
+    .from('users')
+    .select('role, org_id')
+    .eq('id', adminUserId)
+    .single()
+  
+  if (adminError || adminUser?.role !== 'admin') {
+    return { success: false, error: 'Only admins can force discard checkouts' }
+  }
+  
+  // Get the file info
+  const { data: file, error: fetchError } = await client
+    .from('files')
+    .select('*, checked_out_user:users!checked_out_by(id, email, full_name)')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (!file.checked_out_by) {
+    return { success: false, error: 'File is not checked out' }
+  }
+  
+  const checkedOutUser = file.checked_out_user as { id: string; email: string; full_name: string } | null
+  
+  // Release the checkout
+  const { data, error } = await client
+    .from('files')
+    .update({
+      checked_out_by: null,
+      checked_out_at: null,
+      lock_message: null
+    })
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log activity
+  await client.from('activity').insert({
+    org_id: file.org_id,
+    file_id: fileId,
+    user_id: adminUserId,
+    action: 'admin_force_discard',
+    details: { 
+      discarded_user_id: file.checked_out_by,
+      discarded_user_name: checkedOutUser?.full_name || checkedOutUser?.email || 'Unknown'
+    }
+  })
+  
+  return { success: true, file: data }
 }
 
 /**
@@ -1513,4 +1693,426 @@ export async function updateFileMetadata(
   })
   
   return { success: true, file: data, error: null }
+}
+
+// ============================================
+// Trash / Soft Delete Operations
+// ============================================
+
+/**
+ * Soft delete a file (move to trash)
+ * File can be restored within 30 days
+ * Falls back to hard delete if deleted_at column doesn't exist
+ */
+export async function softDeleteFile(
+  fileId: string,
+  userId: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Get current file to validate
+  const { data: file, error: fetchError } = await client
+    .from('files')
+    .select('id, org_id, file_name, file_path, checked_out_by')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  // Don't allow deleting files that are checked out by someone else
+  if (file.checked_out_by && file.checked_out_by !== userId) {
+    return { success: false, error: 'Cannot delete a file that is checked out by another user.' }
+  }
+  
+  // Try soft delete - set deleted_at timestamp
+  const { error } = await client
+    .from('files')
+    .update({
+      deleted_at: new Date().toISOString(),
+      deleted_by: userId
+    })
+    .eq('id', fileId)
+  
+  // If soft delete fails (column doesn't exist), fall back to hard delete
+  if (error && (error.message?.includes('deleted_at') || error.message?.includes('column'))) {
+    console.warn('Soft delete not available, performing hard delete')
+    
+    // Log activity BEFORE delete
+    await client.from('activity').insert({
+      org_id: file.org_id,
+      file_id: null,
+      user_id: userId,
+      user_email: '',
+      action: 'delete',
+      details: {
+        file_name: file.file_name,
+        file_path: file.file_path
+      }
+    })
+    
+    const { error: deleteError } = await client
+      .from('files')
+      .delete()
+      .eq('id', fileId)
+    
+    if (deleteError) {
+      return { success: false, error: deleteError.message }
+    }
+    
+    return { success: true }
+  }
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log activity
+  await client.from('activity').insert({
+    org_id: file.org_id,
+    file_id: fileId,
+    user_id: userId,
+    user_email: '',
+    action: 'delete',
+    details: {
+      file_name: file.file_name,
+      file_path: file.file_path,
+      soft_delete: true
+    }
+  })
+  
+  return { success: true }
+}
+
+/**
+ * Soft delete multiple files at once
+ */
+export async function softDeleteFiles(
+  fileIds: string[],
+  userId: string
+): Promise<{ success: boolean; deleted: number; failed: number; errors: string[] }> {
+  const errors: string[] = []
+  let deleted = 0
+  let failed = 0
+  
+  for (const fileId of fileIds) {
+    const result = await softDeleteFile(fileId, userId)
+    if (result.success) {
+      deleted++
+    } else {
+      failed++
+      errors.push(result.error || 'Unknown error')
+    }
+  }
+  
+  return { success: failed === 0, deleted, failed, errors }
+}
+
+/**
+ * Restore a file from trash
+ */
+export async function restoreFile(
+  fileId: string,
+  userId: string
+): Promise<{ success: boolean; file?: any; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Get current file to validate
+  const { data: file, error: fetchError } = await client
+    .from('files')
+    .select('id, org_id, file_name, file_path, deleted_at, vault_id')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (!file.deleted_at) {
+    return { success: false, error: 'File is not in trash' }
+  }
+  
+  // Check if a file with the same path already exists (not deleted)
+  const { data: existingFile } = await client
+    .from('files')
+    .select('id')
+    .eq('vault_id', file.vault_id)
+    .eq('file_path', file.file_path)
+    .is('deleted_at', null)
+    .single()
+  
+  if (existingFile) {
+    return { 
+      success: false, 
+      error: 'A file with the same path already exists. Rename or delete the existing file first.' 
+    }
+  }
+  
+  // Restore - clear deleted_at and deleted_by
+  const { data: restoredFile, error } = await client
+    .from('files')
+    .update({
+      deleted_at: null,
+      deleted_by: null
+    })
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log activity
+  await client.from('activity').insert({
+    org_id: file.org_id,
+    file_id: fileId,
+    user_id: userId,
+    user_email: '',
+    action: 'restore',
+    details: {
+      file_name: file.file_name,
+      file_path: file.file_path
+    }
+  })
+  
+  return { success: true, file: restoredFile }
+}
+
+/**
+ * Restore multiple files from trash
+ */
+export async function restoreFiles(
+  fileIds: string[],
+  userId: string
+): Promise<{ success: boolean; restored: number; failed: number; errors: string[] }> {
+  const errors: string[] = []
+  let restored = 0
+  let failed = 0
+  
+  for (const fileId of fileIds) {
+    const result = await restoreFile(fileId, userId)
+    if (result.success) {
+      restored++
+    } else {
+      failed++
+      errors.push(result.error || 'Unknown error')
+    }
+  }
+  
+  return { success: failed === 0, restored, failed, errors }
+}
+
+/**
+ * Permanently delete a file (cannot be undone)
+ * Only for files already in trash
+ */
+export async function permanentlyDeleteFile(
+  fileId: string,
+  userId: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Get current file to validate
+  const { data: file, error: fetchError } = await client
+    .from('files')
+    .select('id, org_id, file_name, file_path, deleted_at')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  if (!file.deleted_at) {
+    return { success: false, error: 'File must be in trash before permanent deletion' }
+  }
+  
+  // Log activity BEFORE delete
+  await client.from('activity').insert({
+    org_id: file.org_id,
+    file_id: null, // Set to null since file will be deleted
+    user_id: userId,
+    user_email: '',
+    action: 'delete',
+    details: {
+      file_name: file.file_name,
+      file_path: file.file_path,
+      permanent: true
+    }
+  })
+  
+  // Delete file versions
+  await client
+    .from('file_versions')
+    .delete()
+    .eq('file_id', fileId)
+  
+  // Delete file references
+  await client
+    .from('file_references')
+    .delete()
+    .or(`parent_file_id.eq.${fileId},child_file_id.eq.${fileId}`)
+  
+  // Permanently delete the file
+  const { error } = await client
+    .from('files')
+    .delete()
+    .eq('id', fileId)
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true }
+}
+
+/**
+ * Get deleted files (trash) for an organization
+ * Optionally filter by vault or folder path
+ * Returns empty array if deleted_at column doesn't exist (migration not run)
+ */
+export async function getDeletedFiles(
+  orgId: string,
+  options?: {
+    vaultId?: string
+    folderPath?: string  // Get deleted files that were in this folder
+  }
+): Promise<{ files: any[]; error?: string }> {
+  const client = getSupabaseClient()
+  
+  try {
+    let query = client
+      .from('files')
+      .select(`
+        id,
+        file_path,
+        file_name,
+        extension,
+        file_type,
+        part_number,
+        description,
+        revision,
+        version,
+        content_hash,
+        file_size,
+        state,
+        deleted_at,
+        deleted_by,
+        vault_id,
+        org_id,
+        updated_at,
+        deleted_by_user:users!deleted_by(email, full_name, avatar_url)
+      `)
+      .eq('org_id', orgId)
+      .not('deleted_at', 'is', null)
+      .order('deleted_at', { ascending: false })
+    
+    if (options?.vaultId) {
+      query = query.eq('vault_id', options.vaultId)
+    }
+    
+    if (options?.folderPath) {
+      // Match files that were in this folder or subfolders
+      query = query.ilike('file_path', `${options.folderPath}%`)
+    }
+    
+    const { data, error } = await query
+    
+    if (error) {
+      // If column doesn't exist, return empty (trash feature not available)
+      if (error.message?.includes('deleted_at') || error.message?.includes('column')) {
+        console.warn('Trash feature not available - run migration to enable')
+        return { files: [] }
+      }
+      return { files: [], error: error.message }
+    }
+    
+    return { files: data || [] }
+  } catch (err) {
+    console.error('Error fetching deleted files:', err)
+    return { files: [] }
+  }
+}
+
+/**
+ * Get count of deleted files (for badge display)
+ * Returns 0 if deleted_at column doesn't exist (migration not run)
+ */
+export async function getDeletedFilesCount(
+  orgId: string,
+  vaultId?: string
+): Promise<{ count: number; error?: string }> {
+  const client = getSupabaseClient()
+  
+  try {
+    let query = client
+      .from('files')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', orgId)
+      .not('deleted_at', 'is', null)
+    
+    if (vaultId) {
+      query = query.eq('vault_id', vaultId)
+    }
+    
+    const { count, error } = await query
+    
+    if (error) {
+      // If column doesn't exist, return 0 (trash feature not available)
+      if (error.message?.includes('deleted_at') || error.message?.includes('column')) {
+        return { count: 0 }
+      }
+      return { count: 0, error: error.message }
+    }
+    
+    return { count: count || 0 }
+  } catch (err) {
+    return { count: 0 }
+  }
+}
+
+/**
+ * Empty the trash - permanently delete all trashed files
+ * Admin only operation
+ */
+export async function emptyTrash(
+  orgId: string,
+  userId: string,
+  vaultId?: string
+): Promise<{ success: boolean; deleted: number; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // First get all trashed files
+  let query = client
+    .from('files')
+    .select('id')
+    .eq('org_id', orgId)
+    .not('deleted_at', 'is', null)
+  
+  if (vaultId) {
+    query = query.eq('vault_id', vaultId)
+  }
+  
+  const { data: trashedFiles, error: fetchError } = await query
+  
+  if (fetchError) {
+    return { success: false, deleted: 0, error: fetchError.message }
+  }
+  
+  if (!trashedFiles || trashedFiles.length === 0) {
+    return { success: true, deleted: 0 }
+  }
+  
+  // Delete each file permanently
+  let deleted = 0
+  for (const file of trashedFiles) {
+    const result = await permanentlyDeleteFile(file.id, userId)
+    if (result.success) {
+      deleted++
+    }
+  }
+  
+  return { success: true, deleted }
 }

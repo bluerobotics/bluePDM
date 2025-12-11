@@ -2,7 +2,8 @@ import {
   FolderTree, 
   ArrowDownUp, 
   History, 
-  Search
+  Search,
+  Trash2
 } from 'lucide-react'
 import { usePDMStore, SidebarView } from '../stores/pdmStore'
 
@@ -54,6 +55,11 @@ export function ActivityBar() {
           icon={<Search size={24} />}
           view="search"
           title="Search"
+        />
+        <ActivityItem
+          icon={<Trash2 size={24} />}
+          view="trash"
+          title="Trash"
         />
       </div>
       

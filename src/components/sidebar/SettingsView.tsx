@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, signOut } from '../../lib/supabase'
+import { getInitials } from '../../types/pdm'
 
 type SettingsTab = 'account' | 'vault' | 'organization' | 'preferences'
 
@@ -184,12 +185,12 @@ export function SettingsView() {
                         }}
                       />
                       <div className="w-12 h-12 rounded-full bg-pdm-accent flex items-center justify-center text-lg text-white font-semibold hidden">
-                        {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                        {getInitials(user.full_name || user.email)}
                       </div>
                     </>
                   ) : (
                     <div className="w-12 h-12 rounded-full bg-pdm-accent flex items-center justify-center text-lg text-white font-semibold">
-                      {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                      {getInitials(user.full_name || user.email)}
                     </div>
                   )}
                   <div className="flex-1 min-w-0">

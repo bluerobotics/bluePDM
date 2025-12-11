@@ -13,7 +13,7 @@ CREATE TYPE file_type AS ENUM ('part', 'assembly', 'drawing', 'document', 'other
 CREATE TYPE reference_type AS ENUM ('component', 'drawing_view', 'derived', 'copy');
 CREATE TYPE user_role AS ENUM ('admin', 'engineer', 'viewer');
 CREATE TYPE revision_scheme AS ENUM ('letter', 'numeric');
-CREATE TYPE activity_action AS ENUM ('checkout', 'checkin', 'create', 'delete', 'state_change', 'revision_change', 'rename', 'move', 'rollback', 'roll_forward');
+CREATE TYPE activity_action AS ENUM ('checkout', 'checkin', 'create', 'delete', 'restore', 'state_change', 'revision_change', 'rename', 'move', 'rollback', 'roll_forward');
 
 -- ===========================================
 -- ORGANIZATIONS
@@ -140,7 +140,11 @@ CREATE TABLE files (
   -- Custom properties (from SolidWorks or user-defined)
   custom_properties JSONB DEFAULT '{}'::jsonb,
   
-  -- Unique constraint: one file path per vault
+  -- Soft delete (trash bin)
+  deleted_at TIMESTAMPTZ,           -- When the file was moved to trash (NULL = not deleted)
+  deleted_by UUID REFERENCES users(id),  -- Who deleted the file
+  
+  -- Unique constraint: one file path per vault (only for non-deleted files)
   UNIQUE(vault_id, file_path)
 );
 
@@ -153,6 +157,10 @@ CREATE INDEX idx_files_state ON files(state);
 CREATE INDEX idx_files_checked_out_by ON files(checked_out_by) WHERE checked_out_by IS NOT NULL;
 CREATE INDEX idx_files_extension ON files(extension);
 CREATE INDEX idx_files_content_hash ON files(content_hash) WHERE content_hash IS NOT NULL;
+
+-- Soft delete indexes
+CREATE INDEX idx_files_deleted_at ON files(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_files_active ON files(vault_id, file_path) WHERE deleted_at IS NULL;
 
 -- Full text search index
 CREATE INDEX idx_files_search ON files USING GIN (
@@ -598,6 +606,51 @@ VALUES (
   }'::jsonb
 );
 */
+
+-- ===========================================
+-- TRASH BIN CLEANUP FUNCTION
+-- ===========================================
+-- Permanently deletes files that have been in trash for more than 30 days
+-- Call this periodically via Supabase cron job or Edge Function
+
+CREATE OR REPLACE FUNCTION cleanup_old_trash()
+RETURNS INTEGER AS $$
+DECLARE
+  deleted_count INTEGER;
+BEGIN
+  -- Delete file versions for files being permanently deleted
+  DELETE FROM file_versions 
+  WHERE file_id IN (
+    SELECT id FROM files 
+    WHERE deleted_at IS NOT NULL 
+    AND deleted_at < NOW() - INTERVAL '30 days'
+  );
+  
+  -- Delete file references
+  DELETE FROM file_references 
+  WHERE parent_file_id IN (
+    SELECT id FROM files 
+    WHERE deleted_at IS NOT NULL 
+    AND deleted_at < NOW() - INTERVAL '30 days'
+  )
+  OR child_file_id IN (
+    SELECT id FROM files 
+    WHERE deleted_at IS NOT NULL 
+    AND deleted_at < NOW() - INTERVAL '30 days'
+  );
+  
+  -- Delete the files permanently
+  WITH deleted AS (
+    DELETE FROM files 
+    WHERE deleted_at IS NOT NULL 
+    AND deleted_at < NOW() - INTERVAL '30 days'
+    RETURNING id
+  )
+  SELECT COUNT(*) INTO deleted_count FROM deleted;
+  
+  RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ===========================================
 -- USEFUL QUERIES

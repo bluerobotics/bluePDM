@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Database, Link } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, isSupabaseConfigured, supabase } from '../lib/supabase'
+import { getInitials } from '../types/pdm'
 import { SettingsModal } from './SettingsModal'
 
 // Helper to log to both console and electron log file
@@ -595,12 +596,12 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
                     }}
                   />
                   <div className="w-5 h-5 rounded-full bg-pdm-accent flex items-center justify-center text-[10px] text-white font-semibold hidden">
-                    {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                    {getInitials(user.full_name || user.email)}
                   </div>
                 </>
               ) : (
                 <div className="w-5 h-5 rounded-full bg-pdm-accent flex items-center justify-center text-[10px] text-white font-semibold">
-                  {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                  {getInitials(user.full_name || user.email)}
                 </div>
               )}
               <span className="text-sm text-pdm-fg-dim">

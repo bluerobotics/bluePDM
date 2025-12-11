@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react'
 import { 
-  User, 
   Building2, 
   X,
   Users,
   Mail,
   Shield,
-  LogOut,
   Loader2,
   Plus,
   Folder,
@@ -33,11 +31,16 @@ import {
   Wrench,
   RefreshCw,
   ArrowDownToLine,
-  Lock
+  Lock,
+  FileText,
+  FolderOpen,
+  Clock,
+  ChevronLeft
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { supabase, signOut, getCurrentConfig, updateUserRole, removeUserFromOrg, getOrgVaultAccess, setUserVaultAccess } from '../lib/supabase'
 import { generateOrgCode, clearConfig } from '../lib/supabaseConfig'
+import { getInitials } from '../types/pdm'
 
 // Build vault path based on platform
 function buildVaultPath(platform: string, vaultSlug: string): string {
@@ -52,7 +55,7 @@ function buildVaultPath(platform: string, vaultSlug: string): string {
   }
 }
 
-type SettingsTab = 'account' | 'organization' | 'preferences' | 'about'
+type SettingsTab = 'organization' | 'preferences' | 'logs' | 'about'
 
 interface OrgUser {
   id: string
@@ -105,7 +108,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     removeIgnorePattern
   } = usePDMStore()
   
-  const [activeTab, setActiveTab] = useState<SettingsTab>('account')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('organization')
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
@@ -124,6 +127,13 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isExportingLogs, setIsExportingLogs] = useState(false)
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false)
+  
+  // Log files state
+  const [logFiles, setLogFiles] = useState<Array<{ name: string; path: string; size: number; modifiedTime: string; isCurrentSession: boolean }>>([])
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false)
+  const [selectedLogFile, setSelectedLogFile] = useState<{ name: string; path: string; content: string } | null>(null)
+  const [isLoadingLogContent, setIsLoadingLogContent] = useState(false)
+  const [logCopied, setLogCopied] = useState(false)
   const [updateCheckResult, setUpdateCheckResult] = useState<'none' | 'available' | 'error' | null>(null)
   const [appVersion, setAppVersion] = useState('')
   const [platform, setPlatform] = useState<string>('win32')
@@ -162,6 +172,79 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       loadVaultAccess()
     }
   }, [activeTab, organization])
+  
+  // Load log files when logs tab is selected
+  useEffect(() => {
+    if (activeTab === 'logs') {
+      loadLogFiles()
+    }
+  }, [activeTab])
+  
+  const loadLogFiles = async () => {
+    if (!window.electronAPI) return
+    setIsLoadingLogs(true)
+    try {
+      const result = await window.electronAPI.listLogFiles()
+      if (result.success && result.files) {
+        setLogFiles(result.files)
+      }
+    } catch (err) {
+      console.error('Failed to load log files:', err)
+    } finally {
+      setIsLoadingLogs(false)
+    }
+  }
+  
+  const viewLogFile = async (logFile: { name: string; path: string }) => {
+    if (!window.electronAPI) return
+    setIsLoadingLogContent(true)
+    try {
+      const result = await window.electronAPI.readLogFile(logFile.path)
+      if (result.success && result.content) {
+        setSelectedLogFile({ name: logFile.name, path: logFile.path, content: result.content })
+      } else {
+        addToast('error', result.error || 'Failed to read log file')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to read log file')
+    } finally {
+      setIsLoadingLogContent(false)
+    }
+  }
+  
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+  
+  const formatLogDate = (isoDate: string): string => {
+    const date = new Date(isoDate)
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+  
+  // Parse session date from filename (format: bluepdm-YYYY-MM-DD_HH-mm-ss.log)
+  const parseSessionDate = (filename: string): string | null => {
+    const match = filename.match(/bluepdm-(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.log/)
+    if (match) {
+      const [, year, month, day, hour, minute, second] = match
+      const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`)
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    }
+    return null
+  }
   
   const loadVaultAccess = async () => {
     if (!organization) return
@@ -234,13 +317,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     } finally {
       setIsLoadingVaults(false)
     }
-  }
-  
-  const handleSignOut = async () => {
-    await signOut()
-    setUser(null)
-    setOrganization(null)
-    onClose()
   }
   
   const createSlug = (name: string) => {
@@ -715,9 +791,9 @@ See you on the team!`
   }
   
   const tabs = [
-    { id: 'account' as SettingsTab, icon: User, label: 'Account' },
     { id: 'organization' as SettingsTab, icon: Building2, label: 'Organization' },
     { id: 'preferences' as SettingsTab, icon: Settings, label: 'Preferences' },
+    { id: 'logs' as SettingsTab, icon: FileText, label: 'Logs' },
     { id: 'about' as SettingsTab, icon: Info, label: 'About' },
   ]
 
@@ -770,59 +846,6 @@ See you on the team!`
           
           {/* Content area */}
           <div className="flex-1 overflow-y-auto p-6">
-            {activeTab === 'account' && (
-              <div className="space-y-6">
-                {user ? (
-                  <>
-                    <div className="flex items-center gap-4 p-4 bg-pdm-bg rounded-lg border border-pdm-border">
-                      {user.avatar_url ? (
-                        <>
-                          <img 
-                            src={user.avatar_url} 
-                            alt={user.full_name || user.email}
-                            className="w-16 h-16 rounded-full"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement
-                              target.style.display = 'none'
-                              target.nextElementSibling?.classList.remove('hidden')
-                            }}
-                          />
-                          <div className="w-16 h-16 rounded-full bg-pdm-accent flex items-center justify-center text-2xl text-white font-semibold hidden">
-                            {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="w-16 h-16 rounded-full bg-pdm-accent flex items-center justify-center text-2xl text-white font-semibold">
-                          {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-lg font-medium text-pdm-fg truncate">
-                          {user.full_name || 'No name'}
-                        </div>
-                        <div className="text-sm text-pdm-fg-muted truncate flex items-center gap-2">
-                          <Mail size={14} />
-                          {user.email}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <button
-                      onClick={handleSignOut}
-                      className="flex items-center gap-2 px-4 py-2 text-sm text-pdm-error hover:bg-pdm-error/10 rounded-lg transition-colors"
-                    >
-                      <LogOut size={16} />
-                      Sign Out
-                    </button>
-                  </>
-                ) : (
-                  <div className="text-center py-12 text-pdm-fg-muted">
-                    Not signed in
-                  </div>
-                )}
-              </div>
-            )}
-            
             {activeTab === 'organization' && (
               <div className="space-y-6">
                 {organization ? (
@@ -1095,12 +1118,12 @@ See you on the team!`
                                       }}
                                     />
                                     <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium hidden">
-                                      {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                                      {getInitials(orgUser.full_name || orgUser.email)}
                                     </div>
                                   </>
                                 ) : (
                                   <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium">
-                                    {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                                    {getInitials(orgUser.full_name || orgUser.email)}
                                   </div>
                                 )}
                                 <div className="flex-1 min-w-0">
@@ -1538,6 +1561,217 @@ See you on the team!`
                       </div>
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+            
+            {activeTab === 'logs' && (
+              <div className="space-y-4">
+                {/* Log Viewer Modal */}
+                {selectedLogFile && (
+                  <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4">
+                    <div className="bg-pdm-bg-light border border-pdm-border rounded-xl shadow-2xl w-[900px] max-w-[95vw] max-h-[85vh] flex flex-col overflow-hidden">
+                      {/* Header */}
+                      <div className="flex items-center gap-3 p-4 border-b border-pdm-border bg-pdm-sidebar">
+                        <button
+                          onClick={() => {
+                            setSelectedLogFile(null)
+                            setLogCopied(false)
+                          }}
+                          className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                        >
+                          <ChevronLeft size={18} className="text-pdm-fg-muted" />
+                        </button>
+                        <FileText size={18} className="text-pdm-fg-muted" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-pdm-fg truncate">{selectedLogFile.name}</div>
+                          <div className="text-xs text-pdm-fg-dim truncate">{selectedLogFile.path}</div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(selectedLogFile.content)
+                              setLogCopied(true)
+                              setTimeout(() => setLogCopied(false), 2000)
+                            } catch (err) {
+                              addToast('error', 'Failed to copy to clipboard')
+                            }
+                          }}
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-pdm-fg-muted hover:text-pdm-fg bg-pdm-bg border border-pdm-border rounded-lg hover:border-pdm-accent transition-colors"
+                          title="Copy log content"
+                        >
+                          {logCopied ? (
+                            <>
+                              <Check size={14} className="text-pdm-success" />
+                              <span className="text-pdm-success">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={14} />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedLogFile(null)
+                            setLogCopied(false)
+                          }}
+                          className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                        >
+                          <X size={18} className="text-pdm-fg-muted" />
+                        </button>
+                      </div>
+                      {/* Content */}
+                      <div className="flex-1 overflow-auto p-4 bg-pdm-bg">
+                        <pre className="text-xs text-pdm-fg-muted font-mono whitespace-pre-wrap break-all leading-relaxed">
+                          {selectedLogFile.content}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Header with actions */}
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-pdm-fg-dim">
+                    View and manage application logs for troubleshooting
+                  </p>
+                  <button
+                    onClick={async () => {
+                      await window.electronAPI?.openLogsDir()
+                    }}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-pdm-fg-muted hover:text-pdm-fg bg-pdm-bg border border-pdm-border rounded-lg hover:border-pdm-accent transition-colors"
+                  >
+                    <FolderOpen size={14} />
+                    Open Folder
+                  </button>
+                </div>
+                
+                {/* Log Files List */}
+                <div className="space-y-2">
+                  <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Session Logs</h3>
+                  
+                  {isLoadingLogs ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 size={24} className="text-pdm-fg-muted animate-spin" />
+                    </div>
+                  ) : logFiles.length === 0 ? (
+                    <div className="text-center py-8 text-pdm-fg-muted text-sm">
+                      No log files found
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {logFiles.map((file) => (
+                        <div
+                          key={file.path}
+                          className="group flex items-center gap-3 p-3 rounded-lg border border-pdm-border bg-pdm-bg hover:border-pdm-accent transition-colors"
+                        >
+                          <FileText size={18} className={`flex-shrink-0 ${file.isCurrentSession ? 'text-pdm-accent' : 'text-pdm-fg-muted'}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-pdm-fg truncate">{file.name}</span>
+                              {file.isCurrentSession && (
+                                <span className="px-1.5 py-0.5 text-[10px] font-medium bg-pdm-accent/20 text-pdm-accent rounded">
+                                  CURRENT
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 text-xs text-pdm-fg-dim mt-0.5">
+                              <span className="flex items-center gap-1">
+                                <Clock size={12} />
+                                {parseSessionDate(file.name) || formatLogDate(file.modifiedTime)}
+                              </span>
+                              <span>{formatFileSize(file.size)}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => viewLogFile(file)}
+                              disabled={isLoadingLogContent}
+                              className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                              title="View log"
+                            >
+                              {isLoadingLogContent ? (
+                                <Loader2 size={14} className="text-pdm-fg-muted animate-spin" />
+                              ) : (
+                                <Eye size={14} className="text-pdm-fg-muted" />
+                              )}
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await window.electronAPI?.openInExplorer(file.path)
+                              }}
+                              className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                              title="Show in Explorer"
+                            >
+                              <ExternalLink size={14} className="text-pdm-fg-muted" />
+                            </button>
+                            {!file.isCurrentSession && (
+                              <button
+                                onClick={async () => {
+                                  const result = await window.electronAPI?.deleteLogFile(file.path)
+                                  if (result?.success) {
+                                    loadLogFiles()
+                                  } else {
+                                    addToast('error', result?.error || 'Failed to delete log file')
+                                  }
+                                }}
+                                className="p-1.5 hover:bg-pdm-error/20 rounded transition-colors"
+                                title="Delete log"
+                              >
+                                <Trash2 size={14} className="text-pdm-fg-muted hover:text-pdm-error" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                
+                {/* Export Current Session */}
+                <div className="space-y-2 pt-2">
+                  <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Export</h3>
+                  <button
+                    onClick={async () => {
+                      setIsExportingLogs(true)
+                      try {
+                        const result = await window.electronAPI?.exportLogs()
+                        if (result?.success) {
+                          addToast('success', 'Logs exported successfully')
+                        } else if (!result?.canceled) {
+                          addToast('error', result?.error || 'Failed to export logs')
+                        }
+                      } catch (err) {
+                        addToast('error', 'Failed to export logs')
+                      } finally {
+                        setIsExportingLogs(false)
+                      }
+                    }}
+                    disabled={isExportingLogs}
+                    className="w-full flex items-center gap-3 p-4 rounded-lg border border-pdm-border bg-pdm-bg hover:border-pdm-accent transition-colors cursor-pointer text-left disabled:opacity-50"
+                  >
+                    {isExportingLogs ? (
+                      <Loader2 size={20} className="text-pdm-fg-muted animate-spin" />
+                    ) : (
+                      <Download size={20} className="text-pdm-fg-muted" />
+                    )}
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-pdm-fg">Export Current Session</div>
+                      <div className="text-xs text-pdm-fg-dim">
+                        Save the current session's logs to a file for sharing
+                      </div>
+                    </div>
+                  </button>
+                </div>
+                
+                {/* Info */}
+                <div className="p-3 bg-pdm-highlight/50 rounded-lg border border-pdm-border text-xs text-pdm-fg-dim">
+                  <p>
+                    <strong>Tip:</strong> If BluePDM crashes, you can still access your logs by clicking "Open Folder" 
+                    to navigate to the logs directory, even after restarting the app.
+                  </p>
                 </div>
               </div>
             )}
@@ -2002,7 +2236,7 @@ See you on the team!`
                   />
                 ) : (
                   <div className="w-12 h-12 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-lg font-medium">
-                    {(removingUser.full_name || removingUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                    {getInitials(removingUser.full_name || removingUser.email)}
                   </div>
                 )}
                 <div>
@@ -2176,7 +2410,7 @@ See you on the team!`
                   />
                 ) : (
                   <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium">
-                    {(editingVaultAccessUser.full_name || editingVaultAccessUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                    {getInitials(editingVaultAccessUser.full_name || editingVaultAccessUser.email)}
                   </div>
                 )}
                 <div className="flex-1 min-w-0">

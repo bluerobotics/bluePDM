@@ -38,7 +38,10 @@ import {
   MoveRight,
   Pencil,
   Check,
-  X
+  X,
+  ZoomIn,
+  ZoomOut,
+  RotateCw
 } from 'lucide-react'
 
 // Component to load OS icon for files
@@ -202,6 +205,12 @@ export function DetailsPanel() {
   // CAD thumbnail preview state
   const [cadThumbnail, setCadThumbnail] = useState<string | null>(null)
   const [cadThumbnailLoading, setCadThumbnailLoading] = useState(false)
+  const [cadZoom, setCadZoom] = useState(100) // Zoom percentage (100 = fit to pane)
+  
+  // Reset zoom when file changes
+  useEffect(() => {
+    setCadZoom(100)
+  }, [file?.path])
 
   // Check if eDrawings is installed (once on mount)
   useEffect(() => {
@@ -946,27 +955,71 @@ export function DetailsPanel() {
                         <Loader2 className="animate-spin text-pdm-accent" size={32} />
                       </div>
                     ) : cadThumbnail ? (
-                      // Show extracted thumbnail
-                      <div className="flex-1 flex flex-col">
-                        <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-800 to-gray-900 rounded overflow-hidden">
+                      // Show extracted thumbnail with zoom controls
+                      <div className="flex-1 flex flex-col min-h-0">
+                        <div 
+                          className="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-800 to-gray-900 rounded overflow-auto relative"
+                          style={{ minHeight: 0 }}
+                          onWheel={(e) => {
+                            if (e.ctrlKey || e.metaKey) {
+                              e.preventDefault()
+                              const delta = e.deltaY > 0 ? -10 : 10
+                              setCadZoom(prev => Math.max(25, Math.min(400, prev + delta)))
+                            }
+                          }}
+                        >
                           <img 
                             src={cadThumbnail} 
                             alt={file.name}
-                            className="max-w-full max-h-full object-contain"
+                            className="object-contain transition-transform duration-150"
+                            style={{ 
+                              width: cadZoom === 100 ? '100%' : 'auto',
+                              height: cadZoom === 100 ? '100%' : 'auto',
+                              maxWidth: cadZoom === 100 ? '100%' : 'none',
+                              maxHeight: cadZoom === 100 ? '100%' : 'none',
+                              transform: cadZoom !== 100 ? `scale(${cadZoom / 100})` : undefined,
+                              transformOrigin: 'center center'
+                            }}
                           />
                         </div>
-                        {eDrawingsStatus.installed && (
-                          <div className="flex justify-center py-2">
+                        {/* Zoom controls */}
+                        <div className="flex items-center justify-center gap-2 py-2 border-t border-pdm-border">
+                          <button
+                            onClick={() => setCadZoom(prev => Math.max(25, prev - 25))}
+                            className="btn btn-sm btn-ghost p-1"
+                            title="Zoom out"
+                            disabled={cadZoom <= 25}
+                          >
+                            <ZoomOut size={16} />
+                          </button>
+                          <span className="text-xs text-pdm-fg-muted w-12 text-center">{cadZoom}%</span>
+                          <button
+                            onClick={() => setCadZoom(prev => Math.min(400, prev + 25))}
+                            className="btn btn-sm btn-ghost p-1"
+                            title="Zoom in"
+                            disabled={cadZoom >= 400}
+                          >
+                            <ZoomIn size={16} />
+                          </button>
+                          <button
+                            onClick={() => setCadZoom(100)}
+                            className="btn btn-sm btn-ghost p-1 ml-2"
+                            title="Reset to fit"
+                            disabled={cadZoom === 100}
+                          >
+                            <RotateCw size={14} />
+                          </button>
+                          {eDrawingsStatus.installed && (
                             <button
                               onClick={handleOpenInEDrawings}
-                              className="btn btn-sm btn-secondary gap-1"
+                              className="btn btn-sm btn-secondary gap-1 ml-2"
                               title="Open in full eDrawings for 3D interaction"
                             >
                               <ExternalLink size={12} />
-                              Open in eDrawings
+                              eDrawings
                             </button>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
                     ) : eDrawingsStatus.installed ? (
                       // No thumbnail but eDrawings available

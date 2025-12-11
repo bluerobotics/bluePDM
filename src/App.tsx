@@ -260,7 +260,7 @@ function App() {
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
   const loadFiles = useCallback(async (silent: boolean = false) => {
-    console.log('[LoadFiles] Called with:', { vaultPath, currentVaultId, silent })
+    window.electronAPI?.log('info', '[LoadFiles] Called with', { vaultPath, currentVaultId, silent })
     if (!window.electronAPI || !vaultPath) return
     
     if (!silent) {
@@ -290,19 +290,46 @@ function App() {
       // Process local files
       if (!localResult.success || !localResult.files) {
         const errorMsg = localResult.error || 'Failed to load files'
-        console.error('[LoadFiles] Local file scan failed:', errorMsg, { vaultPath, hasWorkingDir: !!localResult })
+        window.electronAPI?.log('error', '[LoadFiles] Local file scan failed', { errorMsg, vaultPath, hasWorkingDir: !!localResult })
         setStatusMessage(errorMsg)
         return
       }
       
-      console.log('[LoadFiles] Scanned', localResult.files.length, 'local items')
-      console.log('[LoadFiles] Server query params:', { 
+      window.electronAPI?.log('info', '[LoadFiles] Scanned local items', { count: localResult.files.length })
+      window.electronAPI?.log('info', '[LoadFiles] Server query params', { 
         orgId: organization?.id, 
         vaultId: currentVaultId,
         shouldFetchServer,
         serverFileCount: serverResult.files?.length || 0,
         serverError: serverResult.error?.message 
       })
+      
+      // Debug: Log first few paths for comparison (helps debug path matching issues)
+      if (serverResult.files?.length > 0) {
+        const sampleServer = serverResult.files.slice(0, 5).map((f: any) => f.file_path)
+        const sampleLocal = localResult.files.filter((f: any) => !f.isDirectory).slice(0, 5).map((f: any) => f.relativePath)
+        window.electronAPI?.log('info', '[LoadFiles] Sample SERVER paths', sampleServer)
+        window.electronAPI?.log('info', '[LoadFiles] Sample LOCAL paths', sampleLocal)
+        
+        // Try to find a matching file by name and compare full paths
+        const firstServerFile = serverResult.files[0]
+        if (firstServerFile) {
+          const serverFileName = firstServerFile.file_name || firstServerFile.file_path.split('/').pop()
+          const matchingLocal = localResult.files.find((f: any) => f.name === serverFileName)
+          if (matchingLocal) {
+            window.electronAPI?.log('info', '[LoadFiles] PATH COMPARISON', {
+              fileName: serverFileName,
+              serverPath: firstServerFile.file_path,
+              localPath: matchingLocal.relativePath,
+              serverLower: firstServerFile.file_path.toLowerCase(),
+              localLower: matchingLocal.relativePath.toLowerCase(),
+              pathsEqual: firstServerFile.file_path.toLowerCase() === matchingLocal.relativePath.toLowerCase()
+            })
+          } else {
+            window.electronAPI?.log('warn', '[LoadFiles] Could not find local file with name', { serverFileName })
+          }
+        }
+      }
       
       // Map hash to localHash for comparison
       let localFiles = localResult.files.map((f: any) => ({
@@ -321,14 +348,19 @@ function App() {
         const pdmError = serverResult.error
         
         if (pdmError) {
-          console.warn('Failed to fetch PDM data:', pdmError)
+          window.electronAPI?.log('warn', '[LoadFiles] Failed to fetch PDM data', { error: pdmError })
         } else if (pdmFiles && Array.isArray(pdmFiles)) {
           if (!silent) {
             setStatusMessage(`Merging ${pdmFiles.length} files...`)
           }
           
-          // Create a map of pdm data by file path
-          const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path, f]))
+          // Create a map of pdm data by file path (case-insensitive for Windows compatibility)
+          // Windows filesystems are case-insensitive, so we normalize to lowercase for matching
+          const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path.toLowerCase(), f]))
+          
+          // Debug: verify pdmMap keys
+          const pdmMapKeys = Array.from(pdmMap.keys()).slice(0, 3)
+          window.electronAPI?.log('info', '[LoadFiles] pdmMap sample keys (lowercase)', pdmMapKeys)
           
           // Store server files for tracking deletions
           const serverFilesList = pdmFiles.map((f: any) => ({
@@ -340,8 +372,8 @@ function App() {
           }))
           setServerFiles(serverFilesList)
           
-          // Create set of local file paths for deletion detection
-          const localPathSet = new Set(localFiles.map(f => f.relativePath))
+          // Create set of local file paths for deletion detection (case-insensitive)
+          const localPathSet = new Set(localFiles.map(f => f.relativePath.toLowerCase()))
           
           // Create a map of existing files' localActiveVersion to preserve rollback state
           // Use getState() to get current files at execution time (not stale closure value)
@@ -353,39 +385,58 @@ function App() {
             }
           }
           
-          // Create a map of server files keyed by content hash for move detection
+          // Create a map of files checked out by me, keyed by content hash for move detection
           // This allows us to detect moved files (same content, different path) and preserve their pdmData
-          // We prioritize checked-out-by-me files, but also track all synced files for move detection
-          const serverFilesByHash = new Map<string, any>()
+          // IMPORTANT: Only track checked-out-by-me files - if a file isn't checked out by me,
+          // I couldn't have moved it, so matching hashes should be treated as new files, not moves.
           const checkedOutByMeByHash = new Map<string, any>()
           for (const pdmFile of pdmFiles as any[]) {
-            if (pdmFile.content_hash) {
-              // Always track by hash for move detection (first one wins if duplicates)
-              if (!serverFilesByHash.has(pdmFile.content_hash)) {
-                serverFilesByHash.set(pdmFile.content_hash, pdmFile)
-              }
-              // Also track checked-out-by-me files (these take priority)
-              if (pdmFile.checked_out_by === user?.id) {
-                checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
-              }
+            if (pdmFile.content_hash && pdmFile.checked_out_by === user?.id) {
+              checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
             }
           }
           
           // Merge PDM data into local files and compute diff status
+          let matchedCount = 0
+          let unmatchedCount = 0
+          const unmatchedSamples: string[] = []
+          
           localFiles = localFiles.map(localFile => {
             if (localFile.isDirectory) return localFile
             
-            let pdmData = pdmMap.get(localFile.relativePath)
+            // Use lowercase for case-insensitive matching (Windows compatibility)
+            const lookupKey = localFile.relativePath.toLowerCase()
+            let pdmData = pdmMap.get(lookupKey)
             let isMovedFile = false
             
-            // If no path match but file has same hash as a server file,
-            // this is likely a moved file - preserve the pdmData
-            // Prioritize checked-out-by-me files (allows editing), fall back to any server file
+            // Debug: track match/unmatch counts
+            if (pdmData) {
+              matchedCount++
+            } else {
+              unmatchedCount++
+              if (unmatchedSamples.length < 5) {
+                unmatchedSamples.push(lookupKey)
+              }
+            }
+            
+            // If no path match but file has same hash as a file CHECKED OUT BY ME,
+            // this MIGHT be a moved file - but only if the original path no longer exists locally.
+            // If the original path still has a file, then this is a COPY, not a move.
+            // IMPORTANT: Only detect moves for files checked out by me - otherwise a new file
+            // with the same content as some random server file would be incorrectly detected as moved.
             if (!pdmData && localFile.localHash) {
-              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash) || serverFilesByHash.get(localFile.localHash)
+              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash)
               if (movedFromFile) {
-                pdmData = movedFromFile
-                isMovedFile = true
+                // Check if the original file path still exists locally (case-insensitive)
+                // If it does, this is a copy/duplicate, not a move
+                const originalPathStillExists = localPathSet.has(movedFromFile.file_path.toLowerCase())
+                
+                if (!originalPathStillExists) {
+                  // Original location is empty - this IS a move
+                  pdmData = movedFromFile
+                  isMovedFile = true
+                }
+                // If originalPathStillExists, leave pdmData as undefined - this is a new file (copy)
               }
             }
             
@@ -435,6 +486,14 @@ function App() {
             }
           })
           
+          // Debug: Log match statistics
+          window.electronAPI?.log('info', '[LoadFiles] MATCH STATS', {
+            matched: matchedCount,
+            unmatched: unmatchedCount,
+            serverTotal: pdmFiles.length,
+            unmatchedSamples
+          })
+          
           // Add cloud-only files (exist on server but not locally) as "cloud" or "deleted" entries
           // "cloud" = available for download (muted)
           // "deleted" = was checked out by me but removed locally (red) - indicates moved/deleted file
@@ -447,7 +506,7 @@ function App() {
           )
           
           for (const pdmFile of pdmFiles as any[]) {
-            if (!localPathSet.has(pdmFile.file_path)) {
+            if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
               // Check if this file was MOVED (same content exists at a different location locally)
               const isCheckedOutByMe = pdmFile.checked_out_by === user?.id
               const wasMoved = pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
@@ -465,7 +524,7 @@ function App() {
               let currentPath = ''
               for (let i = 0; i < pathParts.length - 1; i++) {
                 currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
-                if (!localPathSet.has(currentPath) && !cloudFolders.has(currentPath)) {
+                if (!localPathSet.has(currentPath.toLowerCase()) && !cloudFolders.has(currentPath)) {
                   cloudFolders.add(currentPath)
                 }
               }
@@ -500,6 +559,18 @@ function App() {
               diffStatus: 'cloud'
             })
           }
+          
+          // Debug: Log merge summary
+          const syncedCount = localFiles.filter(f => !f.isDirectory && f.isSynced).length
+          const addedCount = localFiles.filter(f => !f.isDirectory && f.diffStatus === 'added').length
+          const cloudCount = localFiles.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length
+          window.electronAPI?.log('info', '[LoadFiles] Merge summary', {
+            serverFiles: pdmFiles.length,
+            localFilesAfterMerge: localFiles.filter(f => !f.isDirectory).length,
+            synced: syncedCount,
+            added: addedCount,
+            cloudOnly: cloudCount,
+          })
         }
       } else {
         // Offline mode or no org - local files are "added" unless ignored

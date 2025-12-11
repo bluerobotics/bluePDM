@@ -16,6 +16,7 @@ interface FileReadResult {
 interface FileWriteResult {
   success: boolean
   error?: string
+  size?: number
 }
 
 interface HashResult {
@@ -53,6 +54,15 @@ interface FileSelectResult {
   error?: string
 }
 
+interface FolderSelectResult {
+  success: boolean
+  folderName?: string
+  folderPath?: string
+  files?: { name: string; path: string; relativePath: string; extension: string; size: number; modifiedTime: string }[]
+  canceled?: boolean
+  error?: string
+}
+
 interface SaveDialogResult {
   success: boolean
   path?: string
@@ -77,6 +87,11 @@ declare global {
       getLogPath: () => Promise<string | null>
       exportLogs: () => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
       log: (level: string, message: string, data?: unknown) => void
+      getLogsDir: () => Promise<string>
+      listLogFiles: () => Promise<{ success: boolean; files?: Array<{ name: string; path: string; size: number; modifiedTime: string; isCurrentSession: boolean }>; error?: string }>
+      readLogFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
+      openLogsDir: () => Promise<{ success: boolean; error?: string }>
+      deleteLogFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
       
       // Window controls
       minimize: () => void
@@ -94,6 +109,7 @@ declare global {
       // File system operations
       readFile: (path: string) => Promise<FileReadResult>
       writeFile: (path: string, base64Data: string) => Promise<FileWriteResult>
+      downloadUrl: (url: string, destPath: string) => Promise<FileWriteResult>
       fileExists: (path: string) => Promise<boolean>
       getFileHash: (path: string) => Promise<HashResult>
       listWorkingFiles: () => Promise<FilesListResult>
@@ -109,9 +125,11 @@ declare global {
       setReadonly: (path: string, readonly: boolean) => Promise<OperationResult>
       isReadonly: (path: string) => Promise<{ success: boolean; readonly?: boolean; error?: string }>
       startDrag: (filePaths: string[]) => void
+      onDownloadProgress: (callback: (progress: { loaded: number; total: number; speed: number }) => void) => () => void
       
       // Dialogs
       selectFiles: () => Promise<FileSelectResult>
+      selectFolder: () => Promise<FolderSelectResult>
       showSaveDialog: (defaultName: string) => Promise<SaveDialogResult>
       
       // eDrawings preview

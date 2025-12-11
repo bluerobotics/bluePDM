@@ -391,7 +391,7 @@ input::placeholder {
 
 /* Inline action buttons */
 .inline-actions {
-  opacity: 0.3;
+  opacity: 0.5;
   transition: opacity 150ms ease-in-out;
 }
 
@@ -545,14 +545,7 @@ input::placeholder {
 }
 
 /* Diff status highlighting */
-.diff-added {
-  background: rgba(74, 222, 128, 0.15) !important;
-  border-left: 3px solid var(--pdm-success) !important;
-}
-
-.diff-added:hover {
-  background: rgba(74, 222, 128, 0.25) !important;
-}
+/* Note: .diff-added (local-only files) intentionally has no highlight - green is reserved for server additions */
 
 .diff-modified {
   background: rgba(251, 191, 36, 0.15) !important;
@@ -617,9 +610,7 @@ tr.selected.diff-cloud {
 }
 
 /* Sidebar diff highlighting */
-.sidebar-diff-added {
-  background: rgba(74, 222, 128, 0.1);
-}
+/* Note: .sidebar-diff-added intentionally has no highlight - green is reserved for server additions */
 
 .sidebar-diff-modified {
   background: rgba(251, 191, 36, 0.1);

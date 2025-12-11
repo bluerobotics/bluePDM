@@ -2,6 +2,32 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.5.0] - 2025-12-11
+
+### Added
+- **Trash View** in sidebar:
+  - View all soft-deleted files from your vaults
+  - Restore deleted files back to active status
+  - Permanently delete files (removes from database and storage)
+  - Empty trash to permanently delete all trashed files at once
+  - Search and filter deleted files
+  - Shows who deleted each file and when
+  - Filter by vault when multiple vaults connected
+- **New logging system**: Comprehensive session logs with timestamps, log levels, and structured data for easier debugging
+- **Drag & drop from external apps**: Drag files/folders from Windows Explorer directly into BluePDM to import them
+
+### Improved
+- **Major performance improvements** for all file operations (check-in, check-out, download, upload)
+- **First app boot experience**: Faster initial load, better vault validation, improved auth flow
+- **Thumbnail resizing**: Fixed thumbnails not updating properly when changing icon/row sizes
+- **Drag & drop reliability**: Fixed various drag operation bugs and edge cases
+
+### Fixed
+- **First check-in files not persisting after restart**: Files that were previously deleted from the server would appear to upload successfully but show as "local only" after app restart. Now re-uploading previously deleted files properly clears the soft-delete flag (`deleted_at`), restoring them to active status.
+- **Case-sensitive path matching on Windows**: File paths are now matched case-insensitively when syncing with the server, fixing issues where files wouldn't be recognized as synced due to case differences between the filesystem and database.
+- **Drag & drop bugs**: Fixed files not dropping correctly in certain scenarios
+- **Thumbnail sizing issues**: Thumbnails now properly scale with slider adjustments
+
 ## [1.4.0] - 2025-12-10
 
 ### Added

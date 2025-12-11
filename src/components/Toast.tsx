@@ -3,7 +3,7 @@ import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2,
 import { usePDMStore, ToastMessage, ToastType } from '../stores/pdmStore'
 
 export function Toast() {
-  const { toasts, removeToast, requestCancelProgressToast, dismissUpdateToast } = usePDMStore()
+  const { toasts, removeToast, dismissUpdateToast } = usePDMStore()
   
   // Separate different toast types
   const updateToasts = toasts.filter(t => t.type === 'update')
@@ -24,8 +24,7 @@ export function Toast() {
       {progressToasts.map(toast => (
         <ProgressToastItem 
           key={toast.id} 
-          toast={toast} 
-          onCancel={() => requestCancelProgressToast(toast.id)}
+          toast={toast}
         />
       ))}
       {/* Regular toasts below */}
@@ -166,98 +165,34 @@ function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss:
   )
 }
 
-function ProgressToastItem({ toast, onCancel }: { toast: ToastMessage; onCancel: () => void }) {
-  const [showCancelDialog, setShowCancelDialog] = useState(false)
+function ProgressToastItem({ toast }: { toast: ToastMessage }) {
   const progress = toast.progress
   
-  const handleCancelClick = () => {
-    setShowCancelDialog(true)
-  }
-  
-  const handleConfirmCancel = () => {
-    onCancel()
-    setShowCancelDialog(false)
-  }
-  
   return (
-    <>
-      <div className="flex flex-col gap-2 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm bg-pdm-panel/95 border-pdm-border min-w-[300px]">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            {progress?.cancelRequested ? (
-              <span className="text-xs text-pdm-warning">Stopping...</span>
-            ) : (
-              <>
-                <Loader2 size={14} className="text-pdm-accent animate-spin" />
-                <span className="text-sm text-pdm-fg">{toast.message}</span>
-              </>
-            )}
+    <div className="flex flex-col gap-2 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm bg-pdm-panel/95 border-pdm-border min-w-[300px]">
+      <div className="flex items-center gap-2">
+        <Loader2 size={14} className="text-pdm-accent animate-spin" />
+        <span className="text-sm text-pdm-fg">{toast.message}</span>
+      </div>
+      {progress && (
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-2 bg-pdm-bg-dark rounded-full overflow-hidden">
+            <div 
+              className="h-full transition-all duration-200 ease-out bg-pdm-accent"
+              style={{ width: `${progress.percent}%` }}
+            />
           </div>
-          {!progress?.cancelRequested && (
-            <button
-              onClick={handleCancelClick}
-              className="opacity-60 hover:opacity-100 transition-opacity text-pdm-fg-muted hover:text-pdm-error"
-              title="Stop"
-            >
-              <X size={14} />
-            </button>
+          <span className="text-xs text-pdm-fg-muted tabular-nums whitespace-nowrap">
+            {progress.label || `${progress.current}/${progress.total}`}
+          </span>
+          {progress.speed && (
+            <span className="text-xs text-pdm-fg-muted whitespace-nowrap">
+              {progress.speed}
+            </span>
           )}
         </div>
-        {progress && (
-          <div className="flex items-center gap-2">
-            <div className="flex-1 h-2 bg-pdm-bg-dark rounded-full overflow-hidden">
-              <div 
-                className={`h-full transition-all duration-200 ease-out ${progress.cancelRequested ? 'bg-pdm-warning' : 'bg-pdm-accent'}`}
-                style={{ width: `${progress.percent}%` }}
-              />
-            </div>
-            <span className="text-xs text-pdm-fg-muted tabular-nums whitespace-nowrap">
-              {progress.current}/{progress.total}
-            </span>
-            {progress.speed && !progress.cancelRequested && (
-              <span className="text-xs text-pdm-fg-muted whitespace-nowrap">
-                {progress.speed}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-      
-      {/* Cancel Confirmation Dialog */}
-      {showCancelDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
-          <div className="bg-pdm-panel border border-pdm-border rounded-lg shadow-xl max-w-sm w-full mx-4">
-            <div className="p-4 border-b border-pdm-border flex items-center gap-3">
-              <AlertTriangle size={20} className="text-pdm-warning" />
-              <h3 className="font-semibold">Stop Download?</h3>
-            </div>
-            <div className="p-4">
-              <p className="text-sm text-pdm-fg-dim mb-4">
-                {progress?.current || 0} of {progress?.total || 0} files have been downloaded.
-                Already downloaded files will be kept.
-              </p>
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={handleConfirmCancel}
-                  className="btn btn-secondary w-full justify-start gap-2"
-                >
-                  <X size={16} className="text-pdm-warning" />
-                  Stop Download
-                </button>
-              </div>
-            </div>
-            <div className="p-4 border-t border-pdm-border flex justify-end">
-              <button
-                onClick={() => setShowCancelDialog(false)}
-                className="btn btn-ghost"
-              >
-                Continue Downloading
-              </button>
-            </div>
-          </div>
-        </div>
       )}
-    </>
+    </div>
   )
 }
 

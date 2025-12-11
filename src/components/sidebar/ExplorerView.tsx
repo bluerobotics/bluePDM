@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { 
   FolderOpen, 
   ChevronRight, 
@@ -25,12 +25,17 @@ import {
   Unlink,
   FolderOpen as FolderOpenIcon,
   AlertTriangle,
-  Check
+  Check,
+  HardDrive,
+  Info,
+  RefreshCw,
+  Plus,
+  X
 } from 'lucide-react'
-import { checkoutFile, checkinFile } from '../../lib/supabase'
-import { downloadFile } from '../../lib/storage'
+import { checkoutFile, checkinFile, syncFile } from '../../lib/supabase'
+import { getDownloadUrl } from '../../lib/storage'
 import { usePDMStore, LocalFile, ConnectedVault } from '../../stores/pdmStore'
-import { getFileIconType } from '../../types/pdm'
+import { getFileIconType, getInitials } from '../../types/pdm'
 import { FileContextMenu } from '../FileContextMenu'
 
 // Component to load OS icon for files in explorer view
@@ -184,6 +189,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [vaultContextMenu, setVaultContextMenu] = useState<{ x: number; y: number; vault: ConnectedVault } | null>(null)
   const [disconnectingVault, setDisconnectingVault] = useState<ConnectedVault | null>(null)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [showVaultProperties, setShowVaultProperties] = useState<ConnectedVault | null>(null)
   const [clipboard, setClipboard] = useState<{ files: LocalFile[]; operation: 'copy' | 'cut' } | null>(null)
   const [lastClickTime, setLastClickTime] = useState<number>(0)
   const [lastClickPath, setLastClickPath] = useState<string | null>(null)
@@ -195,7 +201,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [dragOverPinIndex, setDragOverPinIndex] = useState<number | null>(null)
   const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
-  const [draggedFiles, setDraggedFiles] = useState<LocalFile[]>([])
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false)
+  const [isCheckingInAll, setIsCheckingInAll] = useState(false)
+  // State for re-render triggers, ref for synchronous access during drag events
+  const [, setDraggedFiles] = useState<LocalFile[]>([])
+  const draggedFilesRef = useRef<LocalFile[]>([])
   
   // Get platform for UI text
   useEffect(() => {
@@ -494,14 +504,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
 
   const tree = buildTree()
 
-  // Check if all files in a folder are synced
+  // Check if all files in a folder are truly synced (not just content-matched)
   const isFolderSynced = (folderPath: string): boolean => {
     const folderFiles = files.filter(f => 
       !f.isDirectory && 
       f.relativePath.startsWith(folderPath + '/')
     )
     if (folderFiles.length === 0) return false
-    return folderFiles.every(f => !!f.pdmData)
+    // Only consider synced if ALL files have pdmData AND none are marked as 'added'
+    return folderFiles.every(f => !!f.pdmData && f.diffStatus !== 'added')
   }
 
   // Get folder checkout status: 'mine' | 'others' | 'both' | null
@@ -551,51 +562,353 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     addProcessingFolder(file.relativePath)
     const toastId = `download-${Date.now()}`
-    addProgressToast(toastId, `Downloading ${file.name}...`, filesToDownload.length)
+    const totalBytes = filesToDownload.reduce((sum, f) => sum + (f.pdmData?.file_size || 0), 0)
+    addProgressToast(toastId, `Downloading ${file.name}...`, totalBytes)
     
     let succeeded = 0
-    for (let i = 0; i < filesToDownload.length; i++) {
-      if (isProgressToastCancelled(toastId)) break
+    const startTime = Date.now()
+    
+    // Progress tracking
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
       
-      const f = filesToDownload[i]
-      if (!f.pdmData?.content_hash) continue
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
+    
+    // Check for cancellation before starting
+    if (isProgressToastCancelled(toastId)) {
+      removeToast(toastId)
+      removeProcessingFolder(file.relativePath)
+      return
+    }
+    
+    const results = await Promise.all(filesToDownload.map(async (f) => {
+      if (!f.pdmData?.content_hash) return { success: false, size: 0 }
+      
+      const fullPath = buildFullPath(vaultPath, f.relativePath)
+      const parentDir = getParentDir(fullPath)
+      await window.electronAPI?.createFolder(parentDir)
+      
+      const fileSize = f.pdmData?.file_size || 0
       
       try {
-        const { data, error } = await downloadFile(organization.id, f.pdmData.content_hash)
-        if (!error && data) {
-          const fullPath = buildFullPath(vaultPath, f.relativePath)
-          const parentDir = getParentDir(fullPath)
-          await window.electronAPI?.createFolder(parentDir)
-          
-          const arrayBuffer = await data.arrayBuffer()
-          const bytes = new Uint8Array(arrayBuffer)
-          let binary = ''
-          const chunkSize = 8192
-          for (let j = 0; j < bytes.length; j += chunkSize) {
-            const chunk = bytes.subarray(j, Math.min(j + chunkSize, bytes.length))
-            binary += String.fromCharCode.apply(null, Array.from(chunk))
-          }
-          const base64 = btoa(binary)
-          
-          const result = await window.electronAPI?.writeFile(fullPath, base64)
-          if (result?.success) {
-            await window.electronAPI?.setReadonly(fullPath, true)
-            succeeded++
-          }
+        const { url, error: urlError } = await getDownloadUrl(organization.id, f.pdmData.content_hash)
+        if (urlError || !url) {
+          completedBytes += fileSize
+          updateProgress()
+          return { success: false, size: fileSize }
+        }
+        
+        const result = await window.electronAPI?.downloadUrl(url, fullPath)
+        completedBytes += fileSize
+        updateProgress()
+        
+        if (result?.success) {
+          await window.electronAPI?.setReadonly(fullPath, true)
+          return { success: true, size: fileSize }
         }
       } catch (err) {
         console.error('Download error:', err)
+        completedBytes += fileSize
+        updateProgress()
       }
-      
-      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToDownload.length) * 100))
-    }
+      return { success: false, size: 0 }
+    }))
+    
+    succeeded = results.filter(r => r.success).length
     
     removeToast(toastId)
     removeProcessingFolder(file.relativePath)
     
     if (succeeded > 0) {
-      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
+      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
       onRefresh?.(true)
+    }
+  }
+  
+  // Download all cloud files in the vault
+  const handleDownloadAllCloudFiles = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!organization || !vaultPath || isDownloadingAll) return
+    
+    // Get all cloud-only files
+    const cloudFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'cloud')
+    
+    if (cloudFiles.length === 0) {
+      addToast('info', 'No cloud files to download')
+      return
+    }
+    
+    setIsDownloadingAll(true)
+    
+    // Collect all unique parent folders of cloud files to show spinners
+    const foldersToProcess = new Set<string>()
+    for (const f of cloudFiles) {
+      // Add the file's path itself
+      foldersToProcess.add(f.relativePath)
+      // Add all parent folders
+      const parts = f.relativePath.split('/')
+      for (let i = 1; i < parts.length; i++) {
+        foldersToProcess.add(parts.slice(0, i).join('/'))
+      }
+    }
+    // Add all folders to processing to show spinners
+    foldersToProcess.forEach(p => addProcessingFolder(p))
+    
+    const toastId = `download-all-${Date.now()}`
+    const totalBytes = cloudFiles.reduce((sum, f) => sum + (f.pdmData?.file_size || 0), 0)
+    addProgressToast(toastId, `Downloading ${cloudFiles.length} cloud files...`, totalBytes)
+    
+    let succeeded = 0
+    const startTime = Date.now()
+    
+    // Progress tracking
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
+    
+    // Check for cancellation before starting
+    if (isProgressToastCancelled(toastId)) {
+      removeToast(toastId)
+      foldersToProcess.forEach(p => removeProcessingFolder(p))
+      setIsDownloadingAll(false)
+      return
+    }
+    
+    const results = await Promise.all(cloudFiles.map(async (f) => {
+      if (!f.pdmData?.content_hash) return { success: false, size: 0 }
+      
+      const fullPath = buildFullPath(vaultPath, f.relativePath)
+      const parentDir = getParentDir(fullPath)
+      await window.electronAPI?.createFolder(parentDir)
+      
+      const fileSize = f.pdmData?.file_size || 0
+      
+      try {
+        const { url, error: urlError } = await getDownloadUrl(organization.id, f.pdmData.content_hash)
+        if (urlError || !url) {
+          completedBytes += fileSize
+          updateProgress()
+          return { success: false, size: fileSize }
+        }
+        
+        const result = await window.electronAPI?.downloadUrl(url, fullPath)
+        completedBytes += fileSize
+        updateProgress()
+        
+        if (result?.success) {
+          await window.electronAPI?.setReadonly(fullPath, true)
+          return { success: true, size: fileSize }
+        }
+      } catch (err) {
+        console.error('Download error:', err)
+        completedBytes += fileSize
+        updateProgress()
+      }
+      return { success: false, size: 0 }
+    }))
+    
+    succeeded = results.filter(r => r.success).length
+    
+    removeToast(toastId)
+    // Remove all folder spinners
+    foldersToProcess.forEach(p => removeProcessingFolder(p))
+    setIsDownloadingAll(false)
+    
+    if (succeeded > 0) {
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
+      addToast('success', `Downloaded ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
+      onRefresh?.(true)
+    }
+  }
+
+  // First check in all local-only files in the vault
+  const handleFirstCheckinAllLocal = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!user || !organization || !activeVaultId || isCheckingInAll) return
+    
+    // Get all local-only files
+    const localOnlyFiles = files.filter(f => !f.isDirectory && (!f.pdmData || f.diffStatus === 'added'))
+    
+    if (localOnlyFiles.length === 0) {
+      addToast('info', 'No local files to check in')
+      return
+    }
+    
+    setIsCheckingInAll(true)
+    
+    // Collect all unique parent folders to show spinners
+    const foldersToProcess = new Set<string>()
+    for (const f of localOnlyFiles) {
+      foldersToProcess.add(f.relativePath)
+      const parts = f.relativePath.split('/')
+      for (let i = 1; i < parts.length; i++) {
+        foldersToProcess.add(parts.slice(0, i).join('/'))
+      }
+    }
+    foldersToProcess.forEach(p => addProcessingFolder(p))
+    
+    const toastId = `first-checkin-all-${Date.now()}`
+    const total = localOnlyFiles.length
+    const totalBytes = localOnlyFiles.reduce((sum, f) => sum + f.size, 0)
+    const startTime = Date.now()
+    addProgressToast(toastId, `Uploading ${total} file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    // Progress tracking
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeedLocal = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytesLocal = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgressLocal = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytesLocal(completedBytes)}/${formatBytesLocal(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeedLocal(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
+    
+    // Check for cancellation before starting
+    if (isProgressToastCancelled(toastId)) {
+      removeToast(toastId)
+      foldersToProcess.forEach(p => removeProcessingFolder(p))
+      setIsCheckingInAll(false)
+      return
+    }
+    
+    const results = await Promise.all(localOnlyFiles.map(async (f) => {
+      try {
+        const readResult = await window.electronAPI?.readFile(f.path)
+        if (readResult?.success && readResult.data && readResult.hash) {
+          const { error, file: syncedFile } = await syncFile(
+            organization.id,
+            activeVaultId,
+            user.id,
+            f.relativePath,
+            f.name,
+            f.extension,
+            f.size,
+            readResult.hash,
+            readResult.data
+          )
+          if (!error && syncedFile) {
+            await window.electronAPI?.setReadonly(f.path, true)
+            updateFileInStore(f.path, {
+              pdmData: syncedFile,
+              localHash: readResult.hash,
+              diffStatus: undefined
+            })
+            completedBytes += f.size
+            updateProgressLocal()
+            return true
+          }
+        }
+        completedBytes += f.size
+        updateProgressLocal()
+        return false
+      } catch (err) {
+        console.error('First checkin error:', err)
+        completedBytes += f.size
+        updateProgressLocal()
+        return false
+      }
+    }))
+    
+    const succeeded = results.filter(Boolean).length
+    const failed = results.length - succeeded
+    
+    removeToast(toastId)
+    foldersToProcess.forEach(p => removeProcessingFolder(p))
+    setIsCheckingInAll(false)
+    
+    if (failed > 0) {
+      addToast('warning', `Synced ${succeeded}/${localOnlyFiles.length} files`)
+    } else if (succeeded > 0) {
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeedLocal(completedBytes / Math.max(parseFloat(totalTime), 0.001))
+      addToast('success', `Synced ${succeeded} file${succeeded > 1 ? 's' : ''} to cloud in ${totalTime}s (${avgSpeed})`)
     }
   }
 
@@ -628,11 +941,13 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       addProcessingFolder(file.relativePath)
     }
     const toastId = `checkout-${Date.now()}`
-    addProgressToast(toastId, `Checking out ${filesToCheckout.length} file${filesToCheckout.length > 1 ? 's' : ''}...`, filesToCheckout.length)
+    const total = filesToCheckout.length
+    addProgressToast(toastId, `Checking out ${total} file${total > 1 ? 's' : ''}...`, total)
     
     let succeeded = 0
-    for (let i = 0; i < filesToCheckout.length; i++) {
-      const f = filesToCheckout[i]
+    let completedCount = 0
+    
+    const results = await Promise.all(filesToCheckout.map(async (f) => {
       try {
         const result = await checkoutFile(f.pdmData!.id, user.id)
         if (result.success) {
@@ -648,13 +963,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               }
             }
           })
-          succeeded++
+          completedCount++
+          const percent = Math.round((completedCount / total) * 100)
+          updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+          return true
         }
+        completedCount++
+        const percent = Math.round((completedCount / total) * 100)
+        updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+        return false
       } catch (err) {
         console.error('Checkout error:', err)
+        completedCount++
+        const percent = Math.round((completedCount / total) * 100)
+        updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+        return false
       }
-      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckout.length) * 100))
-    }
+    }))
+    
+    succeeded = results.filter(Boolean).length
     
     // Clean up
     if (file.isDirectory) {
@@ -694,11 +1021,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       addProcessingFolder(file.relativePath)
     }
     const toastId = `checkin-${Date.now()}`
-    addProgressToast(toastId, `Checking in ${filesToCheckin.length} file${filesToCheckin.length > 1 ? 's' : ''}...`, filesToCheckin.length)
+    const total = filesToCheckin.length
+    addProgressToast(toastId, `Checking in ${total} file${total > 1 ? 's' : ''}...`, total)
     
-    let succeeded = 0
-    for (let i = 0; i < filesToCheckin.length; i++) {
-      const f = filesToCheckin[i]
+    let completedCount = 0
+    
+    const results = await Promise.all(filesToCheckin.map(async (f) => {
       try {
         // Check if file was moved (local path differs from server path)
         const wasFileMoved = f.pdmData?.file_path && f.relativePath !== f.pdmData.file_path
@@ -717,7 +1045,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             diffStatus: undefined,
             localActiveVersion: undefined  // Clear rollback state
           })
-          succeeded++
+          completedCount++
+          const percent = Math.round((completedCount / total) * 100)
+          updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+          return true
         } else if (result.success) {
           await window.electronAPI?.setReadonly(f.path, true)
           updateFileInStore(f.path, {
@@ -725,13 +1056,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             diffStatus: undefined,
             localActiveVersion: undefined
           })
-          succeeded++
+          completedCount++
+          const percent = Math.round((completedCount / total) * 100)
+          updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+          return true
         }
+        completedCount++
+        const percent = Math.round((completedCount / total) * 100)
+        updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+        return false
       } catch (err) {
         console.error('Checkin error:', err)
+        completedCount++
+        const percent = Math.round((completedCount / total) * 100)
+        updateProgressToast(toastId, completedCount, percent, undefined, `${completedCount}/${total} files`)
+        return false
       }
-      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckin.length) * 100))
-    }
+    }))
+    
+    const succeeded = results.filter(Boolean).length
     
     // Clean up
     if (file.isDirectory) {
@@ -742,6 +1085,134 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     if (succeeded > 0) {
       addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
     }
+  }
+
+  // Inline action: First check in (upload) a single file or folder
+  const handleInlineFirstCheckin = async (e: React.MouseEvent, file: LocalFile) => {
+    e.stopPropagation()
+    if (!user || !organization || !activeVaultId) return
+    
+    // Get files to sync
+    let filesToSync: LocalFile[] = []
+    if (file.isDirectory) {
+      filesToSync = files.filter(f => 
+        !f.isDirectory && 
+        (!f.pdmData || f.diffStatus === 'added') &&
+        f.relativePath.startsWith(file.relativePath + '/')
+      )
+      addProcessingFolder(file.relativePath)
+    } else if (!file.pdmData || file.diffStatus === 'added') {
+      filesToSync = [file]
+    }
+    
+    if (filesToSync.length === 0) {
+      addToast('info', 'No files to check in')
+      return
+    }
+    
+    // Show progress toast
+    const toastId = `first-checkin-${Date.now()}`
+    const total = filesToSync.length
+    const totalBytes = filesToSync.reduce((sum, f) => sum + f.size, 0)
+    const startTime = Date.now()
+    addProgressToast(toastId, `Uploading ${total} file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    // Progress tracking for parallel uploads
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeedUpload = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytesUpload = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgressUpload = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      
+      // Calculate speed based on recent progress (smoother display)
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      // Also calculate overall speed as fallback
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      // Use recent speed if we have meaningful data, otherwise overall
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      // Percent based on bytes uploaded
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      // Label shows "214/398 MB" format
+      const label = `${formatBytesUpload(completedBytes)}/${formatBytesUpload(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeedUpload(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
+    
+    const results = await Promise.all(filesToSync.map(async (f) => {
+      try {
+        const readResult = await window.electronAPI?.readFile(f.path)
+        if (readResult?.success && readResult.data && readResult.hash) {
+          const { error, file: syncedFile } = await syncFile(
+            organization.id,
+            activeVaultId,
+            user.id,
+            f.relativePath,
+            f.name,
+            f.extension,
+            f.size,
+            readResult.hash,
+            readResult.data
+          )
+          if (!error && syncedFile) {
+            await window.electronAPI?.setReadonly(f.path, true)
+            // Update store with new pdmData so file no longer shows as "added"
+            updateFileInStore(f.path, {
+              pdmData: syncedFile,
+              localHash: readResult.hash,
+              diffStatus: undefined
+            })
+            completedBytes += f.size
+            updateProgressUpload()
+            return true
+          }
+        }
+        completedBytes += f.size
+        updateProgressUpload()
+        return false
+      } catch (err) {
+        console.error('First checkin error:', err)
+        completedBytes += f.size
+        updateProgressUpload()
+        return false
+      }
+    }))
+    
+    const succeeded = results.filter(Boolean).length
+    const failed = results.length - succeeded
+    
+    // Clean up
+    if (file.isDirectory) {
+      removeProcessingFolder(file.relativePath)
+    }
+    removeToast(toastId)
+    
+    if (failed > 0) {
+      addToast('warning', `Synced ${succeeded}/${filesToSync.length} files`)
+    } else if (succeeded > 0) {
+      addToast('success', `Synced ${succeeded} file${succeeded > 1 ? 's' : ''} to cloud`)
+    }
+    
+    // Note: Don't call onRefresh() - updateFileInStore() already updated each file in place
   }
 
   const getFileIcon = (file: LocalFile) => {
@@ -795,7 +1266,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         if (isMe) {
           usersMap.set(checkoutUserId, {
             id: checkoutUserId,
-            name: 'You',
+            name: user?.full_name || user?.email || 'You',
             avatar_url: user?.avatar_url || undefined,
             isMe: true
           })
@@ -841,7 +1312,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   <img 
                     src={u.avatar_url} 
                     alt={u.name}
-                    className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
+                    className={`w-5 h-5 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
                     onError={(e) => {
                       const target = e.target as HTMLImageElement
                       target.style.display = 'none'
@@ -850,15 +1321,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   />
                 ) : null}
                 <div 
-                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent' : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
+                  className={`w-5 h-5 rounded-full ring-1 ${u.isMe ? 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent' : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center text-[9px] font-medium ${u.avatar_url ? 'hidden' : ''}`}
                 >
-                  {u.name.charAt(0).toUpperCase()}
+                  {getInitials(u.name)}
                 </div>
               </div>
             ))}
             {extra > 0 && (
               <div 
-                className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
+                className="w-5 h-5 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[9px] font-medium text-pdm-fg-muted"
                 style={{ zIndex: 0 }}
               >
                 +{extra}
@@ -868,18 +1339,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         )
       }
       
-      // Cloud-only folder (all contents are cloud-only)
+      // Cloud-only folder - don't show cloud icon here since the folder icon is faded
+      // and we show cloud file count with download button inline
       if (file.diffStatus === 'cloud') {
-        return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
+        return null
       }
       
-      // Synced folder (has files with pdmData) - show green cloud
-      const hasSyncedFiles = files.some(f => 
+      // Check folder sync status - only show green cloud if ALL files are synced
+      // Don't show HardDrive here - localOnlyCount badge handles that inline
+      const folderFiles = files.filter(f => 
         !f.isDirectory && 
-        f.pdmData && 
         f.relativePath.startsWith(file.relativePath + '/')
       )
-      if (hasSyncedFiles) {
+      const hasUnsyncedFiles = folderFiles.some(f => !f.pdmData || f.diffStatus === 'added')
+      const allSynced = folderFiles.length > 0 && !hasUnsyncedFiles
+      
+      if (allSynced) {
         return <Cloud size={12} className="text-pdm-success flex-shrink-0" />
       }
       
@@ -889,14 +1364,14 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     // For files:
     // Checked out by me - show my avatar with accent ring
     if (file.pdmData?.checked_out_by === user?.id) {
-      const myInitial = (user?.full_name || user?.email?.split('@')[0] || '?').charAt(0).toUpperCase()
+      const myInitial = getInitials(user?.full_name || user?.email)
       return (
-        <div className="relative w-4 h-4 flex-shrink-0" title="Checked out by you">
+        <div className="relative w-5 h-5 flex-shrink-0" title={`Checked out by ${user?.full_name || user?.email || 'you'}`}>
           {user?.avatar_url ? (
             <img 
               src={user.avatar_url} 
               alt="You"
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-accent object-cover"
+              className="w-5 h-5 rounded-full ring-1 ring-pdm-accent object-cover"
               onError={(e) => {
                 const target = e.target as HTMLImageElement
                 target.style.display = 'none'
@@ -905,7 +1380,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           ) : null}
           <div 
-            className={`w-4 h-4 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+            className={`w-5 h-5 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[9px] font-medium absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
           >
             {myInitial}
           </div>
@@ -920,12 +1395,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
       
       return (
-        <div className="relative w-4 h-4 flex-shrink-0" title={`Checked out by ${displayName}`}>
+        <div className="relative w-5 h-5 flex-shrink-0" title={`Checked out by ${displayName}`}>
           {avatarUrl ? (
             <img 
               src={avatarUrl} 
               alt={displayName}
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-bg-light object-cover"
+              className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light object-cover"
               onError={(e) => {
                 const target = e.target as HTMLImageElement
                 target.style.display = 'none'
@@ -934,9 +1409,9 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           ) : null}
           <div 
-            className={`w-4 h-4 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+            className={`w-5 h-5 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[9px] font-medium absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
           >
-            {displayName.charAt(0).toUpperCase()}
+            {getInitials(displayName)}
           </div>
         </div>
       )
@@ -945,6 +1420,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     // Cloud-only (not downloaded) - grey cloud
     if (file.diffStatus === 'cloud') {
       return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
+    }
+    
+    // Added (local only, ready to check in) - hard drive icon
+    if (file.diffStatus === 'added') {
+      return <span title="Local only"><HardDrive size={12} className="text-pdm-fg-muted flex-shrink-0" /></span>
     }
     
     // Synced (has pdmData and downloaded locally) - green cloud
@@ -976,42 +1456,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     return true
   }
 
-  // Handle drag over a folder in explorer
-  const handleExplorerFolderDragOver = (e: React.DragEvent, folder: LocalFile) => {
-    e.preventDefault()
-    e.stopPropagation()
-    
-    // Check if we have pdm files being dragged
-    const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
-    if (!hasPdmFiles && draggedFiles.length === 0) return
-    
-    // Get the files being dragged
-    const filesToCheck = draggedFiles.length > 0 ? draggedFiles : []
-    
-    // Don't allow dropping a folder into itself or its children
-    const isDroppingIntoSelf = filesToCheck.some(f => 
-      f.isDirectory && (folder.relativePath === f.relativePath || folder.relativePath.startsWith(f.relativePath + '/'))
-    )
-    if (isDroppingIntoSelf) return
-    
-    // Don't allow dropping if the target is the current parent
-    const wouldStayInPlace = filesToCheck.length > 0 && filesToCheck.every(f => {
-      const parentPath = f.relativePath.includes('/') 
-        ? f.relativePath.substring(0, f.relativePath.lastIndexOf('/'))
-        : ''
-      return parentPath === folder.relativePath
-    })
-    if (wouldStayInPlace) return
-    
-    // Check if all files can be moved (checked out)
-    if (filesToCheck.length > 0 && !canMoveFiles(filesToCheck)) {
-      e.dataTransfer.dropEffect = 'none'
-      return
-    }
-    
-    e.dataTransfer.dropEffect = 'move'
-    setDragOverFolder(folder.relativePath)
-  }
+  // Note: folder drag over logic is now inlined in onDragOver handler for all tree items
+  // This ensures preventDefault is called even when dragging over non-folder items
 
   // Handle drag leave from a folder
   const handleExplorerFolderDragLeave = (e: React.DragEvent) => {
@@ -1028,11 +1474,83 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     if (!window.electronAPI || !vaultPath) return
     
-    // Get files from data transfer or local state
-    let filesToMove: LocalFile[] = []
+    // Check for external files first (from outside the app)
+    const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+    const droppedExternalFiles = Array.from(e.dataTransfer.files)
     
-    if (draggedFiles.length > 0) {
-      filesToMove = draggedFiles
+    if (droppedExternalFiles.length > 0 && !hasPdmFiles) {
+      // Handle external file drop onto this folder
+      const filePaths: string[] = []
+      for (const file of droppedExternalFiles) {
+        try {
+          const filePath = window.electronAPI.getPathForFile(file)
+          if (filePath) {
+            filePaths.push(filePath)
+          }
+        } catch (err) {
+          console.error('Error getting file path:', err)
+        }
+      }
+
+      if (filePaths.length === 0) {
+        addToast('error', 'Could not get file paths')
+        return
+      }
+
+      // Copy external files to the target folder
+      const totalFiles = filePaths.length
+      const toastId = `drop-files-${Date.now()}`
+      addProgressToast(toastId, `Adding ${totalFiles} file${totalFiles > 1 ? 's' : ''} to ${targetFolder.name}...`, totalFiles)
+
+      try {
+        let successCount = 0
+        let errorCount = 0
+
+        for (let i = 0; i < filePaths.length; i++) {
+          const sourcePath = filePaths[i]
+          const fileName = sourcePath.split(/[/\\]/).pop() || 'unknown'
+          const destPath = buildFullPath(vaultPath, targetFolder.relativePath + '/' + fileName)
+
+          console.log('[Explorer Drop on Folder] Copying:', sourcePath, '->', destPath)
+
+          const result = await window.electronAPI.copyFile(sourcePath, destPath)
+          if (result.success) {
+            successCount++
+          } else {
+            errorCount++
+            console.error(`Failed to copy ${fileName}:`, result.error)
+          }
+          
+          // Update progress
+          const percent = Math.round(((i + 1) / totalFiles) * 100)
+          updateProgressToast(toastId, i + 1, percent)
+        }
+
+        removeToast(toastId)
+        
+        if (errorCount === 0) {
+          addToast('success', `Added ${successCount} file${successCount > 1 ? 's' : ''} to ${targetFolder.name}`)
+        } else {
+          addToast('warning', `Added ${successCount}, failed ${errorCount}`)
+        }
+
+        // Refresh the file list
+        setTimeout(() => onRefresh?.(), 100)
+      } catch (err) {
+        console.error('Error adding files:', err)
+        removeToast(toastId)
+        addToast('error', 'Failed to add files')
+      }
+      return
+    }
+    
+    // Get files from data transfer or local state (use ref for synchronous access)
+    let filesToMove: LocalFile[] = []
+    const currentDraggedFiles = draggedFilesRef.current
+    
+    if (currentDraggedFiles.length > 0) {
+      filesToMove = currentDraggedFiles
+      draggedFilesRef.current = []
       setDraggedFiles([])
     } else {
       // Try to get from data transfer (cross-view drag)
@@ -1117,6 +1635,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
 
   // Handle drag end
   const handleExplorerDragEnd = () => {
+    draggedFilesRef.current = []
     setDraggedFiles([])
     setDragOverFolder(null)
   }
@@ -1124,15 +1643,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   // Handle dropping into the vault root area (empty space or anywhere not on a folder)
   const handleVaultRootDragOver = (e: React.DragEvent) => {
     e.preventDefault()
-    // Check if we have pdm files being dragged (internal drag)
+    // Check if we have pdm files being dragged (use ref for synchronous access)
     const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
-    if (!hasPdmFiles && draggedFiles.length === 0) return
+    const hasExternalFiles = e.dataTransfer.types.includes('Files') && !hasPdmFiles
+    const currentDraggedFiles = draggedFilesRef.current
     
     // Only highlight if not already over a specific folder
     if (!dragOverFolder) {
-      e.dataTransfer.dropEffect = 'move'
-      // Use empty string to indicate root
-      setDragOverFolder('')
+      if (hasPdmFiles || currentDraggedFiles.length > 0) {
+        e.dataTransfer.dropEffect = 'move'
+        // Use empty string to indicate root
+        setDragOverFolder('')
+      } else if (hasExternalFiles) {
+        e.dataTransfer.dropEffect = 'copy'
+        // Use empty string to indicate root
+        setDragOverFolder('')
+      }
     }
   }
   
@@ -1154,11 +1680,83 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     if (!window.electronAPI || !vaultPath) return
     
-    // Get files from data transfer or local state
-    let filesToMove: LocalFile[] = []
+    // Check for external files first (from outside the app)
+    const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+    const droppedExternalFiles = Array.from(e.dataTransfer.files)
     
-    if (draggedFiles.length > 0) {
-      filesToMove = draggedFiles
+    if (droppedExternalFiles.length > 0 && !hasPdmFiles) {
+      // Handle external file drop to vault root
+      const filePaths: string[] = []
+      for (const file of droppedExternalFiles) {
+        try {
+          const filePath = window.electronAPI.getPathForFile(file)
+          if (filePath) {
+            filePaths.push(filePath)
+          }
+        } catch (err) {
+          console.error('Error getting file path:', err)
+        }
+      }
+
+      if (filePaths.length === 0) {
+        addToast('error', 'Could not get file paths')
+        return
+      }
+
+      // Copy external files to vault root
+      const totalFiles = filePaths.length
+      const toastId = `drop-files-root-${Date.now()}`
+      addProgressToast(toastId, `Adding ${totalFiles} file${totalFiles > 1 ? 's' : ''} to vault root...`, totalFiles)
+
+      try {
+        let successCount = 0
+        let errorCount = 0
+
+        for (let i = 0; i < filePaths.length; i++) {
+          const sourcePath = filePaths[i]
+          const fileName = sourcePath.split(/[/\\]/).pop() || 'unknown'
+          const destPath = buildFullPath(vaultPath, fileName)
+
+          console.log('[Explorer Drop to Root] Copying:', sourcePath, '->', destPath)
+
+          const result = await window.electronAPI.copyFile(sourcePath, destPath)
+          if (result.success) {
+            successCount++
+          } else {
+            errorCount++
+            console.error(`Failed to copy ${fileName}:`, result.error)
+          }
+          
+          // Update progress
+          const percent = Math.round(((i + 1) / totalFiles) * 100)
+          updateProgressToast(toastId, i + 1, percent)
+        }
+
+        removeToast(toastId)
+        
+        if (errorCount === 0) {
+          addToast('success', `Added ${successCount} file${successCount > 1 ? 's' : ''} to vault root`)
+        } else {
+          addToast('warning', `Added ${successCount}, failed ${errorCount}`)
+        }
+
+        // Refresh the file list
+        setTimeout(() => onRefresh?.(), 100)
+      } catch (err) {
+        console.error('Error adding files:', err)
+        removeToast(toastId)
+        addToast('error', 'Failed to add files')
+      }
+      return
+    }
+    
+    // Get files from data transfer or local state (use ref for synchronous access)
+    let filesToMove: LocalFile[] = []
+    const currentDraggedFiles = draggedFilesRef.current
+    
+    if (currentDraggedFiles.length > 0) {
+      filesToMove = currentDraggedFiles
+      draggedFilesRef.current = []
       setDraggedFiles([])
     } else {
       const pdmFilesData = e.dataTransfer.getData('application/x-pdm-files')
@@ -1221,7 +1819,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         const result = await window.electronAPI.moveFile(file.path, newFullPath)
         if (result.success) {
           succeeded++
-          renameFileInStore(file.path, newFullPath, newRelPath)
+          renameFileInStore(file.path, newFullPath, newRelPath, true)
         } else {
           failed++
         }
@@ -1243,7 +1841,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       addToast('warning', `Moved ${succeeded}, failed ${failed}`)
     }
     
-    onRefresh?.(true)
+    // No need for full refresh - store is already updated
   }
 
   const renderTreeItem = (file: LocalFile, depth: number = 0) => {
@@ -1251,9 +1849,18 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const isCurrentFolder = file.isDirectory && file.relativePath === currentFolder
     const children = tree[file.relativePath] || []
     
-    // Get diff counts for folders
+    // Get diff counts for folders (exclude 'added' since it shows as localOnlyCount with HardDrive icon)
     const diffCounts = file.isDirectory ? getFolderDiffCounts(file.relativePath) : null
-    const hasDiffs = diffCounts && (diffCounts.added > 0 || diffCounts.modified > 0 || diffCounts.moved > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0 || diffCounts.cloud > 0)
+    const hasDiffs = diffCounts && (diffCounts.modified > 0 || diffCounts.moved > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0 || diffCounts.cloud > 0)
+    
+    // Get local-only (unsynced) files count for folders
+    const localOnlyCount = file.isDirectory ? files.filter(f => 
+      !f.isDirectory && 
+      (!f.pdmData || f.diffStatus === 'added') && 
+      f.diffStatus !== 'cloud' && 
+      f.diffStatus !== 'ignored' &&
+      f.relativePath.startsWith(file.relativePath + '/')
+    ).length : 0
     
     // Diff class for files and deleted folders
     const diffClass = file.diffStatus 
@@ -1353,9 +1960,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            // If right-clicked file is not in selection, select only it
-            // Otherwise keep the multi-selection
-            if (!selectedFiles.includes(file.path)) {
+            // Only keep multi-selection if there are multiple files selected AND 
+            // the right-clicked file is part of that selection
+            // Otherwise, select just the right-clicked file
+            if (!(selectedFiles.length > 1 && selectedFiles.includes(file.path))) {
               setSelectedFiles([file.path])
             }
             setContextMenu({ x: e.clientX, y: e.clientY, file })
@@ -1378,7 +1986,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               return
             }
             
-            // Track dragged files for internal moves
+            // Track dragged files for internal moves (ref for sync access, state for UI)
+            draggedFilesRef.current = filesToDrag
             setDraggedFiles(filesToDrag)
             
             const filePaths = filesToDrag.map(f => f.path)
@@ -1420,14 +2029,61 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             e.dataTransfer.setDragImage(dragPreview, 20, 20)
             setTimeout(() => dragPreview.remove(), 0)
             
-            // Call Electron's native drag for multi-file support (files only, not folders)
-            const filePathsForNative = filesToDrag.filter(f => !f.isDirectory).map(f => f.path)
-            if (filePathsForNative.length > 0) {
-              window.electronAPI?.startDrag(filePathsForNative)
-            }
+            // Note: We don't call window.electronAPI.startDrag() here for Explorer view
+            // because it interferes with HTML5 drag-and-drop for internal moves.
+            // Files can still be dragged to external apps via the dataTransfer data.
           }}
           onDragEnd={handleExplorerDragEnd}
-          onDragOver={file.isDirectory ? (e) => handleExplorerFolderDragOver(e, file) : undefined}
+          onDragOver={(e) => {
+            // ALWAYS prevent default and stop propagation on tree items
+            // This is critical for internal drag-and-drop to work
+            e.preventDefault()
+            e.stopPropagation()
+            
+            // Check if this is a pdm drag (internal or cross-view) or external files
+            const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+            const hasExternalFiles = e.dataTransfer.types.includes('Files') && !hasPdmFiles
+            const currentDraggedFiles = draggedFilesRef.current
+            
+            // Only process if we have files being dragged
+            if (!hasPdmFiles && !hasExternalFiles && currentDraggedFiles.length === 0) return
+            
+            // Only set drop effect and highlight for folders (actual drop targets)
+            if (file.isDirectory) {
+              // For external file drops, just show the target highlight
+              if (hasExternalFiles) {
+                e.dataTransfer.dropEffect = 'copy'
+                setDragOverFolder(file.relativePath)
+                return
+              }
+              
+              const filesToCheck = currentDraggedFiles.length > 0 ? currentDraggedFiles : []
+              
+              // Don't allow dropping a folder into itself or its children
+              const isDroppingIntoSelf = filesToCheck.some(f => 
+                f.isDirectory && (file.relativePath === f.relativePath || file.relativePath.startsWith(f.relativePath + '/'))
+              )
+              if (isDroppingIntoSelf) return
+              
+              // Don't allow dropping if the target is the current parent
+              const wouldStayInPlace = filesToCheck.length > 0 && filesToCheck.every(f => {
+                const parentPath = f.relativePath.includes('/') 
+                  ? f.relativePath.substring(0, f.relativePath.lastIndexOf('/'))
+                  : ''
+                return parentPath === file.relativePath
+              })
+              if (wouldStayInPlace) return
+              
+              // Check if all files can be moved (checked out)
+              if (filesToCheck.length > 0 && !canMoveFiles(filesToCheck)) {
+                e.dataTransfer.dropEffect = 'none'
+                return
+              }
+              
+              e.dataTransfer.dropEffect = 'move'
+              setDragOverFolder(file.relativePath)
+            }
+          }}
           onDragLeave={file.isDirectory ? handleExplorerFolderDragLeave : undefined}
           onDrop={file.isDirectory ? (e) => handleExplorerDropOnFolder(e, file) : undefined}
         >
@@ -1471,45 +2127,55 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             </span>
           )}
           
-          {/* Diff counts for folders - left of avatar */}
-          {!isRenaming && file.isDirectory && hasDiffs && (
-            <span className="flex items-center gap-1 ml-auto mr-1 text-xs">
-              {diffCounts.added > 0 && (
-                <span className="text-pdm-success font-medium">+{diffCounts.added}</span>
-              )}
-              {diffCounts.modified > 0 && (
-                <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
-              )}
-              {diffCounts.moved > 0 && (
-                <span className="text-pdm-accent font-medium">→{diffCounts.moved}</span>
-              )}
-              {diffCounts.deleted > 0 && (
-                <span className="text-pdm-error font-medium">-{diffCounts.deleted}</span>
-              )}
-              {diffCounts.outdated > 0 && (
-                <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
-              )}
-              {diffCounts.cloud > 0 && (
-                <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5">
+          {/* Diff counts and local-only count for folders */}
+          {!isRenaming && file.isDirectory && (hasDiffs || localOnlyCount > 0) && (
+            <span className="flex items-center gap-1 ml-auto mr-0.5 text-xs">
+              {/* Cloud files first (download from others) */}
+              {diffCounts && diffCounts.cloud > 0 && (
+                <span className="text-pdm-info font-medium flex items-center gap-0.5">
                   <Cloud size={10} />
                   {diffCounts.cloud}
-                  {/* Download button right after cloud count */}
-                  <button
-                    className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-0.5"
-                    onClick={(e) => handleInlineDownload(e, file)}
-                    title="Download cloud files"
-                  >
-                    <ArrowDown size={10} />
-                  </button>
+                  {/* Download button right after cloud count - hidden when processing */}
+                  {!isProcessing && (
+                    <button
+                      className="inline-actions p-0.5 rounded hover:bg-sky-400/20 text-sky-400"
+                      onClick={(e) => handleInlineDownload(e, file)}
+                      title="Download cloud files"
+                    >
+                      <ArrowDown size={12} />
+                    </button>
+                  )}
+                </span>
+              )}
+              {diffCounts && diffCounts.modified > 0 && (
+                <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
+              )}
+              {diffCounts && diffCounts.moved > 0 && (
+                <span className="text-pdm-accent font-medium">→{diffCounts.moved}</span>
+              )}
+              {diffCounts && diffCounts.deleted > 0 && (
+                <span className="text-pdm-error font-medium">-{diffCounts.deleted}</span>
+              )}
+              {diffCounts && diffCounts.outdated > 0 && (
+                <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
+              )}
+              {/* Local-only files last (next to check-in button) */}
+              {localOnlyCount > 0 && (
+                <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5" title={`${localOnlyCount} local files not yet synced`}>
+                  <HardDrive size={10} />
+                  {localOnlyCount}
                 </span>
               )}
             </span>
           )}
           
-          {/* Download for individual cloud files (not folders) - left of avatar */}
-          {!isRenaming && !file.isDirectory && file.diffStatus === 'cloud' && (
+          {/* Status icon (lock, cloud) */}
+          {!isRenaming && getStatusIcon(file)}
+          
+          {/* Download for individual cloud files (not folders) - after cloud icon */}
+          {!isRenaming && !isProcessing && !file.isDirectory && file.diffStatus === 'cloud' && (
             <button
-              className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-auto mr-1"
+              className="inline-actions p-0.5 rounded hover:bg-sky-400/20 text-sky-400"
               onClick={(e) => handleInlineDownload(e, file)}
               title="Download"
             >
@@ -1517,33 +2183,51 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             </button>
           )}
           
-          {/* Status icon (lock, cloud) */}
-          {!isRenaming && getStatusIcon(file)}
-          
           {/* Inline action buttons - show on hover */}
           {!isRenaming && !isBeingProcessed(file.relativePath) && (() => {
-            // Check if folder has checkoutable files
-            const hasCheckoutableFiles = file.isDirectory && files.some(f => 
-              !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
-            )
+            // Count checkoutable files in folder
+            const checkoutableFilesCount = file.isDirectory 
+              ? files.filter(f => 
+                  !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+                ).length
+              : 0
             // Check if folder has my checked out files
             const hasMyCheckedOutFiles = file.isDirectory && files.some(f => 
               !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(file.relativePath + '/')
             )
+            // Check if file/folder has unsynced files (for first check-in)
+            const hasUnsyncedFiles = file.isDirectory 
+              ? files.some(f => 
+                  !f.isDirectory && 
+                  (!f.pdmData || f.diffStatus === 'added') && 
+                  f.relativePath.startsWith(file.relativePath + '/')
+                )
+              : (!file.pdmData || file.diffStatus === 'added')
             
-            const showCheckout = (!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles
+            const showCheckout = (!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || checkoutableFilesCount > 0
             const showCheckin = (!file.isDirectory && file.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
+            const showFirstCheckin = hasUnsyncedFiles && file.diffStatus !== 'cloud'
             
-            if (!showCheckout && !showCheckin) return null
+            if (!showCheckout && !showCheckin && !showFirstCheckin) return null
             
             return (
               <span className="inline-actions flex items-center gap-0.5 ml-1">
+                {/* First Check In - for unsynced files/folders */}
+                {showFirstCheckin && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                    onClick={(e) => handleInlineFirstCheckin(e, file)}
+                    title="First Check In"
+                  >
+                    <ArrowUp size={12} />
+                  </button>
+                )}
                 {/* Check Out - for synced files/folders not checked out */}
                 {showCheckout && (
                   <button
                     className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
                     onClick={(e) => handleInlineCheckout(e, file)}
-                    title="Check Out"
+                    title={file.isDirectory && checkoutableFilesCount > 0 ? `Check out ${checkoutableFilesCount} file${checkoutableFilesCount > 1 ? 's' : ''}` : "Check Out"}
                   >
                     <ArrowDown size={12} />
                   </button>
@@ -1569,7 +2253,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               // When dragging over expanded folder area, highlight the parent folder
               e.preventDefault()
               const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
-              if (hasPdmFiles || draggedFiles.length > 0) {
+              if (hasPdmFiles || draggedFilesRef.current.length > 0) {
                 e.dataTransfer.dropEffect = 'move'
                 // Only set if not already over a more specific folder
                 if (!dragOverFolder || dragOverFolder === file.relativePath) {
@@ -1611,6 +2295,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     // Calculate vault stats (only meaningful for active vault)
     const cloudFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length : 0
+    const localOnlyFilesCount = isActive ? files.filter(f => !f.isDirectory && (!f.pdmData || f.diffStatus === 'added')).length : 0
     const checkedOutByMeCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length : 0
     const checkedOutByOthersCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length : 0
     const checkedOutByOthers = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id) : []
@@ -1622,7 +2307,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     if (isActive && checkedOutByMeCount > 0 && user) {
       allCheckoutUsers.push({
         id: user.id,
-        name: 'You',
+        name: user.full_name || user.email || 'You',
         avatar_url: user.avatar_url || undefined,
         isMe: true,
         count: checkedOutByMeCount
@@ -1655,11 +2340,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     return (
       <div key={vault.id} className="border-b border-pdm-border last:border-b-0">
-        {/* Vault header - click to select vault (expands automatically) */}
+        {/* Vault header - click to select vault (expands automatically), also accepts drops to root */}
         <div 
           className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
             isActive ? 'bg-pdm-highlight text-pdm-fg' : 'text-pdm-fg-dim hover:bg-pdm-highlight/50'
-          }`}
+          } ${isActive && dragOverFolder === '' ? 'bg-pdm-accent/20 outline outline-2 outline-dashed outline-pdm-accent/50' : ''}`}
           onClick={() => {
             if (isActive) {
               // Already active - just toggle expand/collapse
@@ -1673,6 +2358,35 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             }
           }}
           onContextMenu={(e) => handleVaultContextMenu(e, vault)}
+          onDragOver={(e) => {
+            // Only accept drops on active vault header
+            if (!isActive) return
+            e.preventDefault()
+            e.stopPropagation()
+            const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+            const hasExternalFiles = e.dataTransfer.types.includes('Files') && !hasPdmFiles
+            if (hasPdmFiles || draggedFilesRef.current.length > 0) {
+              e.dataTransfer.dropEffect = 'move'
+              setDragOverFolder('')
+            } else if (hasExternalFiles) {
+              e.dataTransfer.dropEffect = 'copy'
+              setDragOverFolder('')
+            }
+          }}
+          onDragLeave={(e) => {
+            if (!isActive) return
+            e.preventDefault()
+            const relatedTarget = e.relatedTarget as HTMLElement
+            if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
+              if (dragOverFolder === '') {
+                setDragOverFolder(null)
+              }
+            }
+          }}
+          onDrop={(e) => {
+            if (!isActive) return
+            handleVaultRootDrop(e)
+          }}
         >
           <span className="flex-shrink-0">
             {isExpanded && isActive
@@ -1715,7 +2429,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           />
                         ) : null}
                         <div className={`w-full h-full ${u.isMe ? 'bg-pdm-accent/30' : 'bg-pdm-fg-muted/30'} flex items-center justify-center text-[10px] font-medium ${u.isMe ? 'text-pdm-accent' : 'text-pdm-fg'} absolute inset-0 ${u.avatar_url ? 'hidden' : ''}`}>
-                          {u.name[0]}
+                          {getInitials(u.name)}
                         </div>
                       </div>
                     ))}
@@ -1732,11 +2446,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 </div>
               )}
               
-              {/* Cloud files indicator */}
+              {/* Cloud files indicator - files others added that you haven't downloaded */}
               {cloudFilesCount > 0 && (
                 <div 
-                  className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted bg-pdm-bg/50 px-1.5 py-0.5 rounded"
-                  title={`${cloudFilesCount} files available to download`}
+                  className="flex items-center gap-0.5 text-[10px] text-pdm-info bg-pdm-bg/50 px-1.5 py-0.5 rounded"
+                  title={`${cloudFilesCount} cloud files available to download`}
                 >
                   <Cloud size={10} />
                   <span>{cloudFilesCount}</span>
@@ -1746,15 +2460,51 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               {/* Download all cloud files button - slightly visible */}
               {cloudFilesCount > 0 && (
                 <button
-                  className="p-1 rounded hover:bg-pdm-bg/50 text-pdm-fg-muted/50 hover:text-pdm-success transition-colors"
-                  title={`Download ${cloudFilesCount} cloud files`}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    // TODO: Implement bulk download
-                    addToast('info', `Download all ${cloudFilesCount} cloud files coming soon!`)
-                  }}
+                  className={`p-1 rounded transition-colors ${
+                    isDownloadingAll 
+                      ? 'text-pdm-info cursor-not-allowed' 
+                      : 'hover:bg-pdm-bg/50 text-pdm-fg-muted/50 hover:text-pdm-info'
+                  }`}
+                  title={isDownloadingAll ? 'Downloading...' : `Download ${cloudFilesCount} cloud files`}
+                  onClick={handleDownloadAllCloudFiles}
+                  disabled={isDownloadingAll}
                 >
-                  <ArrowDown size={14} />
+                  {isDownloadingAll ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <ArrowDown size={14} />
+                  )}
+                </button>
+              )}
+              
+              {/* Local-only files indicator - files not yet synced to cloud */}
+              {localOnlyFilesCount > 0 && (
+                <div 
+                  className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted bg-pdm-bg/50 px-1.5 py-0.5 rounded"
+                  title={`${localOnlyFilesCount} local files not yet synced`}
+                >
+                  <HardDrive size={10} />
+                  <span>{localOnlyFilesCount}</span>
+                </div>
+              )}
+              
+              {/* First check in all local files button */}
+              {localOnlyFilesCount > 0 && (
+                <button
+                  className={`p-1 rounded transition-colors ${
+                    isCheckingInAll 
+                      ? 'text-pdm-success cursor-not-allowed' 
+                      : 'hover:bg-pdm-success/20 text-pdm-fg-muted/50 hover:text-pdm-success'
+                  }`}
+                  title={isCheckingInAll ? 'Uploading...' : `First Check In ${localOnlyFilesCount} local files`}
+                  onClick={handleFirstCheckinAllLocal}
+                  disabled={isCheckingInAll}
+                >
+                  {isCheckingInAll ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <ArrowUp size={14} />
+                  )}
                 </button>
               )}
             </div>
@@ -1936,11 +2686,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   ? rawFileName.slice(0, -ext.length) + (lowercaseExtensions !== false ? ext.toLowerCase() : ext)
                   : rawFileName
                 
-                // Get diff counts for pinned folders
+                // Get diff counts for pinned folders (exclude 'added' since it shows as localOnlyCount with HardDrive icon)
                 const diffCounts = pinned.isDirectory && pinned.vaultId === activeVaultId
                   ? getFolderDiffCounts(pinned.path)
                   : null
-                const hasDiffs = diffCounts && (diffCounts.added > 0 || diffCounts.modified > 0 || diffCounts.moved > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0 || diffCounts.cloud > 0)
+                const hasDiffs = diffCounts && (diffCounts.modified > 0 || diffCounts.moved > 0 || diffCounts.deleted > 0 || diffCounts.outdated > 0 || diffCounts.cloud > 0)
+                
+                // Get local-only (unsynced) files count for pinned folders
+                const localOnlyCount = pinned.isDirectory && pinned.vaultId === activeVaultId
+                  ? files.filter(f => 
+                      !f.isDirectory && 
+                      (!f.pdmData || f.diffStatus === 'added') && 
+                      f.diffStatus !== 'cloud' && 
+                      f.diffStatus !== 'ignored' &&
+                      f.relativePath.startsWith(pinned.path + '/')
+                    ).length
+                  : 0
                 
                 // Get status icon for pinned file
                 const getPinnedStatusIcon = () => {
@@ -1948,14 +2709,14 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   if (actualFile.isDirectory) return null
                   const { user } = usePDMStore.getState()
                   if (actualFile.pdmData?.checked_out_by === user?.id) {
-                    const myInitial = (user?.full_name || user?.email?.split('@')[0] || '?').charAt(0).toUpperCase()
+                    const myInitial = getInitials(user?.full_name || user?.email)
                     return (
-                      <div className="relative w-4 h-4 flex-shrink-0" title="Checked out by you">
+                      <div className="relative w-5 h-5 flex-shrink-0" title="Checked out by you">
                         {user?.avatar_url ? (
                           <img 
                             src={user.avatar_url} 
                             alt="You"
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-accent object-cover"
+                            className="w-5 h-5 rounded-full ring-1 ring-pdm-accent object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.display = 'none'
@@ -1964,7 +2725,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           />
                         ) : null}
                         <div 
-                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+                          className={`w-5 h-5 rounded-full ring-1 ring-pdm-accent bg-pdm-accent/30 text-pdm-accent flex items-center justify-center text-[9px] font-medium absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
                         >
                           {myInitial}
                         </div>
@@ -1977,12 +2738,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
                     
                     return (
-                      <div className="relative w-4 h-4 flex-shrink-0" title={`Checked out by ${displayName}`}>
+                      <div className="relative w-5 h-5 flex-shrink-0" title={`Checked out by ${displayName}`}>
                         {avatarUrl ? (
                           <img 
                             src={avatarUrl} 
                             alt={displayName}
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-bg-light object-cover"
+                            className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
                               target.style.display = 'none'
@@ -1991,9 +2752,9 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           />
                         ) : null}
                         <div 
-                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+                          className={`w-5 h-5 rounded-full ring-1 ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg flex items-center justify-center text-[9px] font-medium absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
                         >
-                          {displayName.charAt(0).toUpperCase()}
+                          {getInitials(displayName)}
                         </div>
                       </div>
                     )
@@ -2175,6 +2936,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         e.preventDefault()
                         e.stopPropagation()
                         if (actualFile) {
+                          // Only keep multi-selection if there are multiple files selected AND 
+                          // the right-clicked file is part of that selection
+                          if (!(selectedFiles.length > 1 && selectedFiles.includes(actualFile.path))) {
+                            setSelectedFiles([actualFile.path])
+                          }
                           setContextMenu({ x: e.clientX, y: e.clientY, file: actualFile })
                         }
                       }}
@@ -2219,25 +2985,28 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       {/* Status icon */}
                       {getPinnedStatusIcon()}
                       
-                      {/* Diff counts for folders */}
-                      {pinned.isDirectory && hasDiffs && (
+                      {/* Diff counts and local-only count for folders */}
+                      {pinned.isDirectory && (hasDiffs || localOnlyCount > 0) && (
                         <span className="flex items-center gap-1 ml-1 text-xs">
-                          {diffCounts.added > 0 && (
-                            <span className="text-pdm-success font-medium">+{diffCounts.added}</span>
+                          {localOnlyCount > 0 && (
+                            <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5" title={`${localOnlyCount} local files not yet synced`}>
+                              <HardDrive size={10} />
+                              {localOnlyCount}
+                            </span>
                           )}
-                          {diffCounts.modified > 0 && (
+                          {diffCounts && diffCounts.modified > 0 && (
                             <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
                           )}
-                          {diffCounts.moved > 0 && (
+                          {diffCounts && diffCounts.moved > 0 && (
                             <span className="text-pdm-accent font-medium">→{diffCounts.moved}</span>
                           )}
-                          {diffCounts.deleted > 0 && (
+                          {diffCounts && diffCounts.deleted > 0 && (
                             <span className="text-pdm-error font-medium">-{diffCounts.deleted}</span>
                           )}
-                          {diffCounts.outdated > 0 && (
+                          {diffCounts && diffCounts.outdated > 0 && (
                             <span className="text-purple-400 font-medium">↓{diffCounts.outdated}</span>
                           )}
-                          {diffCounts.cloud > 0 && (
+                          {diffCounts && diffCounts.cloud > 0 && (
                             <span className="text-pdm-fg-muted font-medium flex items-center gap-0.5">
                               <Cloud size={10} />
                               {diffCounts.cloud}
@@ -2248,19 +3017,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       
                       {/* Inline action buttons for pinned items */}
                       {actualFile && pinned.vaultId === activeVaultId && (() => {
+                        const isPinnedProcessing = isBeingProcessed(actualFile.relativePath)
                         const hasCloudFiles = actualFile.isDirectory && files.some(f => 
                           !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(actualFile.relativePath + '/')
                         )
-                        const hasCheckoutableFiles = actualFile.isDirectory && files.some(f => 
-                          !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(actualFile.relativePath + '/')
-                        )
+                        const checkoutableFilesCount = actualFile.isDirectory 
+                          ? files.filter(f => 
+                              !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(actualFile.relativePath + '/')
+                            ).length
+                          : 0
                         const hasMyCheckedOutFiles = actualFile.isDirectory && files.some(f => 
                           !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(actualFile.relativePath + '/')
                         )
                         
-                        const showDownload = actualFile.diffStatus === 'cloud' || hasCloudFiles
-                        const showCheckout = (!actualFile.isDirectory && actualFile.pdmData && !actualFile.pdmData.checked_out_by && actualFile.diffStatus !== 'cloud') || hasCheckoutableFiles
-                        const showCheckin = (!actualFile.isDirectory && actualFile.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
+                        const showDownload = !isPinnedProcessing && (actualFile.diffStatus === 'cloud' || hasCloudFiles)
+                        const showCheckout = !isPinnedProcessing && ((!actualFile.isDirectory && actualFile.pdmData && !actualFile.pdmData.checked_out_by && actualFile.diffStatus !== 'cloud') || checkoutableFilesCount > 0)
+                        const showCheckin = !isPinnedProcessing && ((!actualFile.isDirectory && actualFile.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles)
                         
                         if (!showDownload && !showCheckout && !showCheckin) return null
                         
@@ -2268,7 +3040,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                           <span className="inline-actions flex items-center gap-0.5 ml-1">
                             {showDownload && (
                               <button
-                                className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                                className="p-0.5 rounded hover:bg-sky-400/20 text-sky-400"
                                 onClick={(e) => handleInlineDownload(e, actualFile)}
                                 title="Download"
                               >
@@ -2279,7 +3051,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                               <button
                                 className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
                                 onClick={(e) => handleInlineCheckout(e, actualFile)}
-                                title="Check Out"
+                                title={actualFile.isDirectory && checkoutableFilesCount > 0 ? `Check out ${checkoutableFilesCount} file${checkoutableFilesCount > 1 ? 's' : ''}` : "Check Out"}
                               >
                                 <ArrowDown size={12} />
                               </button>
@@ -2370,6 +3142,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             >
               <FolderOpenIcon size={14} />
               {platform === 'darwin' ? 'Reveal in Finder' : 'Open in Explorer'}
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left text-sm hover:bg-pdm-highlight flex items-center gap-2 text-pdm-fg"
+              onClick={() => {
+                setShowVaultProperties(vaultContextMenu.vault)
+                setVaultContextMenu(null)
+              }}
+            >
+              <Info size={14} />
+              Properties
             </button>
             <div className="border-t border-pdm-border my-1" />
             <button
@@ -2508,6 +3290,205 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   </button>
                 ) : null
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Vault Properties Modal */}
+      {showVaultProperties && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          onClick={() => setShowVaultProperties(null)}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-xl shadow-2xl w-[500px] max-h-[80vh] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-pdm-border bg-pdm-bg flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-pdm-accent/20 rounded-lg">
+                  <Database size={20} className="text-pdm-accent" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-pdm-fg">{showVaultProperties.name}</h3>
+                  <p className="text-xs text-pdm-fg-muted">Vault Properties</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowVaultProperties(null)}
+                className="p-1 hover:bg-pdm-bg-light rounded text-pdm-fg-muted hover:text-pdm-fg"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-4 space-y-4 overflow-auto max-h-[60vh]">
+              {/* Location */}
+              <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Local Path</div>
+                <div className="text-sm text-pdm-fg break-all font-mono">
+                  {showVaultProperties.localPath || 'Not connected locally'}
+                </div>
+              </div>
+              
+              {/* File Statistics */}
+              {(() => {
+                // Get files for this vault
+                const vaultFiles = files.filter(f => !f.isDirectory)
+                const vaultFolders = files.filter(f => f.isDirectory)
+                
+                // Sync status counts
+                const syncedFiles = vaultFiles.filter(f => !f.diffStatus)
+                const modifiedFiles = vaultFiles.filter(f => f.diffStatus === 'modified')
+                const addedFiles = vaultFiles.filter(f => f.diffStatus === 'added')
+                const cloudFiles = vaultFiles.filter(f => f.diffStatus === 'cloud')
+                const conflictFiles = vaultFiles.filter(f => f.diffStatus === 'outdated')
+                
+                // Checkout status
+                const checkedOutByMe = vaultFiles.filter(f => f.pdmData?.checked_out_by === user?.id)
+                const checkedOutByOthers = vaultFiles.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+                
+                // Calculate total size
+                const totalLocalSize = vaultFiles
+                  .filter(f => f.diffStatus !== 'cloud')
+                  .reduce((sum, f) => sum + (f.size || 0), 0)
+                
+                const formatSize = (bytes: number) => {
+                  if (bytes === 0) return '0 B'
+                  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+                  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+                  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`
+                  return `${bytes} B`
+                }
+                
+                return (
+                  <>
+                    {/* Overview */}
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border text-center">
+                        <div className="text-2xl font-bold text-pdm-fg">{vaultFiles.length}</div>
+                        <div className="text-xs text-pdm-fg-muted">Files</div>
+                      </div>
+                      <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border text-center">
+                        <div className="text-2xl font-bold text-pdm-fg">{vaultFolders.length}</div>
+                        <div className="text-xs text-pdm-fg-muted">Folders</div>
+                      </div>
+                      <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border text-center">
+                        <div className="text-2xl font-bold text-pdm-fg">{formatSize(totalLocalSize)}</div>
+                        <div className="text-xs text-pdm-fg-muted">Local Size</div>
+                      </div>
+                    </div>
+                    
+                    {/* Sync Status */}
+                    <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                      <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">Sync Status</div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Check size={14} className="text-pdm-success" />
+                            <span className="text-sm text-pdm-fg">Synced</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{syncedFiles.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <RefreshCw size={14} className="text-pdm-warning" />
+                            <span className="text-sm text-pdm-fg">Modified</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{modifiedFiles.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Plus size={14} className="text-pdm-accent" />
+                            <span className="text-sm text-pdm-fg">Local Only (Unsynced)</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{addedFiles.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Cloud size={14} className="text-pdm-fg-muted" />
+                            <span className="text-sm text-pdm-fg">Cloud Only</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{cloudFiles.length}</span>
+                        </div>
+                        {conflictFiles.length > 0 && (
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle size={14} className="text-pdm-error" />
+                              <span className="text-sm text-pdm-fg">Conflicts</span>
+                            </div>
+                            <span className="text-sm font-medium text-pdm-error">{conflictFiles.length}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Checkout Status */}
+                    <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                      <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">Checkout Status</div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Lock size={14} className="text-pdm-accent" />
+                            <span className="text-sm text-pdm-fg">Checked out by you</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{checkedOutByMe.length}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Lock size={14} className="text-pdm-warning" />
+                            <span className="text-sm text-pdm-fg">Checked out by others</span>
+                          </div>
+                          <span className="text-sm font-medium text-pdm-fg">{checkedOutByOthers.length}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* File Types Breakdown */}
+                    {(() => {
+                      const typeCount = new Map<string, number>()
+                      vaultFiles.forEach(f => {
+                        const ext = (f.extension || 'other').toLowerCase()
+                        typeCount.set(ext, (typeCount.get(ext) || 0) + 1)
+                      })
+                      
+                      // Sort by count and take top 10
+                      const sortedTypes = [...typeCount.entries()]
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 10)
+                      
+                      if (sortedTypes.length === 0) return null
+                      
+                      return (
+                        <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                          <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">File Types</div>
+                          <div className="space-y-1.5">
+                            {sortedTypes.map(([ext, count]) => (
+                              <div key={ext} className="flex items-center justify-between">
+                                <span className="text-sm text-pdm-fg">.{ext}</span>
+                                <span className="text-sm text-pdm-fg-muted">{count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )
+              })()}
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 border-t border-pdm-border bg-pdm-bg flex justify-end">
+              <button
+                onClick={() => setShowVaultProperties(null)}
+                className="btn btn-ghost"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

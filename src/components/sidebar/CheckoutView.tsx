@@ -1,21 +1,26 @@
 import { useState } from 'react'
-import { Lock, User, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle } from 'lucide-react'
+import { Lock, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle, Shield, Unlock, FolderOpen } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../../stores/pdmStore'
-import { checkinFile, syncFile } from '../../lib/supabase'
-import { downloadFile } from '../../lib/storage'
+import { getInitials } from '../../types/pdm'
+import { checkinFile, syncFile, adminForceDiscardCheckout } from '../../lib/supabase'
+import { getDownloadUrl } from '../../lib/storage'
 
 interface CheckoutViewProps {
   onRefresh: (silent?: boolean) => void
 }
 
 export function CheckoutView({ onRefresh }: CheckoutViewProps) {
-  const { files, user, organization, vaultPath, addToast, activeVaultId, connectedVaults, addProcessingFolder, removeProcessingFolder, updateFileInStore, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled } = usePDMStore()
+  const { files, user, organization, vaultPath, addToast, activeVaultId, connectedVaults, addProcessingFolder, removeProcessingFolder, updateFileInStore, addProgressToast, updateProgressToast, removeToast, isProgressToastCancelled, setActiveView, setCurrentFolder, toggleFolder, expandedFolders } = usePDMStore()
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [selectedAddedFiles, setSelectedAddedFiles] = useState<Set<string>>(new Set())
+  const [selectedOthersFiles, setSelectedOthersFiles] = useState<Set<string>>(new Set())  // Admin: files checked out by others
   // Separate processing states so operations can run simultaneously
   const [isProcessingCheckedOut, setIsProcessingCheckedOut] = useState(false)
   const [isProcessingAdded, setIsProcessingAdded] = useState(false)
+  const [isProcessingOthers, setIsProcessingOthers] = useState(false)  // Admin processing state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  // Track which specific files are being processed to prevent re-selection
+  const [processingPaths, setProcessingPaths] = useState<Set<string>>(new Set())
   
   // Get current vault ID
   const currentVaultId = activeVaultId || connectedVaults[0]?.id
@@ -87,25 +92,46 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
   const selectedAddedCount = selectedAddedFiles.size
   const allAddedSelected = addedFiles.length > 0 && selectedAddedCount === addedFiles.length
   
+  // Admin: Selection for files checked out by others
+  const isAdmin = user?.role === 'admin'
+  
+  const toggleSelectOthers = (path: string) => {
+    setSelectedOthersFiles(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+  
+  const selectAllOthers = () => {
+    setSelectedOthersFiles(new Set(othersCheckedOutFiles.map(f => f.path)))
+  }
+  
+  const selectNoneOthers = () => {
+    setSelectedOthersFiles(new Set())
+  }
+  
+  const selectedOthersCount = selectedOthersFiles.size
+  const allOthersSelected = othersCheckedOutFiles.length > 0 && selectedOthersCount === othersCheckedOutFiles.length
+  
   // Check in checked-out files (modified files)
   const handleCheckin = async () => {
     if (!organization || !user || selectedCount === 0) return
     
     setIsProcessingCheckedOut(true)
-    let succeeded = 0
-    let failed = 0
-    let cancelled = false
-    
-    const api = (window as any).electronAPI
-    if (!api) {
-      addToast('error', 'Electron API not available')
-      setIsProcessingCheckedOut(false)
-      return
-    }
     
     const filesToCheckin = Array.from(selectedFiles)
     const total = filesToCheckin.length
     const toastId = `checkin-${Date.now()}`
+    
+    // Track which files are being processed to prevent re-selection
+    setProcessingPaths(prev => new Set([...prev, ...filesToCheckin]))
+    // Clear selection immediately so user can't re-select
+    setSelectedFiles(new Set())
     
     // Add spinners for all files being processed
     const processedPaths: string[] = []
@@ -117,119 +143,118 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       }
     })
     
-    addProgressToast(toastId, `Checking in ${total} file${total > 1 ? 's' : ''}...`, total)
+    // Calculate total bytes for progress tracking
+    const fileObjects = filesToCheckin.map(path => myCheckedOutFiles.find(f => f.path === path)).filter(Boolean)
+    const totalBytes = fileObjects.reduce((sum, f) => sum + (f?.size || f?.pdmData?.file_size || 0), 0)
+    
+    addProgressToast(toastId, `Checking in ${total} file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    const startTime = Date.now()
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
     
     try {
-      for (let i = 0; i < filesToCheckin.length; i++) {
-        // Check for cancellation
-        if (isProgressToastCancelled(toastId)) {
-          cancelled = true
-          break
+      // Process files in parallel for better performance (same logic as FileBrowser inline checkin)
+      const results = await Promise.all(fileObjects.map(async (file) => {
+        if (!file || !file.pdmData) {
+          return false
         }
         
-        const path = filesToCheckin[i]
-        const file = myCheckedOutFiles.find(f => f.path === path)
-        if (!file || !file.pdmData) {
-          updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-          continue
-        }
+        const fileSize = file.size || file.pdmData?.file_size || 0
         
         try {
-          // Check if file was moved (local path differs from server path)
-          const wasFileMoved = file.pdmData?.file_path && file.relativePath !== file.pdmData.file_path
-          const wasFileRenamed = file.pdmData?.file_name && file.name !== file.pdmData.file_name
+          const result = await checkinFile(file.pdmData.id, user.id, {
+            pendingMetadata: file.pendingMetadata
+          })
           
-          // Read file to get current hash
-          const readResult = await api.readFile(file.path)
-          
-          if (readResult?.success && readResult.hash) {
-            const result = await checkinFile(file.pdmData.id, user.id, {
-              newContentHash: readResult.hash,
-              newFileSize: file.size,
-              newFilePath: wasFileMoved ? file.relativePath : undefined,
-              newFileName: wasFileRenamed ? file.name : undefined
+          if (result.success && result.file) {
+            await window.electronAPI?.setReadonly(file.path, true)
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null, ...result.file },
+              localActiveVersion: undefined
             })
-            
-            if (result.success && result.file) {
-              // Make file read-only after check-in
-              await api.setReadonly(file.path, true)
-              // Update store with new version and clear rollback state
-              updateFileInStore(file.path, {
-                pdmData: { ...file.pdmData, ...result.file, checked_out_by: null, checked_out_user: null },
-                localHash: readResult.hash,
-                diffStatus: undefined,
-                localActiveVersion: undefined  // Clear rollback state
-              })
-              succeeded++
-            } else if (result.success) {
-              await api.setReadonly(file.path, true)
-              updateFileInStore(file.path, {
-                pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null },
-                localHash: readResult.hash,
-                diffStatus: undefined,
-                localActiveVersion: undefined
-              })
-              succeeded++
-            } else {
-              console.error('Check in failed:', result.error)
-              failed++
-            }
-          } else {
-            // Just release checkout without updating content
-            const result = await checkinFile(file.pdmData.id, user.id, {
-              newFilePath: wasFileMoved ? file.relativePath : undefined,
-              newFileName: wasFileRenamed ? file.name : undefined
+            removeProcessingFolder(file.relativePath)
+            completedBytes += fileSize
+            updateProgress()
+            return true
+          } else if (result.success) {
+            await window.electronAPI?.setReadonly(file.path, true)
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null },
+              localActiveVersion: undefined
             })
-            if (result.success && result.file) {
-              await api.setReadonly(file.path, true)
-              // Update store and clear rollback state
-              updateFileInStore(file.path, {
-                pdmData: { ...file.pdmData, ...result.file, checked_out_by: null, checked_out_user: null },
-                localHash: result.file.content_hash,
-                diffStatus: undefined,
-                localActiveVersion: undefined
-              })
-              succeeded++
-            } else if (result.success) {
-              await api.setReadonly(file.path, true)
-              updateFileInStore(file.path, {
-                pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null },
-                diffStatus: undefined,
-                localActiveVersion: undefined
-              })
-              succeeded++
-            } else {
-              console.error('Check in failed:', result.error)
-              failed++
-            }
+            removeProcessingFolder(file.relativePath)
+            completedBytes += fileSize
+            updateProgress()
+            return true
           }
+          
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return false
         } catch (err) {
           console.error('Check in error:', err)
-          failed++
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
-        
-        // Remove spinner for this file
-        removeProcessingFolder(file.relativePath)
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-      }
+      }))
+      
+      const succeeded = results.filter(r => r).length
+      const failed = results.filter(r => !r).length
       
       removeToast(toastId)
       
-      if (cancelled) {
-        addToast('info', `Check-in cancelled. ${succeeded} of ${total} files checked in.`)
-      } else if (failed > 0) {
-        addToast('warning', `Checked in ${succeeded}/${total} files (${failed} failed)`)
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
+      
+      if (failed > 0) {
+        addToast('warning', `Checked in ${succeeded}/${total} files in ${totalTime}s (${avgSpeed})`)
       } else {
-        addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+        addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
       }
-      
-      setSelectedFiles(new Set())
-      
-      // Refresh file list to update the UI
-      onRefresh(true)
     } finally {
       // Clean up any remaining spinners
       processedPaths.forEach(p => removeProcessingFolder(p))
+      // Remove from processing paths
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToCheckin.forEach(p => next.delete(p))
+        return next
+      })
       setIsProcessingCheckedOut(false)
     }
   }
@@ -241,10 +266,6 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     setIsProcessingAdded(true)
     const filesToSync = Array.from(selectedAddedFiles)
     const total = filesToSync.length
-    let cancelled = false
-    
-    let succeeded = 0
-    let failed = 0
     
     const api = (window as any).electronAPI
     if (!api) {
@@ -252,6 +273,11 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       setIsProcessingAdded(false)
       return
     }
+    
+    // Track which files are being processed to prevent re-selection
+    setProcessingPaths(prev => new Set([...prev, ...filesToSync]))
+    // Clear selection immediately so user can't re-select
+    setSelectedAddedFiles(new Set())
     
     // Add spinners for all files being processed
     const processedPaths: string[] = []
@@ -263,38 +289,71 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       }
     })
     
+    // Calculate total bytes for progress tracking
+    const fileObjects = filesToSync.map(path => addedFiles.find(f => f.path === path)).filter(Boolean)
+    const totalBytes = fileObjects.reduce((sum, f) => sum + (f?.size || 0), 0)
+    
     const toastId = `sync-${Date.now()}`
-    addProgressToast(toastId, `Checking in ${total} new file${total > 1 ? 's' : ''}...`, total)
+    addProgressToast(toastId, `Checking in ${total} new file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    const startTime = Date.now()
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
     
     try {
-      for (let i = 0; i < filesToSync.length; i++) {
-        // Check for cancellation
-        if (isProgressToastCancelled(toastId)) {
-          cancelled = true
-          break
-        }
-        
-        const path = filesToSync[i]
+      // Process files in parallel for better performance
+      const results = await Promise.all(filesToSync.map(async (path) => {
         const file = addedFiles.find(f => f.path === path)
+        const fileSize = file?.size || 0
+        
         if (!file) {
-          failed++
-          updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-          continue
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
         
         try {
-          // Read file content
           const readResult = await api.readFile(file.path)
           if (!readResult?.success || !readResult.data || !readResult.hash) {
             console.error('Failed to read file:', file.name)
-            failed++
             removeProcessingFolder(file.relativePath)
-            updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-            continue
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
           
-          // Sync to cloud
-          const { error } = await syncFile(
+          const { file: syncedFile, error } = await syncFile(
             organization.id,
             currentVaultId,
             user.id,
@@ -308,39 +367,55 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           
           if (error) {
             console.error('Sync failed:', error)
-            failed++
-          } else {
-            // Make file read-only after first sync
-            await api.setReadonly(file.path, true)
-            succeeded++
+            removeProcessingFolder(file.relativePath)
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
+          
+          await api.setReadonly(file.path, true)
+          if (syncedFile) {
+            updateFileInStore(file.path, {
+              pdmData: syncedFile,
+              localHash: readResult.hash,
+              diffStatus: undefined
+            })
+          }
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return true
         } catch (err) {
           console.error('Check in error:', err)
-          failed++
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
-        
-        // Remove spinner for this file
-        removeProcessingFolder(file.relativePath)
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-      }
+      }))
+      
+      const succeeded = results.filter(r => r).length
+      const failed = results.filter(r => !r).length
       
       removeToast(toastId)
       
-      if (cancelled) {
-        addToast('info', `Check-in cancelled. ${succeeded} of ${total} files synced.`)
-      } else if (failed > 0) {
-        addToast('warning', `Checked in ${succeeded}/${total} files (${failed} failed)`)
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
+      
+      if (failed > 0) {
+        addToast('warning', `Checked in ${succeeded}/${total} files in ${totalTime}s (${avgSpeed})`)
       } else {
-        addToast('success', `Checked in ${succeeded} new file${succeeded > 1 ? 's' : ''}`)
+        addToast('success', `Checked in ${succeeded} new file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
       }
-      
-      setSelectedAddedFiles(new Set())
-      
-      // Refresh file list to update the UI
-      onRefresh(true)
     } finally {
       // Clean up any remaining spinners
       processedPaths.forEach(p => removeProcessingFolder(p))
+      // Remove from processing paths
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToSync.forEach(p => next.delete(p))
+        return next
+      })
       setIsProcessingAdded(false)
     }
   }
@@ -360,11 +435,15 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     
     const filesToDelete = Array.from(selectedAddedFiles)
     const total = filesToDelete.length
-    let cancelled = false
+    
+    // Track which files are being processed to prevent re-selection
+    setProcessingPaths(prev => new Set([...prev, ...filesToDelete]))
+    // Clear selection immediately
+    setSelectedAddedFiles(new Set())
     
     // Track files being deleted for spinner display
-    const fileObjects = filesToDelete.map(path => addedFiles.find(f => f.path === path)).filter(Boolean)
-    const pathsBeingDeleted = fileObjects.map(f => f!.relativePath)
+    const fileObjects = filesToDelete.map(path => addedFiles.find(f => f.path === path)).filter(Boolean) as typeof addedFiles
+    const pathsBeingDeleted = fileObjects.map(f => f.relativePath)
     pathsBeingDeleted.forEach(p => addProcessingFolder(p))
     
     let succeeded = 0
@@ -378,57 +457,100 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       return
     }
     
+    const totalBytes = fileObjects.reduce((sum, f) => sum + (f?.size || f?.pdmData?.file_size || 0), 0)
     const toastId = `delete-${Date.now()}`
-    addProgressToast(toastId, `Deleting ${total} file${total > 1 ? 's' : ''}...`, total)
+    addProgressToast(toastId, `Deleting ${total} file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    const startTime = Date.now()
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
     
     try {
-      for (let i = 0; i < filesToDelete.length; i++) {
-        // Check for cancellation
-        if (isProgressToastCancelled(toastId)) {
-          cancelled = true
-          break
+      // Process files in parallel for better performance
+      const results = await Promise.all(fileObjects.map(async (file) => {
+        if (!file) {
+          return false
         }
         
-        const path = filesToDelete[i]
-        const file = addedFiles.find(f => f.path === path)
-        if (!file) {
-          updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-          continue
-        }
+        const fileSize = file.size || file.pdmData?.file_size || 0
         
         try {
+          console.log('Deleting file:', file.path)
           const result = await api.deleteItem(file.path)
-          if (result.success) {
-            succeeded++
+          completedBytes += fileSize
+          updateProgress()
+          
+          if (result?.success) {
+            console.log('Delete succeeded:', file.path)
+            return true
           } else {
-            console.error('Delete failed:', result.error)
-            failed++
+            console.error('Delete failed:', file.path, result?.error)
+            return false
           }
         } catch (err) {
-          console.error('Delete error:', err)
-          failed++
+          console.error('Delete error:', file.path, err)
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
-        
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-      }
+      }))
+      
+      succeeded = results.filter(r => r).length
+      failed = results.filter(r => !r).length
       
       removeToast(toastId)
       
-      if (cancelled) {
-        addToast('info', `Delete cancelled. ${succeeded} of ${total} files deleted.`)
-      } else if (failed > 0) {
-        addToast('warning', `Deleted ${succeeded}/${total} files (${failed} failed)`)
-      } else {
-        addToast('success', `Deleted ${succeeded} file${succeeded > 1 ? 's' : ''}`)
-      }
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
       
-      setSelectedAddedFiles(new Set())
+      if (failed > 0) {
+        addToast('warning', `Deleted ${succeeded}/${total} files in ${totalTime}s (${avgSpeed})`)
+      } else {
+        addToast('success', `Deleted ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
+      }
       
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
       // Clean up spinners
       pathsBeingDeleted.forEach(p => removeProcessingFolder(p))
+      // Remove from processing paths
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToDelete.forEach(p => next.delete(p))
+        return next
+      })
       setIsProcessingAdded(false)
     }
   }
@@ -438,9 +560,6 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     if (!organization || !user || !vaultPath || selectedCount === 0) return
     
     setIsProcessingCheckedOut(true)
-    let succeeded = 0
-    let failed = 0
-    let cancelled = false
     
     const api = (window as any).electronAPI
     if (!api) {
@@ -452,6 +571,11 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     const filesToDiscard = Array.from(selectedFiles)
     const total = filesToDiscard.length
     
+    // Track which files are being processed to prevent re-selection
+    setProcessingPaths(prev => new Set([...prev, ...filesToDiscard]))
+    // Clear selection immediately
+    setSelectedFiles(new Set())
+    
     // Add spinners for all files being processed
     const processedPaths: string[] = []
     filesToDiscard.forEach(path => {
@@ -462,123 +586,273 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       }
     })
     
+    // Calculate total bytes for progress tracking
+    const fileObjects = filesToDiscard.map(path => myCheckedOutFiles.find(f => f.path === path)).filter(Boolean)
+    const totalBytes = fileObjects.reduce((sum, f) => sum + (f?.size || f?.pdmData?.file_size || 0), 0)
+    
     const toastId = `discard-${Date.now()}`
-    addProgressToast(toastId, `Discarding changes for ${total} file${total > 1 ? 's' : ''}...`, total)
+    addProgressToast(toastId, `Discarding changes for ${total} file${total > 1 ? 's' : ''}...`, totalBytes)
+    
+    const startTime = Date.now()
+    let completedBytes = 0
+    let lastUpdateTime = startTime
+    let lastUpdateBytes = 0
+    
+    const formatSpeed = (bytesPerSec: number) => {
+      if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+      if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+      return `${bytesPerSec.toFixed(0)} B/s`
+    }
+    
+    const formatBytes = (bytes: number) => {
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+      return `${bytes} B`
+    }
+    
+    const updateProgress = () => {
+      const now = Date.now()
+      const elapsedSinceLastUpdate = (now - lastUpdateTime) / 1000
+      const bytesSinceLastUpdate = completedBytes - lastUpdateBytes
+      const recentSpeed = elapsedSinceLastUpdate > 0 ? bytesSinceLastUpdate / elapsedSinceLastUpdate : 0
+      const overallElapsed = (now - startTime) / 1000
+      const overallSpeed = overallElapsed > 0 ? completedBytes / overallElapsed : 0
+      const displaySpeed = recentSpeed > 0 ? recentSpeed : overallSpeed
+      
+      const percent = totalBytes > 0 ? Math.round((completedBytes / totalBytes) * 100) : 0
+      const label = `${formatBytes(completedBytes)}/${formatBytes(totalBytes)}`
+      updateProgressToast(toastId, completedBytes, percent, formatSpeed(displaySpeed), label)
+      
+      lastUpdateTime = now
+      lastUpdateBytes = completedBytes
+    }
     
     try {
-      for (let i = 0; i < filesToDiscard.length; i++) {
-        // Check for cancellation
-        if (isProgressToastCancelled(toastId)) {
-          cancelled = true
-          break
-        }
-        
-        const path = filesToDiscard[i]
+      // Process files in parallel for better performance
+      const results = await Promise.all(filesToDiscard.map(async (path) => {
         const file = myCheckedOutFiles.find(f => f.path === path)
+        const fileSize = file?.size || file?.pdmData?.file_size || 0
+        
         if (!file || !file.pdmData) {
-          updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-          continue
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
         
         try {
-          // Get the server version content hash
           const contentHash = file.pdmData.content_hash
           if (!contentHash) {
-            failed++
             removeProcessingFolder(file.relativePath)
-            updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-            continue
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
           
-          // Download the server version
-          const { data, error: downloadError } = await downloadFile(organization.id, contentHash)
-          if (downloadError || !data) {
-            console.error('Download failed:', downloadError)
-            failed++
+          const { url, error: urlError } = await getDownloadUrl(organization.id, contentHash)
+          if (urlError || !url) {
+            console.error('Failed to get download URL:', urlError)
             removeProcessingFolder(file.relativePath)
-            updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-            continue
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
           
-          // Make writable first
           await api.setReadonly(file.path, false)
+          const writeResult = await api.downloadUrl(url, file.path)
           
-          // Write file
-          const writeResult = await api.writeFile(file.path, data)
           if (!writeResult?.success) {
-            failed++
+            console.error('Download failed:', writeResult?.error)
             removeProcessingFolder(file.relativePath)
-            updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-            continue
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
           
-          // Release checkout without updating content (we reverted to server version)
           const result = await checkinFile(file.pdmData.id, user.id)
-          
           if (!result.success) {
             console.error('Release checkout failed:', result.error)
-            failed++
             removeProcessingFolder(file.relativePath)
-            updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-            continue
+            completedBytes += fileSize
+            updateProgress()
+            return false
           }
           
-          // Make read-only
           await api.setReadonly(file.path, true)
-          succeeded++
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return true
         } catch (err) {
           console.error('Discard changes error:', err)
-          failed++
+          removeProcessingFolder(file.relativePath)
+          completedBytes += fileSize
+          updateProgress()
+          return false
         }
-        
-        // Remove spinner for this file
-        removeProcessingFolder(file.relativePath)
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
-      }
+      }))
+      
+      const succeeded = results.filter(r => r).length
+      const failed = results.filter(r => !r).length
       
       removeToast(toastId)
       
-      if (cancelled) {
-        addToast('info', `Discard cancelled. ${succeeded} of ${total} files reverted.`)
-      } else if (failed > 0) {
-        addToast('warning', `Discarded ${succeeded}/${total} files (${failed} failed)`)
-      } else {
-        addToast('success', `Discarded changes for ${succeeded} file${succeeded > 1 ? 's' : ''}`)
-      }
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+      const avgSpeed = formatSpeed(completedBytes / Math.max(parseFloat(totalTime), 0.001))
       
-      setSelectedFiles(new Set())
+      if (failed > 0) {
+        addToast('warning', `Discarded ${succeeded}/${total} files in ${totalTime}s (${avgSpeed})`)
+      } else {
+        addToast('success', `Discarded ${succeeded} file${succeeded > 1 ? 's' : ''} in ${totalTime}s (${avgSpeed})`)
+      }
       
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
       // Clean up any remaining spinners
       processedPaths.forEach(p => removeProcessingFolder(p))
+      // Remove from processing paths
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToDiscard.forEach(p => next.delete(p))
+        return next
+      })
       setIsProcessingCheckedOut(false)
     }
   }
   
-  const FileRow = ({ file, isOwn }: { file: LocalFile; isOwn: boolean }) => {
-    const isSelected = selectedFiles.has(file.path)
+  // Admin: Force release checkout - immediately releases the checkout lock
+  // The server version stays as-is, user's local changes are orphaned
+  const handleAdminForceRelease = async () => {
+    if (!isAdmin || !organization || selectedOthersCount === 0) return
+    
+    setIsProcessingOthers(true)
+    let succeeded = 0
+    let failed = 0
+    
+    const filesToProcess = Array.from(selectedOthersFiles)
+    const total = filesToProcess.length
+    
+    // Track which files are being processed
+    setProcessingPaths(prev => new Set([...prev, ...filesToProcess]))
+    // Clear selection immediately
+    setSelectedOthersFiles(new Set())
+    
+    const toastId = `force-release-${Date.now()}`
+    addProgressToast(toastId, `Force releasing ${total} checkout${total > 1 ? 's' : ''}...`, total)
+    
+    try {
+      const results = await Promise.all(filesToProcess.map(async (path) => {
+        const file = othersCheckedOutFiles.find(f => f.path === path)
+        if (!file || !file.pdmData) return false
+        
+        try {
+          const result = await adminForceDiscardCheckout(file.pdmData.id, user!.id)
+          if (result.success) {
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null }
+            })
+            return true
+          }
+          console.error('Force release failed:', result.error)
+          return false
+        } catch (err) {
+          console.error('Force release error:', err)
+          return false
+        }
+      }))
+      
+      succeeded = results.filter(Boolean).length
+      failed = results.filter(r => !r).length
+      
+      removeToast(toastId)
+      
+      if (failed > 0) {
+        addToast('warning', `Force released ${succeeded}/${total} checkouts (${failed} failed)`)
+      } else {
+        addToast('success', `Force released ${succeeded} checkout${succeeded > 1 ? 's' : ''}`)
+      }
+      
+      onRefresh(true)
+    } finally {
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToProcess.forEach(p => next.delete(p))
+        return next
+      })
+      setIsProcessingOthers(false)
+    }
+  }
+  
+  // Navigate to file location in explorer
+  const navigateToFile = (file: LocalFile) => {
+    // Get parent folder path
+    const parts = file.relativePath.split('/')
+    parts.pop() // Remove filename
+    const parentPath = parts.join('/')
+    
+    // Expand all parent folders
+    if (parentPath) {
+      for (let i = 1; i <= parts.length; i++) {
+        const ancestorPath = parts.slice(0, i).join('/')
+        if (!expandedFolders.has(ancestorPath)) {
+          toggleFolder(ancestorPath)
+        }
+      }
+    }
+    
+    // Navigate to folder and switch to explorer view
+    setCurrentFolder(parentPath)
+    setActiveView('explorer')
+  }
+
+  const FileRow = ({ file, isOwn, showAdminSelect }: { file: LocalFile; isOwn: boolean; showAdminSelect?: boolean }) => {
+    const isSelected = isOwn ? selectedFiles.has(file.path) : selectedOthersFiles.has(file.path)
+    const isBeingProcessed = processingPaths.has(file.path)
     const checkedOutUser = (file.pdmData as any)?.checked_out_user
-    const userName = checkedOutUser?.full_name || checkedOutUser?.email || 'Unknown'
+    const userName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Unknown'
+    const avatarUrl = checkedOutUser?.avatar_url
+    const canSelect = isOwn || showAdminSelect
+    
+    // Don't render files that are being processed
+    if (isBeingProcessed) {
+      return (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded text-sm opacity-50 cursor-not-allowed">
+          <div className="w-4 h-4 border-2 border-pdm-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <Lock size={14} className="flex-shrink-0 text-pdm-fg-muted" />
+          <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
+          <span className="truncate text-pdm-fg-muted flex-1" title={file.relativePath}>
+            {file.name}
+          </span>
+        </div>
+      )
+    }
+    
+    const handleClick = () => {
+      if (isOwn) {
+        toggleSelect(file.path)
+      } else if (showAdminSelect) {
+        toggleSelectOthers(file.path)
+      }
+    }
     
     return (
       <div
-        className={`flex items-center gap-2 px-2 py-1.5 rounded text-sm cursor-pointer transition-colors ${
-          isSelected ? 'bg-pdm-highlight' : 'hover:bg-pdm-highlight/50'
-        }`}
-        onClick={() => isOwn && toggleSelect(file.path)}
+        className={`flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors ${
+          canSelect ? 'cursor-pointer' : ''
+        } ${isSelected ? 'bg-pdm-highlight' : canSelect ? 'hover:bg-pdm-highlight/50' : ''}`}
+        onClick={handleClick}
       >
-        {isOwn && (
+        {canSelect && (
           <button 
             className="flex-shrink-0"
             onClick={(e) => {
               e.stopPropagation()
-              toggleSelect(file.path)
+              handleClick()
             }}
           >
             {isSelected ? (
-              <CheckSquare size={16} className="text-pdm-accent" />
+              <CheckSquare size={16} className={showAdminSelect ? 'text-pdm-error' : 'text-pdm-accent'} />
             ) : (
               <Square size={16} className="text-pdm-fg-muted" />
             )}
@@ -586,23 +860,66 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
         )}
         <Lock size={14} className={`flex-shrink-0 ${isOwn ? 'text-pdm-warning' : 'text-pdm-error'}`} />
         <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate" title={file.relativePath}>
-            {file.name}
-          </div>
-          {!isOwn && (
-            <div className="text-xs text-pdm-fg-muted flex items-center gap-1">
-              <User size={10} />
-              {userName}
+        <span className="truncate flex-1" title={file.relativePath}>
+          {file.name}
+        </span>
+        {/* Avatar for files checked out by others */}
+        {!isOwn && (
+          <div 
+            className="flex-shrink-0 relative" 
+            title={userName}
+          >
+            {avatarUrl ? (
+              <img 
+                src={avatarUrl} 
+                alt={userName}
+                className="w-5 h-5 rounded-full ring-1 ring-pdm-error/50 bg-pdm-bg object-cover"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none'
+                  const fallback = (e.target as HTMLImageElement).nextElementSibling as HTMLElement
+                  if (fallback) fallback.classList.remove('hidden')
+                }}
+              />
+            ) : null}
+            <div 
+              className={`w-5 h-5 rounded-full ring-1 ring-pdm-error/50 bg-pdm-error/20 text-pdm-error flex items-center justify-center text-[9px] font-medium ${avatarUrl ? 'hidden' : ''}`}
+            >
+              {getInitials(userName)}
             </div>
-          )}
-        </div>
+          </div>
+        )}
+        {/* Navigate to file location */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            navigateToFile(file)
+          }}
+          className="flex-shrink-0 p-0.5 rounded hover:bg-pdm-highlight text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+          title="Show in Explorer"
+        >
+          <FolderOpen size={14} />
+        </button>
       </div>
     )
   }
   
   const AddedFileRow = ({ file }: { file: LocalFile }) => {
     const isSelected = selectedAddedFiles.has(file.path)
+    const isBeingProcessed = processingPaths.has(file.path)
+    
+    // Show processing state for files being uploaded
+    if (isBeingProcessed) {
+      return (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded text-sm opacity-50 cursor-not-allowed">
+          <div className="w-4 h-4 border-2 border-pdm-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <Plus size={14} className="flex-shrink-0 text-pdm-fg-muted" />
+          <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
+          <span className="truncate text-pdm-fg-muted flex-1" title={file.relativePath}>
+            {file.name}
+          </span>
+        </div>
+      )
+    }
     
     return (
       <div
@@ -626,14 +943,20 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
         </button>
         <Plus size={14} className="flex-shrink-0 text-pdm-success" />
         <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate" title={file.relativePath}>
-            {file.name}
-          </div>
-          <div className="text-xs text-pdm-fg-muted truncate">
-            {file.relativePath}
-          </div>
-        </div>
+        <span className="truncate flex-1" title={file.relativePath}>
+          {file.name}
+        </span>
+        {/* Navigate to file location */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            navigateToFile(file)
+          }}
+          className="flex-shrink-0 p-0.5 rounded hover:bg-pdm-highlight text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+          title="Show in Explorer"
+        >
+          <FolderOpen size={14} />
+        </button>
       </div>
     )
   }
@@ -759,13 +1082,52 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
         {/* Files checked out by others */}
         {othersCheckedOutFiles.length > 0 && (
           <div>
-            <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-3">
-              Checked Out by Others ({othersCheckedOutFiles.length})
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-pdm-fg-muted uppercase tracking-wide flex items-center gap-2">
+                <Lock size={12} className="text-pdm-error" />
+                Checked Out by Others ({othersCheckedOutFiles.length})
+              </div>
+              {isAdmin && othersCheckedOutFiles.length > 0 && (
+                <button
+                  onClick={allOthersSelected ? selectNoneOthers : selectAllOthers}
+                  className="text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+                >
+                  {allOthersSelected ? 'Deselect All' : 'Select All'}
+                </button>
+              )}
             </div>
+            
+            {/* Admin: Actions for files checked out by others */}
+            {isAdmin && selectedOthersCount > 0 && (
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-pdm-border">
+                <span className="text-xs text-pdm-fg-muted flex items-center gap-1">
+                  <Shield size={10} className="text-pdm-error" />
+                  {selectedOthersCount} selected
+                </span>
+                <div className="flex-1" />
+                <button
+                  onClick={handleAdminForceRelease}
+                  disabled={isProcessingOthers}
+                  className="btn btn-sm text-xs flex items-center gap-1 bg-pdm-error hover:bg-pdm-error/80 text-white"
+                  title="Immediately release the checkout. User's unsaved changes will be orphaned."
+                >
+                  <Unlock size={12} />
+                  Force Release
+                </button>
+              </div>
+            )}
+            
+            {/* Admin hint */}
+            {isAdmin && selectedOthersCount === 0 && (
+              <div className="text-xs text-pdm-fg-muted mb-2 px-2 py-1 bg-pdm-bg/50 rounded flex items-center gap-1">
+                <Shield size={10} />
+                Admin: Select files to force release checkout
+              </div>
+            )}
             
             <div className="space-y-1">
               {othersCheckedOutFiles.map(file => (
-                <FileRow key={file.path} file={file} isOwn={false} />
+                <FileRow key={file.path} file={file} isOwn={false} showAdminSelect={isAdmin} />
               ))}
             </div>
           </div>

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
-import { FileText, User, Clock, ArrowUp, ArrowDown, Trash2, Edit, RefreshCw, FolderPlus, MoveRight, X, FolderOpen } from 'lucide-react'
+import { FileText, User, Clock, ArrowUp, ArrowDown, Trash2, Edit, RefreshCw, FolderPlus, MoveRight, X, FolderOpen, RotateCcw } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { getRecentActivity } from '../../lib/supabase'
 import { formatDistanceToNow } from 'date-fns'
 
 interface ActivityEntry {
   id: string
-  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move'
   user_email: string
   details: Record<string, unknown>
   created_at: string
@@ -20,7 +20,8 @@ const ACTION_INFO: Record<string, { icon: React.ReactNode; label: string; color:
   checkout: { icon: <ArrowDown size={14} />, label: 'Checked out', color: 'text-pdm-error' },
   checkin: { icon: <ArrowUp size={14} />, label: 'Checked in', color: 'text-pdm-success' },
   create: { icon: <FolderPlus size={14} />, label: 'Created', color: 'text-pdm-accent' },
-  delete: { icon: <Trash2 size={14} />, label: 'Deleted', color: 'text-pdm-error' },
+  delete: { icon: <Trash2 size={14} />, label: 'Moved to trash', color: 'text-pdm-warning' },
+  restore: { icon: <RotateCcw size={14} />, label: 'Restored', color: 'text-pdm-success' },
   state_change: { icon: <RefreshCw size={14} />, label: 'State changed', color: 'text-pdm-warning' },
   revision_change: { icon: <Edit size={14} />, label: 'Revision changed', color: 'text-pdm-info' },
   rename: { icon: <Edit size={14} />, label: 'Renamed', color: 'text-pdm-fg-dim' },

@@ -11,7 +11,7 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
   return `${vaultPath}${sep}${normalizedRelative}`
 }
 
-export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'settings'
+export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'trash' | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
@@ -37,6 +37,7 @@ export interface ToastMessage {
     percent: number
     speed?: string
     cancelRequested?: boolean
+    label?: string  // Custom label (e.g., "214/398 MB") - overrides default current/total display
   }
 }
 
@@ -208,6 +209,9 @@ interface PDMState {
   // History filter (for folder-specific history view)
   historyFolderFilter: string | null
   
+  // Trash filter (for folder-specific deleted files view)
+  trashFolderFilter: string | null
+  
   // Ignore patterns (per-vault, keyed by vault ID)
   // Patterns like: "*.sim", "build/", "__pycache__/", "*.sldprt~"
   ignorePatterns: Record<string, string[]>
@@ -215,7 +219,7 @@ interface PDMState {
   // Actions - Toasts
   addToast: (type: ToastType, message: string, duration?: number) => void
   addProgressToast: (id: string, message: string, total: number) => void
-  updateProgressToast: (id: string, current: number, percent: number, speed?: string) => void
+  updateProgressToast: (id: string, current: number, percent: number, speed?: string, label?: string) => void
   requestCancelProgressToast: (id: string) => void
   isProgressToastCancelled: (id: string) => boolean
   removeToast: (id: string) => void
@@ -277,9 +281,10 @@ interface PDMState {
   setFiles: (files: LocalFile[]) => void
   setServerFiles: (files: ServerFile[]) => void
   updateFileInStore: (path: string, updates: Partial<LocalFile>) => void
+  removeFilesFromStore: (paths: string[]) => void
   updatePendingMetadata: (path: string, metadata: PendingMetadata) => void
   clearPendingMetadata: (path: string) => void
-  renameFileInStore: (oldPath: string, newPath: string, newName: string) => void
+  renameFileInStore: (oldPath: string, newPath: string, newNameOrRelPath: string, isMove?: boolean) => void
   setSelectedFiles: (paths: string[]) => void
   toggleFileSelection: (path: string, multiSelect?: boolean) => void
   selectAllFiles: () => void
@@ -318,6 +323,9 @@ interface PDMState {
   
   // Actions - History
   setHistoryFolderFilter: (folderPath: string | null) => void
+  
+  // Actions - Trash
+  setTrashFolderFilter: (folderPath: string | null) => void
   
   // Actions - Ignore Patterns
   addIgnorePattern: (vaultId: string, pattern: string) => void
@@ -460,6 +468,7 @@ export const usePDMStore = create<PDMState>()(
       processingFolders: new Set(),
       operationQueue: [],
       historyFolderFilter: null,
+      trashFolderFilter: null,
       ignorePatterns: {},
       
       // Actions - Toasts
@@ -478,11 +487,11 @@ export const usePDMStore = create<PDMState>()(
           }] 
         }))
       },
-      updateProgressToast: (id, current, percent, speed) => {
+      updateProgressToast: (id, current, percent, speed, label) => {
         set(state => ({
           toasts: state.toasts.map(t => 
             t.id === id && t.type === 'progress'
-              ? { ...t, progress: { ...t.progress!, current, percent, speed } }
+              ? { ...t, progress: { ...t.progress!, current, percent, speed, label } }
               : t
           )
         }))
@@ -663,6 +672,13 @@ export const usePDMStore = create<PDMState>()(
           )
         }))
       },
+      removeFilesFromStore: (paths) => {
+        const pathSet = new Set(paths)
+        set(state => ({
+          files: state.files.filter(f => !pathSet.has(f.path)),
+          selectedFiles: state.selectedFiles.filter(p => !pathSet.has(p))
+        }))
+      },
       updatePendingMetadata: (path, metadata) => {
         set(state => ({
           files: state.files.map(f => {
@@ -696,24 +712,40 @@ export const usePDMStore = create<PDMState>()(
           )
         }))
       },
-      renameFileInStore: (oldPath, newPath, newName) => {
+      renameFileInStore: (oldPath, newPath, newNameOrRelPath, isMove = false) => {
         const { files, selectedFiles } = get()
         
         // Update file in the files array
         const updatedFiles = files.map(f => {
           if (f.path === oldPath) {
-            // Calculate new relative path
-            const oldRelativePath = f.relativePath
-            const pathParts = oldRelativePath.split('/')
-            pathParts[pathParts.length - 1] = newName
-            const newRelativePath = pathParts.join('/')
+            let newRelativePath: string
+            let newName: string
+            
+            if (isMove) {
+              // For moves, newNameOrRelPath is the full new relative path
+              newRelativePath = newNameOrRelPath
+              newName = newNameOrRelPath.includes('/') 
+                ? newNameOrRelPath.split('/').pop()! 
+                : newNameOrRelPath
+            } else {
+              // For renames, newNameOrRelPath is just the new filename
+              newName = newNameOrRelPath
+              const pathParts = f.relativePath.split('/')
+              pathParts[pathParts.length - 1] = newName
+              newRelativePath = pathParts.join('/')
+            }
+            
+            // If the file is synced and being moved, mark it as 'moved'
+            const shouldMarkAsMoved = isMove && f.pdmData?.id
             
             return {
               ...f,
               path: newPath,
               name: newName,
               relativePath: newRelativePath,
-              extension: newName.includes('.') ? newName.split('.').pop()?.toLowerCase() || '' : ''
+              extension: newName.includes('.') ? newName.split('.').pop()?.toLowerCase() || '' : '',
+              // Set diffStatus to 'moved' if this is a synced file being moved
+              ...(shouldMarkAsMoved ? { diffStatus: 'moved' as const } : {})
             }
           }
           return f
@@ -816,6 +848,9 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - History
       setHistoryFolderFilter: (folderPath) => set({ historyFolderFilter: folderPath }),
+      
+      // Actions - Trash
+      setTrashFolderFilter: (folderPath) => set({ trashFolderFilter: folderPath }),
       
       // Actions - Ignore Patterns
       addIgnorePattern: (vaultId, pattern) => {
@@ -1084,10 +1119,11 @@ export const usePDMStore = create<PDMState>()(
         const { files, serverFiles, vaultPath } = get()
         if (!vaultPath) return []
         
-        const localPaths = new Set(files.map(f => f.relativePath))
+        // Use lowercase for case-insensitive matching (Windows compatibility)
+        const localPaths = new Set(files.map(f => f.relativePath.toLowerCase()))
         
         return serverFiles
-          .filter(sf => !localPaths.has(sf.file_path))
+          .filter(sf => !localPaths.has(sf.file_path.toLowerCase()))
           .map(sf => ({
             name: sf.name,
             path: buildFullPath(vaultPath, sf.file_path),

@@ -3,6 +3,7 @@ import { LogOut, ChevronDown, Building2, Settings, Search, File, Folder, LayoutG
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
 import { SettingsModal } from './SettingsModal'
+import { getInitials } from '../types/pdm'
 
 // Helper to log to both console and electron log file
 const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
@@ -13,11 +14,10 @@ const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data
   window.electronAPI?.log?.(level, `[MenuBar] ${message}`, data)
 }
 
-// Get user's initial for avatar fallback (first letter of name or email, never "Y" for "You")
+// Get user's initials for avatar fallback (1-2 characters from name or email)
 function getUserInitial(user: { full_name?: string | null; email?: string } | null): string {
   if (!user) return '?'
-  const name = user.full_name || user.email?.split('@')[0] || ''
-  return name.charAt(0).toUpperCase() || '?'
+  return getInitials(user.full_name || user.email)
 }
 
 interface MenuBarProps {

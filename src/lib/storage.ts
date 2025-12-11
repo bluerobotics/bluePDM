@@ -142,7 +142,115 @@ export async function downloadFile(
 }
 
 /**
+ * Progress callback for download
+ */
+export interface DownloadProgress {
+  loaded: number
+  total: number
+  speed: number // bytes per second
+}
+
+/**
+ * Download a file with real-time progress tracking
+ * Uses signed URLs and fetch with readable streams for progress
+ */
+export async function downloadFileWithProgress(
+  orgId: string,
+  hash: string,
+  onProgress?: (progress: DownloadProgress) => void
+): Promise<{ data: Blob | null; error?: string }> {
+  try {
+    // Try flat path first for signed URL
+    const flatPath = `${orgId}/${hash}`
+    let signedUrlResult = await supabase.storage
+      .from(BUCKET_NAME)
+      .createSignedUrl(flatPath, 3600) // 1 hour expiry
+    
+    // If flat path fails, try subdirectory structure
+    if (signedUrlResult.error) {
+      const storagePath = getStoragePath(orgId, hash)
+      signedUrlResult = await supabase.storage
+        .from(BUCKET_NAME)
+        .createSignedUrl(storagePath, 3600)
+      
+      if (signedUrlResult.error) {
+        return { data: null, error: signedUrlResult.error.message }
+      }
+    }
+    
+    const url = signedUrlResult.data.signedUrl
+    
+    // Use fetch with readable stream for progress tracking
+    const response = await fetch(url)
+    
+    if (!response.ok) {
+      return { data: null, error: `HTTP ${response.status}: ${response.statusText}` }
+    }
+    
+    const contentLength = response.headers.get('content-length')
+    const total = contentLength ? parseInt(contentLength, 10) : 0
+    
+    if (!response.body) {
+      // Fallback if no body (shouldn't happen)
+      const blob = await response.blob()
+      return { data: blob }
+    }
+    
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let loaded = 0
+    const startTime = Date.now()
+    let lastProgressTime = startTime
+    let lastLoaded = 0
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      
+      if (done) break
+      
+      chunks.push(value)
+      loaded += value.length
+      
+      // Calculate speed (use rolling average over last 500ms for smoother display)
+      const now = Date.now()
+      const timeSinceLastProgress = now - lastProgressTime
+      
+      if (timeSinceLastProgress >= 100 && onProgress) { // Update every 100ms
+        const bytesSinceLastProgress = loaded - lastLoaded
+        const speed = timeSinceLastProgress > 0 
+          ? (bytesSinceLastProgress / timeSinceLastProgress) * 1000 
+          : 0
+        
+        onProgress({
+          loaded,
+          total,
+          speed
+        })
+        
+        lastProgressTime = now
+        lastLoaded = loaded
+      }
+    }
+    
+    // Final progress update
+    if (onProgress) {
+      const elapsed = Date.now() - startTime
+      const speed = elapsed > 0 ? (loaded / elapsed) * 1000 : 0
+      onProgress({ loaded, total: loaded, speed })
+    }
+    
+    // Combine chunks into blob
+    const blob = new Blob(chunks)
+    return { data: blob }
+  } catch (err) {
+    console.error('[Storage] Download with progress exception:', err)
+    return { data: null, error: String(err) }
+  }
+}
+
+/**
  * Get a signed URL for direct download (faster for large files)
+ * Tries flat path first, then subdirectory structure
  */
 export async function getDownloadUrl(
   orgId: string,
@@ -150,17 +258,27 @@ export async function getDownloadUrl(
   expiresInSeconds: number = 3600
 ): Promise<{ url: string | null; error?: string }> {
   try {
-    const storagePath = getStoragePath(orgId, hash)
+    // Try flat path first (most existing files use this)
+    const flatPath = `${orgId}/${hash}`
+    let result = await supabase.storage
+      .from(BUCKET_NAME)
+      .createSignedUrl(flatPath, expiresInSeconds)
     
-    const { data, error } = await supabase.storage
+    if (!result.error && result.data) {
+      return { url: result.data.signedUrl }
+    }
+    
+    // Try subdirectory structure
+    const storagePath = getStoragePath(orgId, hash)
+    result = await supabase.storage
       .from(BUCKET_NAME)
       .createSignedUrl(storagePath, expiresInSeconds)
     
-    if (error) {
-      return { url: null, error: error.message }
+    if (result.error) {
+      return { url: null, error: result.error.message }
     }
     
-    return { url: data.signedUrl }
+    return { url: result.data.signedUrl }
   } catch (err) {
     return { url: null, error: String(err) }
   }

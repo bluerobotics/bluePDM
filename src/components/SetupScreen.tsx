@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Database, Key, Users, Loader2, Check, Copy, AlertCircle, ChevronRight, ExternalLink, Eye, EyeOff } from 'lucide-react'
 import { 
   saveConfig, 
@@ -14,6 +14,73 @@ interface SetupScreenProps {
 }
 
 type SetupMode = 'select' | 'admin' | 'member'
+
+// Minimal title bar for window dragging (shown only on setup screen)
+function SetupTitleBar() {
+  const [appVersion, setAppVersion] = useState('')
+  const [platform, setPlatform] = useState<string>('win32')
+  const [titleBarPadding, setTitleBarPadding] = useState(140)
+
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.getVersion().then(setAppVersion)
+      window.electronAPI.getPlatform().then(setPlatform)
+      window.electronAPI.getTitleBarOverlayRect?.().then((rect) => {
+        if (rect?.width) {
+          setTitleBarPadding(rect.width + 8)
+        }
+      })
+    }
+  }, [])
+
+  return (
+    <div 
+      className="h-[38px] bg-pdm-activitybar border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region relative"
+    >
+      {/* Left side - App name (add padding on macOS for window buttons) */}
+      <div 
+        className="absolute left-0 top-0 h-full flex items-center"
+        style={{ paddingLeft: platform === 'darwin' ? 72 : 16 }}
+      >
+        <div className="flex items-center gap-2 titlebar-no-drag">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
+            <path 
+              d="M12 2L2 7L12 12L22 7L12 2Z" 
+              stroke="currentColor" 
+              strokeWidth="2" 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+            />
+            <path 
+              d="M2 17L12 22L22 17" 
+              stroke="currentColor" 
+              strokeWidth="2" 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+            />
+            <path 
+              d="M2 12L12 17L22 12" 
+              stroke="currentColor" 
+              strokeWidth="2" 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="text-sm font-semibold text-pdm-fg">BluePDM</span>
+          {appVersion && (
+            <span className="text-xs text-pdm-fg-muted">v{appVersion}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Right side padding for window controls on Windows */}
+      <div 
+        className="absolute right-0 top-0 h-full"
+        style={{ paddingRight: platform === 'darwin' ? 16 : titleBarPadding }}
+      />
+    </div>
+  )
+}
 
 export function SetupScreen({ onConfigured }: SetupScreenProps) {
   const [mode, setMode] = useState<SetupMode>('select')
@@ -125,7 +192,9 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
   // Selection mode - choose admin or member
   if (mode === 'select') {
     return (
-      <div className="flex-1 flex items-center justify-center bg-pdm-bg p-8">
+      <div className="h-full flex flex-col bg-pdm-bg">
+        <SetupTitleBar />
+        <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-xl w-full">
           {/* Logo and Title */}
           <div className="text-center mb-8">
@@ -195,6 +264,7 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
             </a>
           </div>
         </div>
+        </div>
       </div>
     )
   }
@@ -204,7 +274,9 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
     // Show success screen with code
     if (generatedCode) {
       return (
-        <div className="flex-1 flex items-center justify-center bg-pdm-bg p-8">
+        <div className="h-full flex flex-col bg-pdm-bg">
+          <SetupTitleBar />
+          <div className="flex-1 flex items-center justify-center p-8">
           <div className="max-w-xl w-full">
             <div className="text-center mb-8">
               <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-green-500/20 flex items-center justify-center">
@@ -250,13 +322,16 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
               Continue to BluePDM
             </button>
           </div>
+          </div>
         </div>
       )
     }
     
     // Admin credential entry form
     return (
-      <div className="flex-1 flex items-center justify-center bg-pdm-bg p-8">
+      <div className="h-full flex flex-col bg-pdm-bg">
+        <SetupTitleBar />
+        <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-xl w-full">
           <button
             onClick={() => setMode('select')}
@@ -362,6 +437,7 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
             Find these values in your Supabase Dashboard → Project Settings → API
           </p>
         </div>
+        </div>
       </div>
     )
   }
@@ -369,7 +445,9 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
   // Member setup mode
   if (mode === 'member') {
     return (
-      <div className="flex-1 flex items-center justify-center bg-pdm-bg p-8">
+      <div className="h-full flex flex-col bg-pdm-bg">
+        <SetupTitleBar />
+        <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-xl w-full">
           <button
             onClick={() => setMode('select')}
@@ -429,6 +507,7 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
               )}
             </button>
           </div>
+        </div>
         </div>
       </div>
     )

@@ -10,8 +10,6 @@ export interface Database {
           name: string
           slug: string
           email_domains: string[]
-          vault_path: string
-          git_remote_url: string | null
           revision_scheme: 'letter' | 'numeric'
           settings: {
             require_checkout: boolean
@@ -21,6 +19,7 @@ export interface Database {
             allowed_extensions: string[]
             require_description: boolean
             require_approval_for_release: boolean
+            max_file_size_mb: number
           }
           created_at: string
         }
@@ -29,8 +28,6 @@ export interface Database {
           name: string
           slug: string
           email_domains: string[]
-          vault_path: string
-          git_remote_url?: string | null
           revision_scheme?: 'letter' | 'numeric'
           settings?: {
             require_checkout?: boolean
@@ -40,6 +37,7 @@ export interface Database {
             allowed_extensions?: string[]
             require_description?: boolean
             require_approval_for_release?: boolean
+            max_file_size_mb?: number
           }
           created_at?: string
         }
@@ -48,8 +46,6 @@ export interface Database {
           name?: string
           slug?: string
           email_domains?: string[]
-          vault_path?: string
-          git_remote_url?: string | null
           revision_scheme?: 'letter' | 'numeric'
           settings?: {
             require_checkout?: boolean
@@ -59,6 +55,7 @@ export interface Database {
             allowed_extensions?: string[]
             require_description?: boolean
             require_approval_for_release?: boolean
+            max_file_size_mb?: number
           }
           created_at?: string
         }
@@ -115,14 +112,14 @@ export interface Database {
           checked_out_at: string | null
           lock_message: string | null
           content_hash: string | null
-          git_hash: string | null
-          lfs_oid: string | null
           file_size: number
           created_at: string
           created_by: string
           updated_at: string
           updated_by: string | null
           custom_properties: Record<string, string | number | null>
+          deleted_at: string | null
+          deleted_by: string | null
         }
         Insert: {
           id?: string
@@ -143,14 +140,14 @@ export interface Database {
           checked_out_at?: string | null
           lock_message?: string | null
           content_hash?: string | null
-          git_hash?: string | null
-          lfs_oid?: string | null
           file_size?: number
           created_at?: string
           created_by: string
           updated_at?: string
           updated_by?: string | null
           custom_properties?: Record<string, string | number | null>
+          deleted_at?: string | null
+          deleted_by?: string | null
         }
         Update: {
           id?: string
@@ -171,14 +168,14 @@ export interface Database {
           checked_out_at?: string | null
           lock_message?: string | null
           content_hash?: string | null
-          git_hash?: string | null
-          lfs_oid?: string | null
           file_size?: number
           created_at?: string
           created_by?: string
           updated_at?: string
           updated_by?: string | null
           custom_properties?: Record<string, string | number | null>
+          deleted_at?: string | null
+          deleted_by?: string | null
         }
       }
       file_versions: {
@@ -188,8 +185,6 @@ export interface Database {
           version: number
           revision: string
           content_hash: string
-          git_hash: string | null
-          lfs_oid: string | null
           file_size: number
           comment: string | null
           state: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
@@ -202,9 +197,7 @@ export interface Database {
           version: number
           revision: string
           content_hash: string
-          git_hash?: string | null
-          lfs_oid?: string | null
-          file_size: number
+          file_size?: number
           comment?: string | null
           state: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
           created_at?: string
@@ -216,8 +209,6 @@ export interface Database {
           version?: number
           revision?: string
           content_hash?: string
-          git_hash?: string | null
-          lfs_oid?: string | null
           file_size?: number
           comment?: string | null
           state?: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
@@ -267,7 +258,7 @@ export interface Database {
           file_id: string | null
           user_id: string
           user_email: string
-          action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+          action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
           details: Record<string, unknown>
           created_at: string
         }
@@ -277,7 +268,7 @@ export interface Database {
           file_id?: string | null
           user_id: string
           user_email: string
-          action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+          action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
           details?: Record<string, unknown>
           created_at?: string
         }
@@ -287,7 +278,7 @@ export interface Database {
           file_id?: string | null
           user_id?: string
           user_email?: string
-          action?: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+          action?: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
           details?: Record<string, unknown>
           created_at?: string
         }
@@ -359,6 +350,7 @@ export interface Database {
       reference_type: 'component' | 'drawing_view' | 'derived' | 'copy'
       user_role: 'admin' | 'engineer' | 'viewer'
       revision_scheme: 'letter' | 'numeric'
+      activity_action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
     }
   }
 }
