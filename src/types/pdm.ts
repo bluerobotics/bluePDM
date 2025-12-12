@@ -141,6 +141,8 @@ export interface OrgSettings {
   max_file_size_mb: number
   // SolidWorks integration (org-wide)
   solidworks_dm_license_key?: string  // Document Manager API key for fast file reading
+  // REST API (org-wide)
+  api_url?: string  // External API server URL for ERP integrations
 }
 
 // User with org membership

@@ -35,7 +35,7 @@ function ActivityItem({ icon, view, title }: ActivityItemProps) {
 
 export function ActivityBar() {
   return (
-    <div className="w-12 bg-pdm-activitybar flex flex-col justify-between border-r border-pdm-border flex-shrink-0">
+    <div className="w-12 bg-pdm-activitybar flex flex-col border-r border-pdm-border flex-shrink-0">
       <div className="flex flex-col">
         <ActivityItem
           icon={<FolderTree size={24} />}
@@ -62,12 +62,6 @@ export function ActivityBar() {
           view="trash"
           title="Trash"
         />
-      </div>
-      
-      <div className="flex-1" />
-      
-      {/* Terminal at the bottom */}
-      <div className="flex flex-col">
         <ActivityItem
           icon={<Terminal size={24} />}
           view="terminal"

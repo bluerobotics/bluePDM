@@ -461,7 +461,29 @@ export async function buildServer(): Promise<FastifyInstance> {
     routePrefix: '/docs',
     uiConfig: {
       docExpansion: 'list',
-      deepLinking: true
+      deepLinking: true,
+      displayRequestDuration: true
+    },
+    theme: {
+      title: 'BluePDM API',
+      favicon: [
+        {
+          filename: 'favicon.png',
+          rel: 'icon',
+          sizes: '32x32',
+          type: 'image/png',
+          content: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAA7AAAAOwBeShxvQAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAANKSURBVFiFtZdNaBNBFMd/s5tNYps0fqTVqlQEFUEUwYMHwYMHP0BFxJMeBE+CIHgRPHj04kHw4EEQwYMgIuJBEMGDIIIHQQQPihcPiv1IbZOm2WR3x0N2k91ks9mksH8YZndm3vv9Z2bevJkVSiml0Wh4VNO1IAHQDUHSwBwQB7qAOGCY5rMAA0gCKWChKAVEJQFagB6gO0jONdADnAfOhNjzwF/gHfATyLQqwCIgYhiGUVVVhWEYlupd8P7+/rTPxU0JoBQqk8koTdPYuXOnOnHihGLYrD5OAQGk02kGBgZ4+PAhgwODdHV1ceLkCc6dO8eBAwdCFTJBNwL8BUDNQCRV0xKPx6mpqSGRSBAPQBFfgJ+EqBcq7+8G6urqAHj9+jWpVIqrV6/y4sUL0uk0t27dorGxkYMHD5aFwC3ACSHEXgCl1Hxvby9nz54llUoxMTHBhg0bOHbsGIcPH2bhwoVV/SukgS8C9GxOVrAAwB8AKRsz/gNYsGABV65cYc+ePXz//p1MJsP69eu5ePEiLS0tVROQRoMQC7AYqHMrYFlDuQD/AKQA0uk0sViMefPm0dXVRU9PD0ePHmX37t1lkfAdA7kHSMljJOcvIQQ1NTU0NDRQX19fGg8TwI9cJqBDxmKKZDLJsmXLuHTpEocOHSKRSFQ0di3ACE6lFfX19fT29rJ8+XI+fPjA+Pg4169f5/nz5yQSCa5du8bGjRurAkDSJqA2N+ecnJzE0ulJJJLZUAUAmZwfQC/2Z9u2baTTaV69esXY2Bg3btzg1atXJJNJenp6aN++vapVUu47UOu+L23D4+np6ayVbNmyxf56bGwMpRSjo6NcuHAhOwmrAbCQT0NlHgBqHPk8H4AiwDQtaxL09fXx8OFDBgYGSCQS3L17l3379lU1E3LtA0D6TULbIrJz504ePXrE169fmZiY4M6dOzx58oRkMsndu3cpzgSlFNJX+58AVKpIKYWh69ntdv369UZnZyddXV0sXryYNWvWcPz4cbZv304sFnOdCKK4B4Td86/QBiiluH//vhocHFSDg4MKaOxOCAAlvNrvKxVaLqG8xjwHQN4gHACpQKO0AajwcZ3v2yqaUoVjpK2xIZKKx8Mnn4yRV3sA/APBfwG8kT/9YgAAAABJRU5ErkJggg==', 'base64')
+        }
+      ]
+    },
+    logo: {
+      type: 'image/svg+xml',
+      content: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50">
+        <rect width="200" height="50" fill="#1e293b"/>
+        <text x="10" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="bold" fill="#3b82f6">Blue</text>
+        <text x="65" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="bold" fill="#ffffff">PDM</text>
+        <text x="120" y="35" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#64748b">API</text>
+      </svg>`)
     }
   })
   

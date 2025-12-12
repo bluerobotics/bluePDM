@@ -190,7 +190,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [apiToken, setApiToken] = useState<string | null>(null)
   const [showApiToken, setShowApiToken] = useState(false)
   const [apiTokenCopied, setApiTokenCopied] = useState(false)
-  const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL)
+  const [supabaseUrlCopied, setSupabaseUrlCopied] = useState(false)
+  const [supabaseKeyCopied, setSupabaseKeyCopied] = useState(false)
+  const [apiUrl, setApiUrl] = useState(() => {
+    // Prefer org setting, fall back to localStorage, then default
+    return organization?.settings?.api_url || localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL
+  })
   const [editingApiUrl, setEditingApiUrl] = useState(false)
   const [apiUrlInput, setApiUrlInput] = useState('')
   const [apiStatus, setApiStatus] = useState<'unknown' | 'online' | 'offline' | 'checking'>('unknown')
@@ -230,6 +235,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     return () => subscription.unsubscribe()
   }, [])
   
+  // Sync API URL from org settings when organization loads
+  useEffect(() => {
+    if (organization?.settings?.api_url) {
+      setApiUrl(organization.settings.api_url)
+      localStorage.setItem(API_URL_KEY, organization.settings.api_url)
+    }
+  }, [organization?.settings?.api_url])
+  
   // Check API status when tab is selected
   useEffect(() => {
     if (activeTab === 'api') {
@@ -243,7 +256,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     try {
       const response = await fetch(`${apiUrl}/health`, { 
         method: 'GET',
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(5000),
+        mode: 'cors'
       })
       const duration = Date.now() - start
       
@@ -256,7 +270,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         setApiStatus('offline')
         addApiCall('GET', '/health', response.status, duration)
       }
-    } catch {
+    } catch (err) {
+      console.error('API health check failed:', err)
       setApiStatus('offline')
       addApiCall('GET', '/health', 0, Date.now() - start)
     }
@@ -284,14 +299,43 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     localStorage.removeItem(API_HISTORY_KEY)
   }
   
-  const handleSaveApiUrl = () => {
-    const url = apiUrlInput.trim()
+  const handleSaveApiUrl = async () => {
+    let url = apiUrlInput.trim()
     if (url) {
+      // Auto-add https:// if missing
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'https://' + url
+      }
+      // Remove trailing slash
+      url = url.replace(/\/+$/, '')
       setApiUrl(url)
       localStorage.setItem(API_URL_KEY, url)
       // Save external URLs separately so we can toggle back to them
       if (url !== 'http://127.0.0.1:3001') {
         localStorage.setItem('bluepdm_external_api_url', url)
+        // Save to org settings (syncs to all org members)
+        if (organization && user?.role === 'admin') {
+          try {
+            const { error } = await supabase
+              .from('organizations')
+              .update({ 
+                settings: { 
+                  ...organization.settings, 
+                  api_url: url 
+                } 
+              })
+              .eq('id', organization.id)
+            if (error) throw error
+            setOrganization({
+              ...organization,
+              settings: { ...organization.settings, api_url: url }
+            })
+            addToast('success', 'API URL saved for entire organization')
+          } catch (err) {
+            console.error('Failed to save API URL to org:', err)
+            addToast('error', 'Saved locally, but failed to sync to organization')
+          }
+        }
       }
     }
     setEditingApiUrl(false)
@@ -1753,7 +1797,8 @@ See you on the team!`
                     </button>
                     <button
                       onClick={() => {
-                        const externalUrl = localStorage.getItem('bluepdm_external_api_url') || ''
+                        // Prefer org setting, then localStorage
+                        const externalUrl = organization?.settings?.api_url || localStorage.getItem('bluepdm_external_api_url') || ''
                         if (externalUrl) {
                           setApiUrl(externalUrl)
                           localStorage.setItem(API_URL_KEY, externalUrl)
@@ -1771,7 +1816,7 @@ See you on the team!`
                     >
                       ☁️ External
                       <div className="text-xs opacity-70 truncate">
-                        {apiUrl !== 'http://127.0.0.1:3001' ? new URL(apiUrl).host : 'Click to set'}
+                        {apiUrl !== 'http://127.0.0.1:3001' ? (() => { try { return new URL(apiUrl).host } catch { return apiUrl } })() : 'Click to set'}
                       </div>
                     </button>
                   </div>
@@ -1840,8 +1885,36 @@ See you on the team!`
                               </ol>
                             </div>
                             <div className="pt-2 border-t border-pdm-border mt-2">
-                              <div className="font-medium text-pdm-fg-dim mb-1">Supabase Credentials:</div>
-                              <p>Find these in <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer" className="text-pdm-accent hover:underline">Supabase Dashboard</a> → Your Project → Settings → API</p>
+                              <div className="font-medium text-pdm-fg-dim mb-1">Your Supabase Credentials:</div>
+                              {(() => {
+                                const config = getCurrentConfig()
+                                return config ? (
+                                  <div className="space-y-1 mt-1">
+                                    <div className="flex items-center gap-2">
+                                      <code className="text-[10px] bg-pdm-bg px-1 rounded flex-1 truncate">{config.url}</code>
+                                      <button 
+                                        onClick={() => navigator.clipboard.writeText(config.url)}
+                                        className="text-pdm-accent hover:text-pdm-accent-hover"
+                                        title="Copy URL"
+                                      >
+                                        <Copy size={10} />
+                                      </button>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <code className="text-[10px] bg-pdm-bg px-1 rounded flex-1 truncate">{config.anonKey.substring(0, 20)}...</code>
+                                      <button 
+                                        onClick={() => navigator.clipboard.writeText(config.anonKey)}
+                                        className="text-pdm-accent hover:text-pdm-accent-hover"
+                                        title="Copy Key"
+                                      >
+                                        <Copy size={10} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p>Find in <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer" className="text-pdm-accent hover:underline">Supabase Dashboard</a></p>
+                                )
+                              })()}
                             </div>
                             <div className="pt-2 flex gap-3">
                               <a 
@@ -1917,6 +1990,56 @@ See you on the team!`
                     </div>
                   )}
                 </div>
+                
+                {/* Supabase Credentials for Deployment */}
+                {(() => {
+                  const config = getCurrentConfig()
+                  return config ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
+                        <Key size={12} />
+                        Deployment Credentials
+                      </div>
+                      <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-border space-y-2">
+                        <div className="text-xs text-pdm-fg-muted mb-2">Use these when deploying your API server:</div>
+                        <div className="space-y-2">
+                          <div>
+                            <div className="text-xs text-pdm-fg-dim mb-1">SUPABASE_URL</div>
+                            <div className="flex items-center gap-2">
+                              <code className="flex-1 text-xs bg-pdm-bg-secondary px-2 py-1 rounded font-mono truncate">{config.url}</code>
+                              <button 
+                                onClick={() => {
+                                  navigator.clipboard.writeText(config.url)
+                                  setSupabaseUrlCopied(true)
+                                  setTimeout(() => setSupabaseUrlCopied(false), 2000)
+                                }}
+                                className={`p-1.5 rounded transition-colors ${supabaseUrlCopied ? 'text-green-400 bg-green-400/10' : 'text-pdm-fg-muted hover:text-pdm-fg hover:bg-pdm-highlight'}`}
+                              >
+                                {supabaseUrlCopied ? <Check size={14} /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-pdm-fg-dim mb-1">SUPABASE_KEY</div>
+                            <div className="flex items-center gap-2">
+                              <code className="flex-1 text-xs bg-pdm-bg-secondary px-2 py-1 rounded font-mono truncate">{config.anonKey.substring(0, 30)}...</code>
+                              <button 
+                                onClick={() => {
+                                  navigator.clipboard.writeText(config.anonKey)
+                                  setSupabaseKeyCopied(true)
+                                  setTimeout(() => setSupabaseKeyCopied(false), 2000)
+                                }}
+                                className={`p-1.5 rounded transition-colors ${supabaseKeyCopied ? 'text-green-400 bg-green-400/10' : 'text-pdm-fg-muted hover:text-pdm-fg hover:bg-pdm-highlight'}`}
+                              >
+                                {supabaseKeyCopied ? <Check size={14} /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null
+                })()}
                 
                 {/* API Token */}
                 <div className="space-y-2">

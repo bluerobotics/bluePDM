@@ -83,7 +83,10 @@ export function SettingsView() {
   const [apiToken, setApiToken] = useState<string | null>(null)
   const [showToken, setShowToken] = useState(false)
   const [tokenCopied, setTokenCopied] = useState(false)
-  const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL)
+  const [apiUrl, setApiUrl] = useState(() => {
+    // Prefer org setting, fall back to localStorage, then default
+    return organization?.settings?.api_url || localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL
+  })
   const [editingApiUrl, setEditingApiUrl] = useState(false)
   const [apiUrlInput, setApiUrlInput] = useState('')
   const [apiStatus, setApiStatus] = useState<'unknown' | 'online' | 'offline' | 'checking'>('unknown')
@@ -131,6 +134,14 @@ export function SettingsView() {
     
     return () => subscription.unsubscribe()
   }, [])
+  
+  // Sync API URL from org settings when organization loads
+  useEffect(() => {
+    if (organization?.settings?.api_url) {
+      setApiUrl(organization.settings.api_url)
+      localStorage.setItem(API_URL_KEY, organization.settings.api_url)
+    }
+  }, [organization?.settings?.api_url])
   
   // Check API status when tab is selected
   useEffect(() => {
@@ -186,14 +197,38 @@ export function SettingsView() {
     localStorage.removeItem(API_HISTORY_KEY)
   }
   
-  const handleSaveApiUrl = () => {
-    const url = apiUrlInput.trim()
+  const handleSaveApiUrl = async () => {
+    let url = apiUrlInput.trim()
     if (url) {
+      // Auto-add https:// if missing
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'https://' + url
+      }
+      // Remove trailing slash
+      url = url.replace(/\/+$/, '')
       setApiUrl(url)
       localStorage.setItem(API_URL_KEY, url)
       // Save external URLs separately so we can toggle back to them
       if (url !== 'http://127.0.0.1:3001') {
         localStorage.setItem('bluepdm_external_api_url', url)
+        // Save to org settings (syncs to all org members)
+        if (organization && user?.role === 'admin') {
+          try {
+            const newSettings = { ...organization.settings, api_url: url }
+            const { error } = await (supabase as any)
+              .from('organizations')
+              .update({ settings: newSettings })
+              .eq('id', organization.id)
+            if (!error) {
+              setOrganization({
+                ...organization,
+                settings: { ...organization.settings, api_url: url }
+              })
+            }
+          } catch (err) {
+            console.error('Failed to save API URL to org:', err)
+          }
+        }
       }
     }
     setEditingApiUrl(false)
@@ -671,7 +706,8 @@ export function SettingsView() {
               </button>
               <button
                 onClick={() => {
-                  const externalUrl = localStorage.getItem('bluepdm_external_api_url') || ''
+                  // Prefer org setting, then localStorage
+                  const externalUrl = organization?.settings?.api_url || localStorage.getItem('bluepdm_external_api_url') || ''
                   if (externalUrl) {
                     setApiUrl(externalUrl)
                     localStorage.setItem(API_URL_KEY, externalUrl)
