@@ -15,7 +15,7 @@ export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
-export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'moved' | 'ignored'
+export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored'
 
 // Connected vault - an org vault that's connected locally
 export interface ConnectedVault {
@@ -318,6 +318,11 @@ interface PDMState {
   toggleFolder: (path: string) => void
   setCurrentFolder: (path: string) => void
   
+  // Actions - Realtime Updates (incremental without full refresh)
+  addCloudFile: (pdmFile: PDMFile) => void  // Add new file from server
+  updateFilePdmData: (fileId: string, pdmData: Partial<PDMFile>) => void  // Update existing file's PDM data
+  removeCloudFile: (fileId: string) => void  // Remove file from cloud view
+  
   // Actions - Search
   setSearchQuery: (query: string) => void
   setSearchType: (type: 'files' | 'folders' | 'all') => void
@@ -407,7 +412,7 @@ interface PDMState {
   getVisibleFiles: () => LocalFile[]
   getFileByPath: (path: string) => LocalFile | undefined
   getDeletedFiles: () => LocalFile[]  // Files on server but not locally
-  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; moved: number; deleted: number; outdated: number; cloud: number }
+  getFolderDiffCounts: (folderPath: string) => { added: number; modified: number; moved: number; deleted: number; outdated: number; cloud: number; cloudNew: number }
 }
 
 const defaultColumns: ColumnConfig[] = [
@@ -851,6 +856,121 @@ export const usePDMStore = create<PDMState>()(
       },
       setCurrentFolder: (currentFolder) => set({ currentFolder }),
       
+      // Actions - Realtime Updates (incremental without full refresh)
+      addCloudFile: (pdmFile) => {
+        const { files, vaultPath } = get()
+        if (!vaultPath) return
+        
+        // Check if file already exists (by server ID or path)
+        const existingByPath = files.find(f => 
+          f.relativePath.toLowerCase() === pdmFile.file_path.toLowerCase()
+        )
+        if (existingByPath) {
+          // File already exists locally - update its pdmData instead
+          set(state => ({
+            files: state.files.map(f => 
+              f.relativePath.toLowerCase() === pdmFile.file_path.toLowerCase()
+                ? { ...f, pdmData: pdmFile, isSynced: true, diffStatus: f.localHash === pdmFile.content_hash ? undefined : 'outdated' }
+                : f
+            )
+          }))
+          return
+        }
+        
+        // Add cloud parent folders if needed
+        const pathParts = pdmFile.file_path.split('/')
+        const newFiles: LocalFile[] = []
+        
+        // Create cloud folders for parents that don't exist
+        let currentPath = ''
+        for (let i = 0; i < pathParts.length - 1; i++) {
+          currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
+          const folderExists = files.some(f => 
+            f.relativePath.toLowerCase() === currentPath.toLowerCase()
+          )
+          if (!folderExists && !newFiles.some(f => f.relativePath === currentPath)) {
+            newFiles.push({
+              name: pathParts[i],
+              path: buildFullPath(vaultPath, currentPath),
+              relativePath: currentPath,
+              isDirectory: true,
+              extension: '',
+              size: 0,
+              modifiedTime: '',
+              diffStatus: 'cloud'
+            })
+          }
+        }
+        
+        // Add the cloud file itself - mark as 'cloud_new' (green positive diff)
+        // to indicate this is a new file added by another user
+        newFiles.push({
+          name: pdmFile.file_name,
+          path: buildFullPath(vaultPath, pdmFile.file_path),
+          relativePath: pdmFile.file_path,
+          isDirectory: false,
+          extension: pdmFile.extension,
+          size: pdmFile.file_size || 0,
+          modifiedTime: pdmFile.updated_at || '',
+          pdmData: pdmFile,
+          isSynced: false, // Not synced locally (cloud only)
+          diffStatus: 'cloud_new'  // Green positive indicator - new file to download
+        })
+        
+        set(state => ({ files: [...state.files, ...newFiles] }))
+      },
+      
+      updateFilePdmData: (fileId, pdmData) => {
+        set(state => ({
+          files: state.files.map(f => {
+            if (f.pdmData?.id === fileId) {
+              const updatedPdmData = { ...f.pdmData, ...pdmData } as PDMFile
+              // Recompute diff status if content hash changed
+              let newDiffStatus = f.diffStatus
+              if (pdmData.content_hash && f.localHash) {
+                if (pdmData.content_hash !== f.localHash) {
+                  // Cloud has newer content
+                  newDiffStatus = 'outdated'
+                } else if (f.diffStatus === 'outdated') {
+                  // Hashes now match - no longer outdated
+                  newDiffStatus = undefined
+                }
+              }
+              return { 
+                ...f, 
+                pdmData: updatedPdmData,
+                diffStatus: newDiffStatus
+              }
+            }
+            return f
+          })
+        }))
+      },
+      
+      removeCloudFile: (fileId) => {
+        set(state => ({
+          files: state.files.filter(f => {
+            // Only remove cloud-only files (files that exist on server but not locally)
+            // Keep files that exist locally (they should remain as 'added' status)
+            if (f.pdmData?.id === fileId && f.diffStatus === 'cloud') {
+              return false // Remove this file
+            }
+            // If file exists locally but had pdmData, just clear the pdmData
+            if (f.pdmData?.id === fileId) {
+              // This will be handled by updateFileInStore to clear pdmData
+              return true
+            }
+            return true
+          }).map(f => {
+            // Clear pdmData from locally existing files that were deleted on server
+            if (f.pdmData?.id === fileId && f.diffStatus !== 'cloud') {
+              return { ...f, pdmData: undefined, isSynced: false, diffStatus: 'added' }
+            }
+            return f
+          })
+        }))
+      },
+      
       // Actions - Search
       setSearchQuery: (searchQuery) => set({ searchQuery }),
       setSearchType: (searchType) => set({ searchType }),
@@ -1234,6 +1354,7 @@ export const usePDMStore = create<PDMState>()(
         let deleted = 0
         let outdated = 0
         let cloud = 0
+        let cloudNew = 0
         
         // Count all files (including cloud-only entries) recursively
         const prefix = folderPath ? folderPath + '/' : ''
@@ -1251,9 +1372,10 @@ export const usePDMStore = create<PDMState>()(
           else if (file.diffStatus === 'deleted') deleted++
           else if (file.diffStatus === 'outdated') outdated++
           else if (file.diffStatus === 'cloud') cloud++
+          else if (file.diffStatus === 'cloud_new') cloudNew++
         }
         
-        return { added, modified, moved, deleted, outdated, cloud }
+        return { added, modified, moved, deleted, outdated, cloud, cloudNew }
       }
     }),
     {

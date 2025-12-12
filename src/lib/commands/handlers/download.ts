@@ -30,11 +30,11 @@ export const downloadCommand: Command<DownloadParams> = {
       return 'No files selected'
     }
     
-    // Get cloud-only files
+    // Get cloud-only files (includes both 'cloud' and 'cloud_new')
     const cloudFiles = getCloudOnlyFilesFromSelection(ctx.files, files)
     
     // Also allow empty cloud-only folders (to create them locally)
-    const hasCloudOnlyFolders = files.some(f => f.isDirectory && f.diffStatus === 'cloud')
+    const hasCloudOnlyFolders = files.some(f => f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new'))
     
     if (cloudFiles.length === 0 && !hasCloudOnlyFolders) {
       return 'No cloud files to download'
@@ -47,18 +47,9 @@ export const downloadCommand: Command<DownloadParams> = {
     const organization = ctx.organization!
     const vaultPath = ctx.vaultPath!
     
-    // Get cloud-only files and track which folders have files to download
+    // Get cloud-only files from selection
     const cloudFiles = getCloudOnlyFilesFromSelection(ctx.files, files)
-    const cloudOnlyFolders = files.filter(f => f.isDirectory && f.diffStatus === 'cloud')
-    const foldersWithCloudFiles = files
-      .filter(f => f.isDirectory)
-      .filter(folder => {
-        const folderPath = folder.relativePath.replace(/\\/g, '/')
-        return cloudFiles.some(cf => 
-          cf.relativePath.replace(/\\/g, '/').startsWith(folderPath + '/')
-        )
-      })
-      .map(f => f.relativePath)
+    const cloudOnlyFolders = files.filter(f => f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new'))
     
     // Handle empty cloud-only folders - just create them locally
     if (cloudFiles.length === 0 && cloudOnlyFolders.length > 0) {
@@ -108,22 +99,24 @@ export const downloadCommand: Command<DownloadParams> = {
       }
     }
     
-    // Track folders being processed
-    foldersWithCloudFiles.forEach(p => ctx.addProcessingFolder(p))
+    // Track only the cloud-only files being downloaded (not entire folders)
+    // This prevents spinners showing on ALL files when downloading from a parent folder
+    const cloudFilePaths = cloudFiles.map(f => f.relativePath)
+    cloudFilePaths.forEach(p => ctx.addProcessingFolder(p))
     
     const total = cloudFiles.length
     
     // Progress tracking
     const toastId = `download-${Date.now()}`
-    const folderName = foldersWithCloudFiles.length > 0
-      ? foldersWithCloudFiles[0].split('/').pop()
-      : 'files'
+    const progressLabel = total === 1 
+      ? `Downloading ${cloudFiles[0].name}...`
+      : `Downloading ${total} cloud file${total > 1 ? 's' : ''}...`
     
     const progress = new ProgressTracker(
       ctx,
       'download',
       toastId,
-      `Downloading ${folderName}...`,
+      progressLabel,
       total
     )
     
@@ -173,8 +166,8 @@ export const downloadCommand: Command<DownloadParams> = {
       }
     }
     
-    // Clean up
-    foldersWithCloudFiles.forEach(p => ctx.removeProcessingFolder(p))
+    // Clean up - remove the cloud file paths we added
+    cloudFilePaths.forEach(p => ctx.removeProcessingFolder(p))
     const { duration } = progress.finish()
     ctx.onRefresh?.(true)
     

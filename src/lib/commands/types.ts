@@ -278,16 +278,16 @@ export function getUnsyncedFilesFromSelection(files: LocalFile[], selection: Loc
   return [...new Map(result.map(f => [f.path, f])).values()]
 }
 
-// Helper to get cloud-only files from selection
+// Helper to get cloud-only files from selection (includes both 'cloud' and 'cloud_new')
 export function getCloudOnlyFilesFromSelection(files: LocalFile[], selection: LocalFile[]): LocalFile[] {
   const result: LocalFile[] = []
   
   for (const item of selection) {
     if (item.isDirectory) {
       const filesInFolder = getFilesInFolder(files, item.relativePath)
-      const cloudOnly = filesInFolder.filter(f => f.diffStatus === 'cloud')
+      const cloudOnly = filesInFolder.filter(f => f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new')
       result.push(...cloudOnly)
-    } else if (item.diffStatus === 'cloud' && item.pdmData) {
+    } else if ((item.diffStatus === 'cloud' || item.diffStatus === 'cloud_new') && item.pdmData) {
       result.push(item)
     }
   }

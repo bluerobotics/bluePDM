@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
+import { subscribeToFiles, subscribeToActivity, unsubscribeAll } from './lib/realtime'
 // Backup services removed - now handled directly via restic
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
@@ -1069,6 +1070,88 @@ function App() {
     
     return cleanup
   }, [vaultPath, loadFiles])
+
+  // Realtime subscription - instant updates from other users
+  // This provides incremental updates without requiring full vault refreshes
+  useEffect(() => {
+    if (!organization || isOfflineMode) return
+    
+    console.log('[Realtime] Setting up subscriptions for org:', organization.id)
+    
+    const { addCloudFile, updateFilePdmData, removeCloudFile, addToast } = usePDMStore.getState()
+    
+    // Subscribe to file changes
+    const unsubscribeFiles = subscribeToFiles(organization.id, (eventType, newFile, oldFile) => {
+      // Skip updates caused by current user (we handle those locally)
+      const currentUserId = usePDMStore.getState().user?.id
+      
+      switch (eventType) {
+        case 'INSERT':
+          // New file added by someone else
+          if (newFile && newFile.created_by !== currentUserId) {
+            console.log('[Realtime] New file from another user:', newFile.file_name)
+            addCloudFile(newFile)
+            // Show toast notification for new files
+            const userName = newFile.created_by === currentUserId ? 'You' : 'Another user'
+            addToast('info', `${userName} added: ${newFile.file_name}`)
+          }
+          break
+          
+        case 'UPDATE':
+          // File updated - could be checkout, version change, state change, etc.
+          if (newFile) {
+            console.log('[Realtime] File updated:', newFile.file_name)
+            updateFilePdmData(newFile.id, newFile)
+            
+            // Notify about important changes from other users
+            if (newFile.updated_by && newFile.updated_by !== currentUserId) {
+              // Check for checkout changes
+              if (oldFile?.checked_out_by !== newFile.checked_out_by) {
+                if (newFile.checked_out_by) {
+                  addToast('info', `${newFile.file_name} checked out`)
+                } else {
+                  addToast('info', `${newFile.file_name} checked in (v${newFile.version})`)
+                }
+              }
+              // Check for new version
+              else if (oldFile?.version !== newFile.version) {
+                addToast('info', `${newFile.file_name} updated to v${newFile.version}`)
+              }
+              // Check for state change
+              else if (oldFile?.state !== newFile.state) {
+                addToast('info', `${newFile.file_name} → ${newFile.state}`)
+              }
+            }
+          }
+          break
+          
+        case 'DELETE':
+          // File deleted from server
+          if (oldFile) {
+            console.log('[Realtime] File deleted:', oldFile.file_name)
+            removeCloudFile(oldFile.id)
+            if (oldFile.deleted_by !== currentUserId) {
+              addToast('warning', `${oldFile.file_name} was deleted`)
+            }
+          }
+          break
+      }
+    })
+    
+    // Subscribe to activity feed for additional notifications
+    const unsubscribeActivity = subscribeToActivity(organization.id, (activity) => {
+      // Activity notifications are handled by the file subscription above
+      // This could be used for additional features like showing activity in a panel
+      console.log('[Realtime] Activity:', activity.action, activity.details)
+    })
+    
+    return () => {
+      console.log('[Realtime] Cleaning up subscriptions')
+      unsubscribeFiles()
+      unsubscribeActivity()
+      unsubscribeAll()
+    }
+  }, [organization, isOfflineMode])
 
   // Start backup heartbeat and scheduler when user and org are available
   // Backup services removed - all backup operations are now handled directly via restic

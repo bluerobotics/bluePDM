@@ -53,7 +53,8 @@ import {
   Users,
   Check,
   ClipboardList,
-  Calendar
+  Calendar,
+  Plus
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileIconType, formatFileSize, STATE_INFO, getInitials } from '../types/pdm'
@@ -184,16 +185,28 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
     if (file.diffStatus === 'deleted') return 'ring-1 ring-red-500/50 bg-red-500/5'
     if (file.diffStatus === 'outdated') return 'ring-1 ring-purple-500/50 bg-purple-500/5'
     if (file.diffStatus === 'cloud') return 'ring-1 ring-pdm-fg-muted/30 bg-pdm-fg-muted/5'
+    if (file.diffStatus === 'cloud_new') return 'ring-1 ring-green-500/50 bg-green-500/10'  // Green for new files from server
     return ''
   }
   
-  // Get cloud files count for folders
+  // Get cloud files count for folders (includes both 'cloud' and 'cloud_new')
   const getCloudFilesCount = () => {
     if (!file.isDirectory) return 0
     const folderPrefix = file.relativePath + '/'
     return allFiles.filter(f => 
       !f.isDirectory && 
-      f.diffStatus === 'cloud' && 
+      (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new') && 
+      f.relativePath.startsWith(folderPrefix)
+    ).length
+  }
+  
+  // Get NEW cloud files count for folders (files recently added by other users - green indicator)
+  const getCloudNewFilesCount = () => {
+    if (!file.isDirectory) return 0
+    const folderPrefix = file.relativePath + '/'
+    return allFiles.filter(f => 
+      !f.isDirectory && 
+      f.diffStatus === 'cloud_new' && 
       f.relativePath.startsWith(folderPrefix)
     ).length
   }
@@ -206,6 +219,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
       !f.isDirectory && 
       (!f.pdmData || f.diffStatus === 'added') && 
       f.diffStatus !== 'cloud' && 
+      f.diffStatus !== 'cloud_new' && 
       f.diffStatus !== 'ignored' &&
       f.relativePath.startsWith(folderPrefix)
     ).length
@@ -306,6 +320,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
   }
   
   const cloudFilesCount = getCloudFilesCount()
+  const cloudNewFilesCount = getCloudNewFilesCount()
   const localOnlyFilesCount = getLocalOnlyFilesCount()
   const checkoutUsers = getCheckoutUsers()
   const iconSizeScaled = iconSize * 0.6
@@ -456,15 +471,26 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
               <div className="flex items-center" style={{ gap: spacing }}>
                 {file.isDirectory ? (
                   <>
-                    {/* Cloud files count for folders */}
-                    {cloudFilesCount > 0 && (
+                    {/* NEW cloud files count for folders - green (positive diff) */}
+                    {cloudNewFilesCount > 0 && (
+                      <span 
+                        className="flex items-center text-green-400" 
+                        style={{ gap: spacing * 0.5, fontSize: Math.max(10, statusIconSize * 0.8) }}
+                        title={`${cloudNewFilesCount} new file${cloudNewFilesCount > 1 ? 's' : ''} added by others - download to sync`}
+                      >
+                        <Plus size={statusIconSize} />
+                        <span className="font-bold">{cloudNewFilesCount}</span>
+                      </span>
+                    )}
+                    {/* Existing cloud files count for folders (not recently added) */}
+                    {cloudFilesCount > cloudNewFilesCount && (
                       <span 
                         className="flex items-center text-pdm-info" 
                         style={{ gap: spacing * 0.5, fontSize: Math.max(10, statusIconSize * 0.8) }}
-                        title={`${cloudFilesCount} cloud files to download`}
+                        title={`${cloudFilesCount - cloudNewFilesCount} cloud file${cloudFilesCount - cloudNewFilesCount > 1 ? 's' : ''} to download`}
                       >
                         <Cloud size={statusIconSize} />
-                        <span className="font-bold">{cloudFilesCount}</span>
+                        <span className="font-bold">{cloudFilesCount - cloudNewFilesCount}</span>
                       </span>
                     )}
                     {/* Local-only files count for folders - next to check-in */}
@@ -483,6 +509,9 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                   <>
                     {file.diffStatus === 'cloud' && (
                       <span title="Cloud only"><Cloud size={statusIconSize} className="text-pdm-info" /></span>
+                    )}
+                    {file.diffStatus === 'cloud_new' && (
+                      <span title="New file added by another user"><Plus size={statusIconSize} className="text-green-400" /></span>
                     )}
                     {(file.diffStatus === 'added' || file.diffStatus === 'ignored') && (
                       <span title="Local only"><HardDrive size={statusIconSize} className="text-pdm-fg-muted" /></span>
@@ -516,8 +545,8 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                 
                 const checkedOutByMe = folderFiles.filter(f => f.pdmData?.checked_out_by === user?.id).length
                 const checkedOutByOthers = folderFiles.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length
-                const syncedNotCheckedOut = folderFiles.filter(f => f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud').length
-                const localOnly = folderFiles.filter(f => !f.pdmData && f.diffStatus !== 'cloud').length
+                const syncedNotCheckedOut = folderFiles.filter(f => f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length
+                const localOnly = folderFiles.filter(f => !f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length
                 
                 return { checkedOutByMe, checkedOutByOthers, syncedNotCheckedOut, localOnly }
               }
@@ -541,8 +570,8 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
               return (
                 <div className="absolute top-1 left-1 flex items-center z-10" style={{ gap: spacing }}>
                   {/* Download button for cloud files/folders - blue down arrow */}
-                  {/* Show for: cloud-only files, folders with cloud files, OR empty cloud-only folders */}
-                  {((file.diffStatus === 'cloud' && !file.isDirectory) || (file.isDirectory && (cloudFilesCount > 0 || file.diffStatus === 'cloud'))) && onDownload && (
+                  {/* Show for: cloud-only files (including cloud_new), folders with cloud files, OR empty cloud-only folders */}
+                  {(((file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') && !file.isDirectory) || (file.isDirectory && (cloudFilesCount > 0 || file.diffStatus === 'cloud'))) && onDownload && (
                     <button
                       className="p-0.5 rounded hover:bg-pdm-info/20 text-pdm-info transition-colors cursor-pointer"
                       onClick={(e) => onDownload(e, file)}
@@ -587,7 +616,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                   {/* FOLDER: Has files checked out by others - no arrow, folder color shows status */}
                   
                   {/* FILE: Synced not checked out - orange down arrow to checkout */}
-                  {!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud' && onCheckout && (
+                  {!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && onCheckout && (
                     <button
                       className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning transition-colors cursor-pointer"
                       title="Click to check out"
@@ -609,7 +638,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                   )}
                   
                   {/* FILE: Local only - green up arrow for first check in */}
-                  {!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'ignored' && onUpload && (
+                  {!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored' && onUpload && (
                     <button
                       className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success transition-colors cursor-pointer"
                       title="First Check In"
@@ -2207,7 +2236,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     if (file.isDirectory) {
       // Navigate into folder - allow even for cloud-only folders
       navigateToFolder(file.relativePath)
-    } else if (file.diffStatus === 'cloud') {
+    } else if (file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') {
       // Cloud-only files can't be opened (not downloaded yet)
       addToast('info', 'This file is not downloaded. Right-click to download.')
     } else if (window.electronAPI) {
@@ -2222,9 +2251,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     // Get files to drag - now supports both files and folders
     let filesToDrag: LocalFile[]
     if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
-      // Multiple selection - include both files and folders
-      filesToDrag = files.filter(f => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud')
-    } else if (file.diffStatus !== 'cloud') {
+      // Multiple selection - include both files and folders (can't drag cloud-only files)
+      filesToDrag = files.filter(f => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
+    } else if (file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new') {
       filesToDrag = [file]
     } else {
       e.preventDefault()
@@ -3124,7 +3153,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         
         // Check if folder has checkoutable files (synced, not checked out)
         const hasCheckoutableFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.relativePath.startsWith(file.relativePath + '/')
         )
         
         // Check if folder has files checked out by me
@@ -3134,17 +3163,23 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         
         // Check if folder has unsynced files (for first check in)
         const hasUnsyncedFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
         )
         
         // Get local-only (unsynced) files count for folders
         const localOnlyFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
         ).length : 0
         
         // Get cloud files count for folders (files others have added that you haven't downloaded)
+        // Includes both 'cloud' and 'cloud_new' status files
         const cloudFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new') && f.relativePath.startsWith(file.relativePath + '/')
+        ).length : 0
+        
+        // Get NEW cloud files count (green positive indicator)
+        const cloudNewFilesCount = file.isDirectory ? files.filter(f => 
+          !f.isDirectory && f.diffStatus === 'cloud_new' && f.relativePath.startsWith(file.relativePath + '/')
         ).length : 0
         
         // Get checkout users for avatars (for both files and folders)
@@ -3226,27 +3261,38 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               folderCheckoutStatus={file.isDirectory ? getFolderCheckoutStatus(file.relativePath) : undefined}
               isFolderSynced={file.isDirectory ? isFolderSynced(file.relativePath) : undefined}
             />
-            <span className={`truncate flex-1 ${file.diffStatus === 'cloud' ? 'italic text-pdm-fg-muted' : ''}`}>{displayFilename}</span>
+            <span className={`truncate flex-1 ${file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new' ? 'italic text-pdm-fg-muted' : ''} ${file.diffStatus === 'cloud_new' ? 'text-green-400' : ''}`}>{displayFilename}</span>
             
-            {/* Cloud count for folders - files others have added that you haven't downloaded */}
+            {/* NEW cloud files count for folders - green positive indicator */}
+            {file.isDirectory && cloudNewFilesCount > 0 && (
+              <span className="flex items-center gap-0.5 text-xs text-green-400 flex-shrink-0" title={`${cloudNewFilesCount} new file${cloudNewFilesCount > 1 ? 's' : ''} added by others - download to sync`}>
+                <Plus size={10} />
+                <span className="font-bold">{cloudNewFilesCount}</span>
+              </span>
+            )}
+            
+            {/* Existing cloud files count for folders - files already on server that you haven't downloaded */}
             {/* Also show download button for empty cloud-only folders */}
-            {file.isDirectory && (cloudFilesCount > 0 || file.diffStatus === 'cloud') && (
-              <span className="flex items-center gap-0.5 text-xs text-pdm-info flex-shrink-0" title={cloudFilesCount > 0 ? `${cloudFilesCount} cloud files available to download` : 'Create folder locally'}>
-                {cloudFilesCount > 0 && (
+            {file.isDirectory && ((cloudFilesCount - cloudNewFilesCount > 0) || (file.diffStatus === 'cloud' && cloudFilesCount === 0)) && (
+              <span className="flex items-center gap-0.5 text-xs text-pdm-info flex-shrink-0" title={cloudFilesCount - cloudNewFilesCount > 0 ? `${cloudFilesCount - cloudNewFilesCount} cloud file${cloudFilesCount - cloudNewFilesCount > 1 ? 's' : ''} to download` : 'Create folder locally'}>
+                {cloudFilesCount - cloudNewFilesCount > 0 && (
                   <>
                     <Cloud size={10} />
-                    <span>{cloudFilesCount}</span>
+                    <span>{cloudFilesCount - cloudNewFilesCount}</span>
                   </>
                 )}
-                {/* Download button - creates empty folder or downloads files */}
-                <button
-                  className="inline-actions p-0.5 rounded hover:bg-sky-400/20 text-sky-400"
-                  onClick={(e) => handleInlineDownload(e, file)}
-                  title={cloudFilesCount > 0 ? 'Download cloud files' : 'Create folder locally'}
-                >
-                  <ArrowDown size={12} />
-                </button>
               </span>
+            )}
+            
+            {/* Download button for folders with cloud files */}
+            {file.isDirectory && (cloudFilesCount > 0 || file.diffStatus === 'cloud') && (
+              <button
+                className="inline-actions p-0.5 rounded hover:bg-sky-400/20 text-sky-400 flex-shrink-0"
+                onClick={(e) => handleInlineDownload(e, file)}
+                title={cloudFilesCount > 0 ? 'Download cloud files' : 'Create folder locally'}
+              >
+                <ArrowDown size={12} />
+              </button>
             )}
             
             {/* Local-only files count for folders - next to check-in button */}
@@ -3326,6 +3372,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 if (file.diffStatus === 'cloud') {
                   return <span title="Cloud only - not downloaded"><Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" /></span>
                 }
+                if (file.diffStatus === 'cloud_new') {
+                  return <span title="New file added by another user - download to sync"><Plus size={12} className="text-green-400 flex-shrink-0" /></span>
+                }
                 if (isSynced) {
                   return <span title="Synced with cloud"><Cloud size={12} className="text-pdm-success flex-shrink-0" /></span>
                 }
@@ -3339,7 +3388,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             })()}
             
             {/* Download for individual cloud files (not folders) - after cloud icon */}
-            {!file.isDirectory && file.diffStatus === 'cloud' && (
+            {!file.isDirectory && (file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') && (
               <button
                 className="inline-actions p-0.5 rounded hover:bg-sky-400/20 text-sky-400 flex-shrink-0"
                 onClick={(e) => handleInlineDownload(e, file)}
@@ -3353,7 +3402,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             {!isBeingProcessed(file.relativePath) && (
               <span className="inline-actions flex items-center gap-0.5 flex-shrink-0">
                 {/* First Check In - for local only files/folders */}
-                {((!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'ignored') || hasUnsyncedFiles) && (
+                {((!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored') || hasUnsyncedFiles) && (
                   <button
                     className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
                     onClick={(e) => handleInlineUpload(e, file)}
@@ -3363,7 +3412,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                   </button>
                 )}
                 {/* Check Out - for synced files/folders not checked out */}
-                {((!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles) && (
+                {((!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new') || hasCheckoutableFiles) && (
                   <button
                     className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
                     onClick={(e) => handleInlineCheckout(e, file)}
@@ -4182,7 +4231,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}
-                draggable={file.diffStatus !== 'cloud'}
+                draggable={file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new'}
                 onDragStart={(e) => handleDragStart(e, file)}
                 onDragEnd={handleDragEnd}
                 onDragOver={file.isDirectory ? (e) => handleFolderDragOver(e, file) : undefined}
@@ -4252,12 +4301,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               const hasSyncedInFolder = files.some(f => 
                 !f.isDirectory && 
                 f.pdmData &&
-                f.diffStatus !== 'cloud' && // Must be downloaded, not cloud-only
+                f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && // Must be downloaded, not cloud-only
                 (f.relativePath.startsWith(folderPrefix) || 
                  f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
               )
               if (hasSyncedInFolder) return true
-            } else if (item.pdmData && item.diffStatus !== 'cloud') {
+            } else if (item.pdmData && item.diffStatus !== 'cloud' && item.diffStatus !== 'cloud_new') {
               return true
             }
           }
@@ -4302,12 +4351,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               const filesInFolder = files.filter(f => 
                 !f.isDirectory && 
                 f.pdmData &&
-                f.diffStatus !== 'cloud' &&
+                f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' &&
                 (f.relativePath.startsWith(folderPrefix) || 
                  f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
               )
               result.push(...filesInFolder)
-            } else if (item.pdmData && item.diffStatus !== 'cloud') {
+            } else if (item.pdmData && item.diffStatus !== 'cloud' && item.diffStatus !== 'cloud_new') {
               result.push(item)
             }
           }
@@ -4468,11 +4517,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       
                       for (const item of contextFiles) {
                         if (item.isDirectory) {
-                          // Get all cloud-only files inside this folder
+                          // Get all cloud-only files inside this folder (includes cloud_new)
                           const folderPath = item.relativePath.replace(/\\/g, '/')
                           const filesInFolder = files.filter(f => {
                             if (f.isDirectory) return false
-                            if (f.diffStatus !== 'cloud') return false
+                            if (f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new') return false
                             const filePath = f.relativePath.replace(/\\/g, '/')
                             return filePath.startsWith(folderPath + '/')
                           })
@@ -4480,7 +4529,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                             filesToDownload.push(...filesInFolder)
                             foldersWithCloudFiles.push(item.relativePath)
                           }
-                        } else if (item.diffStatus === 'cloud') {
+                        } else if (item.diffStatus === 'cloud' || item.diffStatus === 'cloud_new') {
                           filesToDownload.push(item)
                         }
                       }
@@ -5225,11 +5274,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 }
                 
                 const allFilesInSelection = getAllFilesFromSelection()
-                const syncedFilesInSelection = allFilesInSelection.filter(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'added')
+                const syncedFilesInSelection = allFilesInSelection.filter(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'added')
                 const unsyncedFilesInSelection = allFilesInSelection.filter(f => !f.pdmData || f.diffStatus === 'added')
-                const hasLocalFiles = contextFiles.some(f => f.diffStatus !== 'cloud')
-                const hasSyncedFiles = syncedFilesInSelection.length > 0 || contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud')
-                const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0 || contextFiles.some(f => (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud')
+                const hasLocalFiles = contextFiles.some(f => f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
+                const hasSyncedFiles = syncedFilesInSelection.length > 0 || contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
+                const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0 || contextFiles.some(f => (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
                 
                 return (
                   <>
@@ -5307,14 +5356,14 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                             setContextMenu(null)
                             
                             const cloudFiles = contextFiles.filter(f => f.diffStatus === 'cloud')
-                            // Also get files inside cloud folders
+                            // Also get files inside cloud folders (includes cloud_new)
                             const allCloudFiles: LocalFile[] = []
                             for (const item of cloudFiles) {
                               if (item.isDirectory) {
                                 const folderPath = item.relativePath.replace(/\\/g, '/')
                                 const filesInFolder = files.filter(f => {
                                   if (f.isDirectory) return false
-                                  if (f.diffStatus !== 'cloud') return false
+                                  if (f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new') return false
                                   const filePath = f.relativePath.replace(/\\/g, '/')
                                   return filePath.startsWith(folderPath + '/')
                                 })
@@ -5907,7 +5956,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       const pathsBeingDeleted = itemsToDelete.map(f => f.relativePath)
                       pathsBeingDeleted.forEach(p => addProcessingFolder(p))
                       
-                      const totalOps = itemsToDelete.filter(f => f.diffStatus !== 'cloud').length + (isDeleteEverywhere ? syncedFiles.length : 0)
+                      const totalOps = itemsToDelete.filter(f => f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length + (isDeleteEverywhere ? syncedFiles.length : 0)
                       const toastId = `delete-${Date.now()}`
                       
                       if (isDeleteEverywhere && syncedFiles.length > 0) {
@@ -5960,7 +6009,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           }
                         } else {
                           // Regular local-only delete - in parallel
-                          const localItemsToDelete = itemsToDelete.filter(f => f.diffStatus !== 'cloud')
+                          const localItemsToDelete = itemsToDelete.filter(f => f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
                           
                           const results = await Promise.all(localItemsToDelete.map(async (file) => {
                             try {

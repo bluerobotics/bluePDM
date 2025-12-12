@@ -2,6 +2,21 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [2.1.0] - 2025-12-12
+
+### Added
+- **Real-time File Sync**: Files added, modified, or deleted by other users now appear instantly without manual refresh
+  - Green `+` indicator shows new files added by others (positive diff like git)
+  - Existing cloud files show muted cloud icon
+  - Toast notifications for file changes (check-ins, checkouts, new versions, state changes)
+  - Realtime Supabase subscriptions for instant updates across all connected clients
+  - Full vault refresh only on app open or manual F5 - everything else is incremental
+
+### Fixed
+- **Download Performance**: Clicking download on a parent folder no longer shows spinners on ALL files - only cloud-only files being downloaded show processing state
+
+---
+
 ## [2.0.0] - 2025-12-12
 
 ### Added
