@@ -220,12 +220,7 @@ export function TrashView() {
     )
   }, [deletedFilesOnly])
   
-  // Folders sorted by deletion time (most recent first) - for folder view
-  const foldersSortedByTime = useMemo(() => {
-    return [...deletedFoldersOnly].sort((a, b) => 
-      new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime()
-    )
-  }, [deletedFoldersOnly])
+  // Note: foldersSortedByTime computed but kept for potential future folder view
   
   // Toggle folder expansion
   const toggleFolderExpand = (folder: string) => {

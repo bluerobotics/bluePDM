@@ -100,6 +100,7 @@ declare global {
       getPlatform: () => Promise<string>
       getTitleBarOverlayRect: () => Promise<{ x: number; y: number; width: number; height: number }>
       getPathForFile: (file: File) => string
+      reloadApp: () => Promise<{ success: boolean; error?: string }>
       
       // System stats
       getSystemStats: () => Promise<SystemStats | null>
@@ -148,6 +149,7 @@ declare global {
       fileExists: (path: string) => Promise<boolean>
       getFileHash: (path: string) => Promise<HashResult>
       listWorkingFiles: () => Promise<FilesListResult>
+      listDirFiles: (dirPath: string) => Promise<FilesListResult>
       computeFileHashes: (files: Array<{ path: string; relativePath: string; size: number; mtime: number }>) => 
         Promise<{ success: boolean; results?: Array<{ relativePath: string; hash: string }>; error?: string }>
       onHashProgress: (callback: (progress: { processed: number; total: number; percent: number }) => void) => () => void
@@ -178,6 +180,59 @@ declare global {
       
       // SolidWorks thumbnail extraction  
       extractSolidWorksThumbnail: (filePath: string) => Promise<{ success: boolean; data?: string; error?: string }>
+      
+      // SolidWorks Service API (requires SolidWorks installed)
+      solidworks: {
+        // Service management
+        startService: (dmLicenseKey?: string) => Promise<{ success: boolean; data?: { message: string; version?: string; swInstalled?: boolean; fastModeEnabled?: boolean }; error?: string }>
+        stopService: () => Promise<{ success: boolean }>
+        getServiceStatus: () => Promise<{ success: boolean; data?: { running: boolean; version?: string } }>
+        
+        // Metadata operations
+        getBom: (filePath: string, options?: { includeChildren?: boolean; configuration?: string }) => 
+          Promise<{ success: boolean; data?: { assemblyPath: string; configuration: string; items: Array<{
+            fileName: string; filePath: string; fileType: string; quantity: number; configuration: string;
+            partNumber: string; description: string; material: string; revision: string;
+            properties: Record<string, string>;
+          }>; totalParts: number; totalQuantity: number }; error?: string }>
+        getProperties: (filePath: string, configuration?: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; fileProperties: Record<string, string>; 
+            configurationProperties: Record<string, Record<string, string>>; configurations: string[] }; error?: string }>
+        setProperties: (filePath: string, properties: Record<string, string>, configuration?: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; propertiesSet: number; configuration: string }; error?: string }>
+        getConfigurations: (filePath: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; activeConfiguration: string; 
+            configurations: Array<{ name: string; isActive: boolean; description: string; properties: Record<string, string> }>; count: number }; error?: string }>
+        getReferences: (filePath: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; references: Array<{ path: string; fileName: string; 
+            exists: boolean; fileType: string }>; count: number }; error?: string }>
+        getPreview: (filePath: string, configuration?: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; configuration: string; imageData: string; 
+            mimeType: string; width: number; height: number; sizeBytes: number }; error?: string }>
+        getMassProperties: (filePath: string, configuration?: string) => 
+          Promise<{ success: boolean; data?: { filePath: string; configuration: string; mass: number; volume: number; surfaceArea: number;
+            centerOfMass: { x: number; y: number; z: number }; momentsOfInertia: { Ixx: number; Iyy: number; Izz: number; Ixy: number; Izx: number; Iyz: number } }; error?: string }>
+        
+        // Export operations
+        exportPdf: (filePath: string, outputPath?: string) => 
+          Promise<{ success: boolean; data?: { inputFile: string; outputFile: string; fileSize: number }; error?: string }>
+        exportStep: (filePath: string, options?: { outputPath?: string; configuration?: string; exportAllConfigs?: boolean; configurations?: string[] }) => 
+          Promise<{ success: boolean; data?: { inputFile: string; exportedFiles: string[]; count: number }; error?: string }>
+        exportDxf: (filePath: string, outputPath?: string) => 
+          Promise<{ success: boolean; data?: { inputFile: string; outputFile: string; fileSize: number }; error?: string }>
+        exportIges: (filePath: string, options?: { outputPath?: string; exportAllConfigs?: boolean; configurations?: string[] }) => 
+          Promise<{ success: boolean; data?: { inputFile: string; outputFile: string; fileSize: number }; error?: string }>
+        exportStl: (filePath: string, options?: { outputPath?: string; exportAllConfigs?: boolean; configurations?: string[] }) => 
+          Promise<{ success: boolean; data?: { inputFile: string; outputFile: string; fileSize: number }; error?: string }>
+        exportImage: (filePath: string, options?: { outputPath?: string; width?: number; height?: number }) => 
+          Promise<{ success: boolean; data?: { inputFile: string; outputFile: string; width: number; height: number; fileSize: number }; error?: string }>
+        
+        // Assembly operations
+        replaceComponent: (assemblyPath: string, oldComponent: string, newComponent: string) => 
+          Promise<{ success: boolean; data?: { assemblyPath: string; oldComponent: string; newComponent: string; replacedCount: number }; error?: string }>
+        packAndGo: (filePath: string, outputFolder: string, options?: { prefix?: string; suffix?: string }) => 
+          Promise<{ success: boolean; data?: { sourceFile: string; outputFolder: string; totalFiles: number; copiedFiles: number; files: string[] }; error?: string }>
+      }
       
       // Embedded eDrawings preview
       isEDrawingsNativeAvailable: () => Promise<boolean>
@@ -313,9 +368,14 @@ declare global {
       
       // Auth session events (for OAuth callback in production)
       onSetSession: (callback: (tokens: { access_token: string; refresh_token: string; expires_in?: number; expires_at?: number }) => void) => () => void
+      
+      // External CLI command listener
+      onCliCommand: (callback: (data: { requestId: string; command: string }) => void) => () => void
+      
+      // Send CLI command response back to main process
+      sendCliResponse: (requestId: string, result: unknown) => void
     }
   }
 }
 
 export {}
-

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
-import { formatFileSize } from '../types/pdm'
 import {
   FileBox,
   Layers,
@@ -236,7 +235,11 @@ export function ContainsTab({ file }: { file: LocalFile }) {
       })
       
       if (result?.success && result.data) {
-        setBom(result.data.items)
+        // Cast fileType to the expected union type
+        setBom(result.data.items.map((item: { fileName: string; filePath: string; fileType: string; quantity: number; configuration: string; partNumber: string; description: string; material: string; revision: string; properties: Record<string, string> }) => ({
+          ...item,
+          fileType: (item.fileType === 'Part' || item.fileType === 'Assembly' ? item.fileType : 'Other') as 'Part' | 'Assembly' | 'Other'
+        })))
       } else {
         setError(result?.error || 'Failed to load BOM')
       }
@@ -807,12 +810,13 @@ export function SWPropertiesPanel({ file }: { file: LocalFile }) {
           // Get configuration data
           const configResult = await window.electronAPI?.solidworks?.getConfigurations(file.path)
           if (configResult?.success && configResult.data) {
-            setConfigurations(configResult.data.configurations)
-            setSelectedConfig(configResult.data.activeConfiguration)
+            const configData = configResult.data
+            setConfigurations(configData.configurations)
+            setSelectedConfig(configData.activeConfiguration)
             
             // Set config-specific properties for active config
-            const activeConfig = configResult.data.configurations.find(
-              (c: Configuration) => c.name === configResult.data.activeConfiguration
+            const activeConfig = configData.configurations.find(
+              (c: Configuration) => c.name === configData.activeConfiguration
             )
             if (activeConfig) {
               setConfigProperties(activeConfig.properties)
@@ -935,14 +939,13 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
   const [isExporting, setIsExporting] = useState<string | null>(null)
   const [showExportOptions, setShowExportOptions] = useState(false)
   const { status, startService, isStarting } = useSolidWorksService()
-  const { organization, addToast } = usePDMStore()
+  const { addToast } = usePDMStore()
 
   const ext = file.extension?.toLowerCase() || ''
   const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
   const fileType = ext === '.sldprt' ? 'Part' : ext === '.sldasm' ? 'Assembly' : 'Drawing'
   const isPartOrAsm = ['.sldprt', '.sldasm'].includes(ext)
   const isDrawing = ext === '.slddrw'
-  const hasApiKey = !!organization?.settings?.solidworks_dm_license_key
 
   // Load properties when service is running
   useEffect(() => {
@@ -960,10 +963,11 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
         
         if (result?.success && result.data) {
           // Handle different possible response formats
-          const props = result.data.fileProperties || result.data.customProperties || result.data.properties || result.data
+          const data = result.data as Record<string, unknown>
+          const props = data.fileProperties || data.customProperties || data.properties || result.data
           console.log('[SWPropertiesTab] Extracted properties:', props)
-          if (typeof props === 'object') {
-            setFileProperties(props)
+          if (typeof props === 'object' && props !== null) {
+            setFileProperties(props as Record<string, string>)
           }
           
           const configResult = await window.electronAPI?.solidworks?.getConfigurations(file.path)
@@ -1333,73 +1337,6 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
 
 // Keep old name for backwards compatibility
 export const SWDatacardTab = SWPropertiesTab
-
-// Property Category Accordion Component
-function PropertyCategory({ 
-  label, 
-  color, 
-  expanded, 
-  onToggle, 
-  count, 
-  children 
-}: { 
-  label: string
-  color: string
-  expanded: boolean
-  onToggle: () => void
-  count: number
-  children: React.ReactNode
-}) {
-  return (
-    <div className="border border-pdm-border rounded-lg overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-pdm-bg-light hover:bg-pdm-bg-lighter transition-colors"
-      >
-        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className={`text-xs font-medium ${color}`}>{label}</span>
-        <span className="text-xs text-pdm-fg-muted ml-auto">{count}</span>
-      </button>
-      {expanded && (
-        <div className="p-3 space-y-2 bg-pdm-bg/30">
-          {children}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Property Row Component
-function PropertyRow({ 
-  label, 
-  value, 
-  aliases 
-}: { 
-  label: string
-  value: string | null
-  aliases?: string[]
-}) {
-  return (
-    <div className="flex items-center gap-3 text-xs group py-0.5">
-      <span 
-        className="text-pdm-fg-muted w-32 truncate flex-shrink-0" 
-        title={aliases ? `Aliases: ${aliases.join(', ')}` : label}
-      >
-        {label}:
-      </span>
-      {value ? (
-        <span className="text-pdm-fg flex-1 truncate">{value}</span>
-      ) : (
-        <span className="text-pdm-fg-dim italic flex-1">—</span>
-      )}
-      {aliases && aliases.length > 0 && (
-        <span className="opacity-0 group-hover:opacity-50 text-pdm-fg-muted transition-opacity" title={`Aliases: ${aliases.join(', ')}`}>
-          <Info size={10} />
-        </span>
-      )}
-    </div>
-  )
-}
 
 // Export Actions Component
 export function SWExportActions({ file }: { file: LocalFile }) {

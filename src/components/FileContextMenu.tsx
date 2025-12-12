@@ -22,13 +22,11 @@ import {
   Users,
   Check,
   Loader2,
-  X,
   Eye,
   EyeOff as EyeOffIcon,
   Link,
   ClipboardList,
-  Calendar,
-  Clock
+  Calendar
 } from 'lucide-react'
 import { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
@@ -123,9 +121,9 @@ export function FileContextMenu({
   
   // Share link state
   const [showShareModal, setShowShareModal] = useState(false)
-  const [shareExpiresInDays, setShareExpiresInDays] = useState<number | null>(7)
-  const [shareMaxDownloads, setShareMaxDownloads] = useState<number | null>(null)
-  const [shareRequireAuth, setShareRequireAuth] = useState(false)
+  const [_shareExpiresInDays, _setShareExpiresInDays] = useState<number | null>(7)
+  const [_shareMaxDownloads, _setShareMaxDownloads] = useState<number | null>(null)
+  const [_shareRequireAuth, _setShareRequireAuth] = useState(false)
   const [generatedShareLink, setGeneratedShareLink] = useState<string | null>(null)
   const [isCreatingShareLink, setIsCreatingShareLink] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)

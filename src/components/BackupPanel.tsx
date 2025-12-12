@@ -28,13 +28,10 @@ import {
 import { usePDMStore } from '../stores/pdmStore'
 import {
   getBackupStatus,
-  getBackupConfig,
   saveBackupConfig,
-  listSnapshots,
   deleteSnapshot,
   runBackup,
   restoreFromSnapshot,
-  importDatabaseMetadata,
   getMachineId,
   getMachineName,
   getPlatform,
@@ -43,25 +40,13 @@ import {
   isDesignatedMachineOnline,
   isThisDesignatedMachine,
   requestBackup,
-  hasPendingBackupRequest,
   markBackupStarted,
   markBackupComplete,
   startBackupService,
   stopBackupService,
   type BackupStatus,
-  type BackupConfig,
-  type BackupSnapshot,
-  type DatabaseExport
+  type BackupConfig
 } from '../lib/backup'
-
-// Format bytes to human readable
-function formatBytes(bytes: number | null): string {
-  if (!bytes || bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
-}
 
 // Format date for display
 function formatDate(dateStr: string): string {
@@ -162,9 +147,9 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
   const [isSaving, setIsSaving] = useState(false)
   
   // Current machine info
-  const [currentMachineId, setCurrentMachineId] = useState<string>('')
-  const [machineName, setMachineName] = useState<string>('This Machine')
-  const [machinePlatform, setMachinePlatform] = useState<string>('')
+  const [_currentMachineId, setCurrentMachineId] = useState<string>('')
+  const [_machineName, setMachineName] = useState<string>('This Machine')
+  const [_machinePlatform, setMachinePlatform] = useState<string>('')
   const [isThisDesignated, setIsThisDesignated] = useState(false)
   const [isDesignatedOnline, setIsDesignatedOnline] = useState(false)
   
@@ -1151,7 +1136,7 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
         )}
         
         {/* Non-admin notice */}
-        {!isAdmin && status?.snapshots.length > 0 && (
+        {!isAdmin && (status?.snapshots?.length ?? 0) > 0 && (
           <div className="p-2 rounded bg-pdm-bg-secondary border border-pdm-border">
             <p className="text-xs text-pdm-fg-muted text-center">
               Only admins can run backups and restore

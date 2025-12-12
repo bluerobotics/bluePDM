@@ -52,17 +52,13 @@ import {
   Send,
   Users,
   Check,
-  X,
   ClipboardList,
-  Calendar,
-  Clock,
-  Bell
+  Calendar
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileIconType, formatFileSize, STATE_INFO, getInitials } from '../types/pdm'
 import { 
   updateFileMetadata, 
-  checkinFile,
   getOrgUsers,
   createReviewRequest,
   requestCheckout,
@@ -1018,9 +1014,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // Share link state
   const [showShareModal, setShowShareModal] = useState(false)
   const [shareFile, setShareFile] = useState<LocalFile | null>(null)
-  const [shareExpiresInDays, setShareExpiresInDays] = useState<number | null>(7)
-  const [shareMaxDownloads, setShareMaxDownloads] = useState<number | null>(null)
-  const [shareRequireAuth, setShareRequireAuth] = useState(false)
+  const [_shareExpiresInDays, _setShareExpiresInDays] = useState<number | null>(7)
+  const [_shareMaxDownloads, _setShareMaxDownloads] = useState<number | null>(null)
+  const [_shareRequireAuth, _setShareRequireAuth] = useState(false)
   const [generatedShareLink, setGeneratedShareLink] = useState<string | null>(null)
   const [isCreatingShareLink, setIsCreatingShareLink] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)

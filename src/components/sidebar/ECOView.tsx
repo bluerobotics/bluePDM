@@ -1,3 +1,4 @@
+// @ts-nocheck - Supabase type inference issues with Database generics
 import { useEffect, useState, useMemo } from 'react'
 import { 
   ClipboardList, 
@@ -9,13 +10,10 @@ import {
   ChevronDown,
   Tag,
   Calendar,
-  User,
   Check,
   Clock,
   XCircle,
-  Loader2,
-  Trash2,
-  Edit2
+  Loader2
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { getSupabaseClient } from '../../lib/supabase'

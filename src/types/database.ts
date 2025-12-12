@@ -721,7 +721,7 @@ export interface Database {
           created_at?: string
         }
       }
-      gate_reviewers: {
+      workflow_gate_reviewers: {
         Row: {
           id: string
           gate_id: string
@@ -776,7 +776,7 @@ export interface Database {
           assigned_by?: string | null
         }
       }
-      pending_workflow_reviews: {
+      pending_reviews: {
         Row: {
           id: string
           org_id: string
@@ -903,9 +903,250 @@ export interface Database {
           created_at?: string
         }
       }
+      // Backup configuration
+      backup_config: {
+        Row: {
+          id: string
+          org_id: string
+          provider: 'backblaze_b2' | 'aws_s3' | 'google_cloud'
+          bucket: string | null
+          region: string | null
+          endpoint: string | null
+          access_key_encrypted: string | null
+          secret_key_encrypted: string | null
+          restic_password_encrypted: string | null
+          retention_daily: number
+          retention_weekly: number
+          retention_monthly: number
+          retention_yearly: number
+          schedule_enabled: boolean
+          schedule_hour: number
+          schedule_minute: number
+          schedule_timezone: string
+          designated_machine_id: string | null
+          designated_machine_name: string | null
+          designated_machine_platform: string | null
+          designated_machine_user_email: string | null
+          designated_machine_last_seen: string | null
+          backup_requested_at: string | null
+          backup_requested_by: string | null
+          backup_running_since: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          provider?: 'backblaze_b2' | 'aws_s3' | 'google_cloud'
+          bucket?: string | null
+          region?: string | null
+          endpoint?: string | null
+          access_key_encrypted?: string | null
+          secret_key_encrypted?: string | null
+          restic_password_encrypted?: string | null
+          retention_daily?: number
+          retention_weekly?: number
+          retention_monthly?: number
+          retention_yearly?: number
+          schedule_enabled?: boolean
+          schedule_hour?: number
+          schedule_minute?: number
+          schedule_timezone?: string
+          designated_machine_id?: string | null
+          designated_machine_name?: string | null
+          designated_machine_platform?: string | null
+          designated_machine_user_email?: string | null
+          designated_machine_last_seen?: string | null
+          backup_requested_at?: string | null
+          backup_requested_by?: string | null
+          backup_running_since?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          provider?: 'backblaze_b2' | 'aws_s3' | 'google_cloud'
+          bucket?: string | null
+          region?: string | null
+          endpoint?: string | null
+          access_key_encrypted?: string | null
+          secret_key_encrypted?: string | null
+          restic_password_encrypted?: string | null
+          retention_daily?: number
+          retention_weekly?: number
+          retention_monthly?: number
+          retention_yearly?: number
+          schedule_enabled?: boolean
+          schedule_hour?: number
+          schedule_minute?: number
+          schedule_timezone?: string
+          designated_machine_id?: string | null
+          designated_machine_name?: string | null
+          designated_machine_platform?: string | null
+          designated_machine_user_email?: string | null
+          designated_machine_last_seen?: string | null
+          backup_requested_at?: string | null
+          backup_requested_by?: string | null
+          backup_running_since?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      // File watchers
+      file_watchers: {
+        Row: {
+          id: string
+          org_id: string
+          file_id: string
+          user_id: string
+          notify_on_checkin: boolean
+          notify_on_checkout: boolean
+          notify_on_state_change: boolean
+          notify_on_review: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          file_id: string
+          user_id: string
+          notify_on_checkin?: boolean
+          notify_on_checkout?: boolean
+          notify_on_state_change?: boolean
+          notify_on_review?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          file_id?: string
+          user_id?: string
+          notify_on_checkin?: boolean
+          notify_on_checkout?: boolean
+          notify_on_state_change?: boolean
+          notify_on_review?: boolean
+          created_at?: string
+        }
+      }
+      // File share links
+      file_share_links: {
+        Row: {
+          id: string
+          org_id: string
+          file_id: string
+          token: string
+          created_by: string
+          expires_at: string | null
+          max_downloads: number | null
+          download_count: number
+          password_hash: string | null
+          file_version: number | null
+          allow_download: boolean
+          require_auth: boolean
+          created_at: string
+          last_accessed_at: string | null
+          is_active: boolean
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          file_id: string
+          token: string
+          created_by: string
+          expires_at?: string | null
+          max_downloads?: number | null
+          download_count?: number
+          password_hash?: string | null
+          file_version?: number | null
+          allow_download?: boolean
+          require_auth?: boolean
+          created_at?: string
+          last_accessed_at?: string | null
+          is_active?: boolean
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          file_id?: string
+          token?: string
+          created_by?: string
+          expires_at?: string | null
+          max_downloads?: number | null
+          download_count?: number
+          password_hash?: string | null
+          file_version?: number | null
+          allow_download?: boolean
+          require_auth?: boolean
+          created_at?: string
+          last_accessed_at?: string | null
+          is_active?: boolean
+        }
+      }
+      // File comments (optional)
+      file_comments: {
+        Row: {
+          id: string
+          file_id: string
+          user_id: string
+          comment: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          file_id: string
+          user_id: string
+          comment: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          file_id?: string
+          user_id?: string
+          comment?: string
+          created_at?: string
+        }
+      }
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      create_default_workflow: {
+        Args: { p_org_id: string; p_created_by: string }
+        Returns: string
+      }
+      get_available_transitions: {
+        Args: { p_file_id: string }
+        Returns: Array<{
+          transition_id: string
+          transition_name: string | null
+          to_state_id: string
+          to_state_name: string
+          to_state_color: string
+          has_gates: boolean
+          user_can_transition: boolean
+        }>
+      }
+      get_my_pending_reviews: {
+        Args: Record<string, never>
+        Returns: Array<unknown>
+      }
+      update_backup_heartbeat: {
+        Args: { p_org_id: string; p_machine_id: string }
+        Returns: boolean
+      }
+      request_backup: {
+        Args: { p_org_id: string; p_requested_by: string }
+        Returns: boolean
+      }
+      start_backup: {
+        Args: { p_org_id: string; p_machine_id: string }
+        Returns: boolean
+      }
+      complete_backup: {
+        Args: { p_org_id: string; p_machine_id: string }
+        Returns: boolean
+      }
+    }
     Enums: {
       file_state: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
       file_type: 'part' | 'assembly' | 'drawing' | 'document' | 'other'
@@ -922,6 +1163,7 @@ export interface Database {
       reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
       transition_line_style: 'solid' | 'dashed' | 'dotted'
     }
+    CompositeTypes: Record<string, never>
   }
 }
 

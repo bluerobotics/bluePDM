@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { 
   HardDrive, 
   Folder, 
-  FolderOpen,
   FileText,
   FileSpreadsheet,
   FileImage,
@@ -12,7 +11,6 @@ import {
   File,
   ChevronRight,
   ChevronDown,
-  LogIn,
   LogOut,
   RefreshCw,
   Star,
@@ -21,8 +19,6 @@ import {
   Trash2,
   Users,
   Loader2,
-  Plus,
-  UploadCloud,
   Download,
   MoreVertical,
   Home,
@@ -32,10 +28,7 @@ import {
   Search,
   X,
   Edit2,
-  Copy,
-  Move,
   ExternalLink,
-  Info,
   FolderPlus,
   Presentation,
   FileCode,
@@ -124,8 +117,8 @@ export function GoogleDrivePanel() {
   
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
-  const [sortBy, setSortBy] = useState<SortBy>('name')
-  const [sortDesc, setSortDesc] = useState(false)
+  const [sortBy, _setSortBy] = useState<SortBy>('name')
+  const [sortDesc, _setSortDesc] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [specialView, setSpecialView] = useState<'starred' | 'recent' | 'shared' | 'trash' | null>(null)
   
