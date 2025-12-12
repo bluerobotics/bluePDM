@@ -78,12 +78,12 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       ctx.onRefresh?.(true)
       
       if (deleted > 0) {
-        ctx.addToast('success', `Deleted ${deleted} folder${deleted !== 1 ? 's' : ''}`)
+        ctx.addToast('success', `Removed ${deleted} local folder${deleted !== 1 ? 's' : ''}`)
       }
       
       return {
         success: true,
-        message: `Deleted ${deleted} folder${deleted !== 1 ? 's' : ''}`,
+        message: `Removed ${deleted} local folder${deleted !== 1 ? 's' : ''}`,
         total: localFolders.length,
         succeeded: deleted,
         failed: localFolders.length - deleted
@@ -213,18 +213,18 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
     // Refresh file list
     ctx.onRefresh?.(true)
     
-    // Show result toast
+    // Show result toast - be clear this is local-only deletion
     if (failed > 0) {
-      ctx.addToast('warning', `Removed ${succeeded}/${total} files`)
+      ctx.addToast('warning', `Removed ${succeeded}/${total} local files (server copies preserved)`)
     } else if (succeeded > 0) {
-      ctx.addToast('success', `Removed ${succeeded} file${succeeded > 1 ? 's' : ''}`)
+      ctx.addToast('success', `Removed ${succeeded} local file${succeeded > 1 ? 's' : ''} (server copies preserved)`)
     }
     
     return {
       success: failed === 0,
       message: failed > 0
-        ? `Removed ${succeeded}/${total} files`
-        : `Removed ${succeeded} file${succeeded > 1 ? 's' : ''}`,
+        ? `Removed ${succeeded}/${total} local files (server copies preserved)`
+        : `Removed ${succeeded} local file${succeeded > 1 ? 's' : ''} (server copies preserved)`,
       total,
       succeeded,
       failed,
@@ -343,13 +343,13 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       foldersToDelete.forEach(f => ctx.removeProcessingFolder(f.relativePath))
       
       if (deleted > 0) {
-        ctx.addToast('success', `Deleted ${deleted} folder${deleted !== 1 ? 's' : ''} locally`)
+        ctx.addToast('success', `Removed ${deleted} local folder${deleted !== 1 ? 's' : ''} (not synced to server)`)
         ctx.onRefresh?.(true)
       }
       
       return {
         success: true,
-        message: `Deleted ${deleted} folder${deleted !== 1 ? 's' : ''} locally`,
+        message: `Removed ${deleted} local folder${deleted !== 1 ? 's' : ''} (not synced to server)`,
         total: foldersToDelete.length,
         succeeded: deleted,
         failed: foldersToDelete.length - deleted
@@ -416,20 +416,35 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // Refresh file list
     ctx.onRefresh?.(true)
     
-    const displayCount = deletedServer > 0 ? deletedServer : deletedLocal
     const failed = uniqueFiles.length - deletedServer
     
-    if (displayCount > 0) {
-      ctx.addToast('success', `Deleted ${displayCount} item${displayCount !== 1 ? 's' : ''}`)
+    // Build descriptive message
+    let message = ''
+    if (deletedServer > 0 && deletedLocal > 0) {
+      message = `Deleted ${deletedServer} file${deletedServer !== 1 ? 's' : ''} from server (moved to trash) and removed local copies`
+    } else if (deletedServer > 0) {
+      message = `Deleted ${deletedServer} file${deletedServer !== 1 ? 's' : ''} from server (moved to trash)`
+    } else if (deletedLocal > 0) {
+      message = `Removed ${deletedLocal} local file${deletedLocal !== 1 ? 's' : ''}`
+    } else {
+      message = 'No files deleted'
+    }
+    
+    if (deletedServer > 0 || deletedLocal > 0) {
+      ctx.addToast('success', message)
     }
     
     return {
       success: failed === 0,
-      message: `Deleted ${displayCount} item${displayCount !== 1 ? 's' : ''}`,
+      message,
       total: uniqueFiles.length || files.length,
       succeeded: deletedServer || deletedLocal,
       failed,
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
+      details: {
+        deletedFromServer: deletedServer,
+        deletedLocally: deletedLocal
+      }
     }
   }
 }

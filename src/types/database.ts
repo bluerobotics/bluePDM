@@ -341,6 +341,568 @@ export interface Database {
           granted_at?: string
         }
       }
+      ecos: {
+        Row: {
+          id: string
+          org_id: string
+          eco_number: string
+          title: string | null
+          description: string | null
+          status: 'open' | 'in_progress' | 'completed' | 'cancelled'
+          created_at: string
+          created_by: string
+          updated_at: string
+          updated_by: string | null
+          completed_at: string | null
+          custom_properties: Record<string, unknown>
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          eco_number: string
+          title?: string | null
+          description?: string | null
+          status?: 'open' | 'in_progress' | 'completed' | 'cancelled'
+          created_at?: string
+          created_by: string
+          updated_at?: string
+          updated_by?: string | null
+          completed_at?: string | null
+          custom_properties?: Record<string, unknown>
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          eco_number?: string
+          title?: string | null
+          description?: string | null
+          status?: 'open' | 'in_progress' | 'completed' | 'cancelled'
+          created_at?: string
+          created_by?: string
+          updated_at?: string
+          updated_by?: string | null
+          completed_at?: string | null
+          custom_properties?: Record<string, unknown>
+        }
+      }
+      file_ecos: {
+        Row: {
+          id: string
+          file_id: string
+          eco_id: string
+          created_at: string
+          created_by: string
+          notes: string | null
+        }
+        Insert: {
+          id?: string
+          file_id: string
+          eco_id: string
+          created_at?: string
+          created_by: string
+          notes?: string | null
+        }
+        Update: {
+          id?: string
+          file_id?: string
+          eco_id?: string
+          created_at?: string
+          created_by?: string
+          notes?: string | null
+        }
+      }
+      // Reviews & Notifications tables
+      reviews: {
+        Row: {
+          id: string
+          org_id: string
+          file_id: string
+          vault_id: string | null
+          requested_by: string
+          requested_at: string
+          title: string | null
+          message: string | null
+          file_version: number
+          status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          completed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          file_id: string
+          vault_id?: string | null
+          requested_by: string
+          requested_at?: string
+          title?: string | null
+          message?: string | null
+          file_version: number
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          file_id?: string
+          vault_id?: string | null
+          requested_by?: string
+          requested_at?: string
+          title?: string | null
+          message?: string | null
+          file_version?: number
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      review_responses: {
+        Row: {
+          id: string
+          review_id: string
+          reviewer_id: string
+          status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          comment: string | null
+          responded_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          review_id: string
+          reviewer_id: string
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          comment?: string | null
+          responded_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          review_id?: string
+          reviewer_id?: string
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          comment?: string | null
+          responded_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
+      notifications: {
+        Row: {
+          id: string
+          org_id: string
+          user_id: string
+          type: 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated'
+          title: string
+          message: string | null
+          review_id: string | null
+          file_id: string | null
+          from_user_id: string | null
+          read: boolean
+          read_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          user_id: string
+          type: 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated'
+          title: string
+          message?: string | null
+          review_id?: string | null
+          file_id?: string | null
+          from_user_id?: string | null
+          read?: boolean
+          read_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          user_id?: string
+          type?: 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated'
+          title?: string
+          message?: string | null
+          review_id?: string | null
+          file_id?: string | null
+          from_user_id?: string | null
+          read?: boolean
+          read_at?: string | null
+          created_at?: string
+        }
+      }
+      // Workflow tables
+      workflow_templates: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          description: string | null
+          is_default: boolean
+          is_active: boolean
+          canvas_config: { zoom: number; panX: number; panY: number }
+          created_at: string
+          created_by: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          description?: string | null
+          is_default?: boolean
+          is_active?: boolean
+          canvas_config?: { zoom: number; panX: number; panY: number }
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          description?: string | null
+          is_default?: boolean
+          is_active?: boolean
+          canvas_config?: { zoom: number; panX: number; panY: number }
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+      }
+      workflow_states: {
+        Row: {
+          id: string
+          workflow_id: string
+          name: string
+          label: string | null
+          description: string | null
+          color: string
+          icon: string
+          position_x: number
+          position_y: number
+          state_type: 'initial' | 'intermediate' | 'final' | 'rejected'
+          maps_to_file_state: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+          is_editable: boolean
+          requires_checkout: boolean
+          auto_increment_revision: boolean
+          sort_order: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          workflow_id: string
+          name: string
+          label?: string | null
+          description?: string | null
+          color?: string
+          icon?: string
+          position_x?: number
+          position_y?: number
+          state_type?: 'initial' | 'intermediate' | 'final' | 'rejected'
+          maps_to_file_state?: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+          is_editable?: boolean
+          requires_checkout?: boolean
+          auto_increment_revision?: boolean
+          sort_order?: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          workflow_id?: string
+          name?: string
+          label?: string | null
+          description?: string | null
+          color?: string
+          icon?: string
+          position_x?: number
+          position_y?: number
+          state_type?: 'initial' | 'intermediate' | 'final' | 'rejected'
+          maps_to_file_state?: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+          is_editable?: boolean
+          requires_checkout?: boolean
+          auto_increment_revision?: boolean
+          sort_order?: number
+          created_at?: string
+        }
+      }
+      workflow_transitions: {
+        Row: {
+          id: string
+          workflow_id: string
+          from_state_id: string
+          to_state_id: string
+          name: string | null
+          description: string | null
+          line_style: 'solid' | 'dashed' | 'dotted'
+          line_color: string | null
+          allowed_roles: ('admin' | 'engineer' | 'viewer')[]
+          auto_conditions: Record<string, unknown> | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          workflow_id: string
+          from_state_id: string
+          to_state_id: string
+          name?: string | null
+          description?: string | null
+          line_style?: 'solid' | 'dashed' | 'dotted'
+          line_color?: string | null
+          allowed_roles?: ('admin' | 'engineer' | 'viewer')[]
+          auto_conditions?: Record<string, unknown> | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          workflow_id?: string
+          from_state_id?: string
+          to_state_id?: string
+          name?: string | null
+          description?: string | null
+          line_style?: 'solid' | 'dashed' | 'dotted'
+          line_color?: string | null
+          allowed_roles?: ('admin' | 'engineer' | 'viewer')[]
+          auto_conditions?: Record<string, unknown> | null
+          created_at?: string
+        }
+      }
+      workflow_gates: {
+        Row: {
+          id: string
+          transition_id: string
+          name: string
+          description: string | null
+          gate_type: 'approval' | 'checklist' | 'condition' | 'notification'
+          required_approvals: number
+          approval_mode: 'any' | 'all' | 'sequential'
+          checklist_items: { id: string; label: string; required: boolean }[]
+          conditions: Record<string, unknown> | null
+          is_blocking: boolean
+          can_be_skipped_by: ('admin' | 'engineer' | 'viewer')[]
+          sort_order: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          transition_id: string
+          name: string
+          description?: string | null
+          gate_type?: 'approval' | 'checklist' | 'condition' | 'notification'
+          required_approvals?: number
+          approval_mode?: 'any' | 'all' | 'sequential'
+          checklist_items?: { id: string; label: string; required: boolean }[]
+          conditions?: Record<string, unknown> | null
+          is_blocking?: boolean
+          can_be_skipped_by?: ('admin' | 'engineer' | 'viewer')[]
+          sort_order?: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          transition_id?: string
+          name?: string
+          description?: string | null
+          gate_type?: 'approval' | 'checklist' | 'condition' | 'notification'
+          required_approvals?: number
+          approval_mode?: 'any' | 'all' | 'sequential'
+          checklist_items?: { id: string; label: string; required: boolean }[]
+          conditions?: Record<string, unknown> | null
+          is_blocking?: boolean
+          can_be_skipped_by?: ('admin' | 'engineer' | 'viewer')[]
+          sort_order?: number
+          created_at?: string
+        }
+      }
+      gate_reviewers: {
+        Row: {
+          id: string
+          gate_id: string
+          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          user_id: string | null
+          role: 'admin' | 'engineer' | 'viewer' | null
+          group_name: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          gate_id: string
+          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          user_id?: string | null
+          role?: 'admin' | 'engineer' | 'viewer' | null
+          group_name?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          gate_id?: string
+          reviewer_type?: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          user_id?: string | null
+          role?: 'admin' | 'engineer' | 'viewer' | null
+          group_name?: string | null
+          created_at?: string
+        }
+      }
+      file_workflow_assignments: {
+        Row: {
+          id: string
+          file_id: string
+          workflow_id: string
+          current_state_id: string | null
+          assigned_at: string
+          assigned_by: string | null
+        }
+        Insert: {
+          id?: string
+          file_id: string
+          workflow_id: string
+          current_state_id?: string | null
+          assigned_at?: string
+          assigned_by?: string | null
+        }
+        Update: {
+          id?: string
+          file_id?: string
+          workflow_id?: string
+          current_state_id?: string | null
+          assigned_at?: string
+          assigned_by?: string | null
+        }
+      }
+      pending_workflow_reviews: {
+        Row: {
+          id: string
+          org_id: string
+          file_id: string
+          transition_id: string
+          gate_id: string
+          requested_by: string
+          requested_at: string
+          status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          assigned_to: string | null
+          reviewed_by: string | null
+          reviewed_at: string | null
+          review_comment: string | null
+          checklist_responses: Record<string, boolean>
+          expires_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          file_id: string
+          transition_id: string
+          gate_id: string
+          requested_by: string
+          requested_at?: string
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          assigned_to?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          review_comment?: string | null
+          checklist_responses?: Record<string, boolean>
+          expires_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          file_id?: string
+          transition_id?: string
+          gate_id?: string
+          requested_by?: string
+          requested_at?: string
+          status?: 'pending' | 'approved' | 'rejected' | 'cancelled'
+          assigned_to?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          review_comment?: string | null
+          checklist_responses?: Record<string, boolean>
+          expires_at?: string | null
+          created_at?: string
+        }
+      }
+      workflow_review_history: {
+        Row: {
+          id: string
+          org_id: string
+          file_id: string | null
+          file_path: string
+          file_name: string
+          workflow_id: string | null
+          workflow_name: string
+          transition_id: string | null
+          from_state_name: string
+          to_state_name: string
+          gate_id: string | null
+          gate_name: string
+          requested_by: string | null
+          requested_by_email: string
+          requested_at: string
+          reviewed_by: string | null
+          reviewed_by_email: string
+          reviewed_at: string
+          decision: string
+          comment: string | null
+          checklist_responses: Record<string, boolean> | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          file_id?: string | null
+          file_path: string
+          file_name: string
+          workflow_id?: string | null
+          workflow_name: string
+          transition_id?: string | null
+          from_state_name: string
+          to_state_name: string
+          gate_id?: string | null
+          gate_name: string
+          requested_by?: string | null
+          requested_by_email: string
+          requested_at: string
+          reviewed_by?: string | null
+          reviewed_by_email: string
+          reviewed_at: string
+          decision: string
+          comment?: string | null
+          checklist_responses?: Record<string, boolean> | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          file_id?: string | null
+          file_path?: string
+          file_name?: string
+          workflow_id?: string | null
+          workflow_name?: string
+          transition_id?: string | null
+          from_state_name?: string
+          to_state_name?: string
+          gate_id?: string | null
+          gate_name?: string
+          requested_by?: string | null
+          requested_by_email?: string
+          requested_at?: string
+          reviewed_by?: string | null
+          reviewed_by_email?: string
+          reviewed_at?: string
+          decision?: string
+          comment?: string | null
+          checklist_responses?: Record<string, boolean> | null
+          created_at?: string
+        }
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
@@ -351,7 +913,95 @@ export interface Database {
       user_role: 'admin' | 'engineer' | 'viewer'
       revision_scheme: 'letter' | 'numeric'
       activity_action: 'checkout' | 'checkin' | 'create' | 'delete' | 'restore' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
+      eco_status: 'open' | 'in_progress' | 'completed' | 'cancelled'
+      review_status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+      notification_type: 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated' | 'checkout_request'
+      workflow_state_type: 'initial' | 'intermediate' | 'final' | 'rejected'
+      gate_type: 'approval' | 'checklist' | 'condition' | 'notification'
+      approval_mode: 'any' | 'all' | 'sequential'
+      reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+      transition_line_style: 'solid' | 'dashed' | 'dotted'
     }
+  }
+}
+
+// ===========================================
+// Reviews & Notifications Types
+// ===========================================
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
+export type NotificationType = 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated' | 'checkout_request'
+
+export interface Review {
+  id: string
+  org_id: string
+  file_id: string
+  vault_id: string | null
+  requested_by: string
+  requested_at: string
+  title: string | null
+  message: string | null
+  file_version: number
+  status: ReviewStatus
+  due_date: string | null
+  priority: 'low' | 'normal' | 'high' | 'urgent'
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+  // Joined fields
+  file?: {
+    file_name: string
+    file_path: string
+    extension: string
+  }
+  requester?: {
+    email: string
+    full_name: string | null
+    avatar_url: string | null
+  }
+  responses?: ReviewResponse[]
+}
+
+export interface ReviewResponse {
+  id: string
+  review_id: string
+  reviewer_id: string
+  status: ReviewStatus
+  comment: string | null
+  responded_at: string | null
+  created_at: string
+  updated_at: string
+  // Joined fields
+  reviewer?: {
+    email: string
+    full_name: string | null
+    avatar_url: string | null
+  }
+}
+
+export interface Notification {
+  id: string
+  org_id: string
+  user_id: string
+  type: NotificationType
+  title: string
+  message: string | null
+  review_id: string | null
+  file_id: string | null
+  from_user_id: string | null
+  read: boolean
+  read_at: string | null
+  created_at: string
+  // Joined fields
+  from_user?: {
+    email: string
+    full_name: string | null
+    avatar_url: string | null
+  }
+  review?: Review
+  file?: {
+    file_name: string
+    file_path: string
   }
 }
 

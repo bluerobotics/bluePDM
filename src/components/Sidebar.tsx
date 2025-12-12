@@ -6,6 +6,10 @@ import { SearchView } from './sidebar/SearchView'
 import { TrashView } from './sidebar/TrashView'
 import { SettingsView } from './sidebar/SettingsView'
 import { TerminalView } from './sidebar/TerminalView'
+import { WorkflowsView } from './sidebar/WorkflowsView'
+import { ECOView } from './sidebar/ECOView'
+import { ReviewsView } from './sidebar/ReviewsView'
+import { GoogleDriveView } from './sidebar/GoogleDriveView'
 
 interface SidebarProps {
   onOpenVault: () => void
@@ -14,7 +18,11 @@ interface SidebarProps {
 }
 
 export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarProps) {
-  const { activeView, sidebarWidth, connectedVaults } = usePDMStore()
+  const { activeView, sidebarWidth, connectedVaults, setGdriveNavigation, gdriveCurrentFolderId } = usePDMStore()
+
+  const handleGdriveNavigate = (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => {
+    setGdriveNavigation(folderId, folderName, isSharedDrive, driveId)
+  }
 
   const renderView = () => {
     switch (activeView) {
@@ -24,6 +32,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
         return <PendingView onRefresh={onRefresh} />
       case 'history':
         return <HistoryView />
+      case 'eco':
+        return <ECOView />
+      case 'reviews':
+        return <ReviewsView />
       case 'search':
         return <SearchView />
       case 'trash':
@@ -32,6 +44,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
         return <SettingsView />
       case 'terminal':
         return <TerminalView onRefresh={onRefresh} />
+      case 'workflows':
+        return <WorkflowsView />
+      case 'google-drive':
+        return <GoogleDriveView onNavigate={handleGdriveNavigate} currentFolderId={gdriveCurrentFolderId} />
       default:
         return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} />
     }
@@ -45,6 +61,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
         return 'PENDING'
       case 'history':
         return 'HISTORY'
+      case 'eco':
+        return 'ECO MANAGER'
+      case 'reviews':
+        return 'REVIEWS'
       case 'search':
         return 'SEARCH'
       case 'trash':
@@ -53,6 +73,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
         return 'SETTINGS'
       case 'terminal':
         return 'TERMINAL'
+      case 'workflows':
+        return 'WORKFLOWS'
+      case 'google-drive':
+        return 'GOOGLE DRIVE'
       default:
         return ''
     }

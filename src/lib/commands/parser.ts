@@ -928,6 +928,860 @@ export async function executeTerminalCommand(
     }
     
     // ============================================
+    // CAT - Display file contents
+    // ============================================
+    case 'cat':
+    case 'type': {
+      const path = parsed.args[0]
+      if (!path) {
+        addOutput('error', 'Usage: cat <file-path>')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      // Resolve to local file
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        // Try direct path resolution
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          // Decode base64 to text
+          try {
+            const text = atob(result.data)
+            // Check if it looks like binary
+            if (/[\x00-\x08\x0E-\x1F]/.test(text.substring(0, 1000))) {
+              addOutput('error', 'Binary file detected. Use a hex viewer for binary files.')
+              return outputs
+            }
+            const maxLines = parseInt(parsed.flags['n'] as string) || 500
+            const lines = text.split('\n')
+            if (lines.length > maxLines) {
+              addOutput('info', lines.slice(0, maxLines).join('\n'))
+              addOutput('info', `... truncated (${lines.length - maxLines} more lines)`)
+            } else {
+              addOutput('info', text)
+            }
+          } catch {
+            addOutput('error', 'Could not decode file (may be binary)')
+          }
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to read file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // HEAD - Display first N lines
+    // ============================================
+    case 'head': {
+      const path = parsed.args[0]
+      if (!path) {
+        addOutput('error', 'Usage: head <file-path> [-n lines]')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      const numLines = parseInt(parsed.flags['n'] as string) || 10
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          try {
+            const text = atob(result.data)
+            const lines = text.split('\n').slice(0, numLines)
+            addOutput('info', lines.join('\n'))
+          } catch {
+            addOutput('error', 'Could not decode file')
+          }
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to read file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // TAIL - Display last N lines
+    // ============================================
+    case 'tail': {
+      const path = parsed.args[0]
+      if (!path) {
+        addOutput('error', 'Usage: tail <file-path> [-n lines]')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      const numLines = parseInt(parsed.flags['n'] as string) || 10
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          try {
+            const text = atob(result.data)
+            const lines = text.split('\n').slice(-numLines)
+            addOutput('info', lines.join('\n'))
+          } catch {
+            addOutput('error', 'Could not decode file')
+          }
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to read file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // WRITE - Write text to file (create/overwrite)
+    // ============================================
+    case 'write': {
+      const path = parsed.args[0]
+      const content = parsed.args.slice(1).join(' ')
+      
+      if (!path) {
+        addOutput('error', 'Usage: write <file-path> <content>')
+        addOutput('info', 'Use \\n for newlines, or write> for multi-line input')
+        return outputs
+      }
+      
+      const { vaultPath, currentFolder } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const isWindows = vaultPath.includes('\\')
+      const sep = isWindows ? '\\' : '/'
+      let filePath: string
+      
+      // Check if it's a relative path
+      if (path.startsWith('./') || path.startsWith('.\\') || !path.includes('/') && !path.includes('\\')) {
+        const relativePath = currentFolder 
+          ? `${currentFolder}/${path.replace(/^\.\//, '')}`
+          : path.replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${relativePath.replace(/\//g, sep)}`
+      } else {
+        filePath = `${vaultPath}${sep}${path.replace(/\//g, sep)}`
+      }
+      
+      // Process escape sequences
+      const processedContent = content
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+      
+      try {
+        const base64 = btoa(processedContent)
+        const result = await window.electronAPI?.writeFile(filePath, base64)
+        if (result?.success) {
+          addOutput('success', `Written to ${path} (${result.size || processedContent.length} bytes)`)
+          onRefresh?.(true)
+        } else {
+          addOutput('error', result?.error || 'Failed to write file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to write file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // APPEND - Append text to file
+    // ============================================
+    case 'append': {
+      const path = parsed.args[0]
+      const content = parsed.args.slice(1).join(' ')
+      
+      if (!path || !content) {
+        addOutput('error', 'Usage: append <file-path> <content>')
+        return outputs
+      }
+      
+      const { vaultPath, currentFolder } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const isWindows = vaultPath.includes('\\')
+      const sep = isWindows ? '\\' : '/'
+      let filePath: string
+      
+      if (path.startsWith('./') || path.startsWith('.\\') || !path.includes('/') && !path.includes('\\')) {
+        const relativePath = currentFolder 
+          ? `${currentFolder}/${path.replace(/^\.\//, '')}`
+          : path.replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${relativePath.replace(/\//g, sep)}`
+      } else {
+        filePath = `${vaultPath}${sep}${path.replace(/\//g, sep)}`
+      }
+      
+      // Process escape sequences
+      const processedContent = content
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\')
+      
+      try {
+        // Read existing content first
+        const readResult = await window.electronAPI?.readFile(filePath)
+        let existingContent = ''
+        if (readResult?.success && readResult.data) {
+          existingContent = atob(readResult.data)
+        }
+        
+        const newContent = existingContent + processedContent
+        const base64 = btoa(newContent)
+        const result = await window.electronAPI?.writeFile(filePath, base64)
+        if (result?.success) {
+          addOutput('success', `Appended to ${path}`)
+          onRefresh?.(true)
+        } else {
+          addOutput('error', result?.error || 'Failed to append to file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to append: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // JSON - Pretty print JSON file
+    // ============================================
+    case 'json': {
+      const path = parsed.args[0]
+      if (!path) {
+        addOutput('error', 'Usage: json <file-path>')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          try {
+            const text = atob(result.data)
+            const json = JSON.parse(text)
+            const pretty = JSON.stringify(json, null, 2)
+            addOutput('info', pretty)
+          } catch (parseErr) {
+            addOutput('error', `Invalid JSON: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`)
+          }
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to read file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // JSON-GET - Get value from JSON by key path
+    // ============================================
+    case 'json-get':
+    case 'jq': {
+      const path = parsed.args[0]
+      const keyPath = parsed.args[1]
+      
+      if (!path) {
+        addOutput('error', 'Usage: json-get <file-path> [key.path]')
+        addOutput('info', 'Examples: json-get config.json name')
+        addOutput('info', '          json-get data.json users.0.email')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          try {
+            const text = atob(result.data)
+            let json = JSON.parse(text)
+            
+            // Navigate to key path if provided
+            if (keyPath) {
+              const keys = keyPath.split('.')
+              for (const key of keys) {
+                if (json === null || json === undefined) {
+                  addOutput('error', `Key not found: ${keyPath}`)
+                  return outputs
+                }
+                // Handle array index
+                const arrayIndex = parseInt(key)
+                if (!isNaN(arrayIndex) && Array.isArray(json)) {
+                  json = json[arrayIndex]
+                } else {
+                  json = json[key]
+                }
+              }
+            }
+            
+            if (typeof json === 'object') {
+              addOutput('info', JSON.stringify(json, null, 2))
+            } else {
+              addOutput('info', String(json))
+            }
+          } catch (parseErr) {
+            addOutput('error', `Invalid JSON: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`)
+          }
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed to read file: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // JSON-SET - Set value in JSON file
+    // ============================================
+    case 'json-set': {
+      const path = parsed.args[0]
+      const keyPath = parsed.args[1]
+      const value = parsed.args.slice(2).join(' ')
+      
+      if (!path || !keyPath) {
+        addOutput('error', 'Usage: json-set <file-path> <key.path> <value>')
+        addOutput('info', 'Examples: json-set config.json name "My App"')
+        addOutput('info', '          json-set data.json settings.enabled true')
+        return outputs
+      }
+      
+      const { vaultPath, currentFolder } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const isWindows = vaultPath.includes('\\')
+      const sep = isWindows ? '\\' : '/'
+      let filePath: string
+      
+      const matches = resolvePathPattern(path, files)
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else if (path.startsWith('./') || path.startsWith('.\\') || !path.includes('/') && !path.includes('\\')) {
+        const relativePath = currentFolder 
+          ? `${currentFolder}/${path.replace(/^\.\//, '')}`
+          : path.replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${relativePath.replace(/\//g, sep)}`
+      } else {
+        filePath = `${vaultPath}${sep}${path.replace(/\//g, sep)}`
+      }
+      
+      try {
+        // Read existing JSON
+        const readResult = await window.electronAPI?.readFile(filePath)
+        let json: Record<string, unknown> = {}
+        
+        if (readResult?.success && readResult.data) {
+          try {
+            json = JSON.parse(atob(readResult.data))
+          } catch {
+            addOutput('error', 'File exists but is not valid JSON')
+            return outputs
+          }
+        }
+        
+        // Parse the value
+        let parsedValue: unknown
+        try {
+          // Try parsing as JSON first (for objects, arrays, booleans, numbers)
+          parsedValue = JSON.parse(value)
+        } catch {
+          // If that fails, treat as string
+          parsedValue = value
+        }
+        
+        // Navigate and set the value
+        const keys = keyPath.split('.')
+        let current: Record<string, unknown> = json
+        
+        for (let i = 0; i < keys.length - 1; i++) {
+          const key = keys[i]
+          const arrayIndex = parseInt(key)
+          
+          if (!isNaN(arrayIndex) && Array.isArray(current)) {
+            if (!current[arrayIndex]) current[arrayIndex] = {} as unknown
+            current = current[arrayIndex] as Record<string, unknown>
+          } else {
+            if (!current[key] || typeof current[key] !== 'object') {
+              current[key] = {}
+            }
+            current = current[key] as Record<string, unknown>
+          }
+        }
+        
+        const finalKey = keys[keys.length - 1]
+        const finalArrayIndex = parseInt(finalKey)
+        if (!isNaN(finalArrayIndex) && Array.isArray(current)) {
+          (current as unknown[])[finalArrayIndex] = parsedValue
+        } else {
+          current[finalKey] = parsedValue
+        }
+        
+        // Write back
+        const pretty = JSON.stringify(json, null, 2)
+        const base64 = btoa(pretty)
+        const writeResult = await window.electronAPI?.writeFile(filePath, base64)
+        
+        if (writeResult?.success) {
+          addOutput('success', `Set ${keyPath} = ${JSON.stringify(parsedValue)}`)
+          onRefresh?.(true)
+        } else {
+          addOutput('error', writeResult?.error || 'Failed to write file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // WC - Word/line/character count
+    // ============================================
+    case 'wc': {
+      const path = parsed.args[0]
+      if (!path) {
+        addOutput('error', 'Usage: wc <file-path>')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      try {
+        const result = await window.electronAPI?.readFile(filePath)
+        if (result?.success && result.data) {
+          const text = atob(result.data)
+          const lines = text.split('\n').length
+          const words = text.split(/\s+/).filter(w => w.length > 0).length
+          const chars = text.length
+          const bytes = new Blob([text]).size
+          
+          addOutput('info', `  ${lines} lines, ${words} words, ${chars} characters, ${bytes} bytes`)
+        } else {
+          addOutput('error', result?.error || 'Failed to read file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // DIFF - Compare two files
+    // ============================================
+    case 'diff': {
+      const path1 = parsed.args[0]
+      const path2 = parsed.args[1]
+      
+      if (!path1 || !path2) {
+        addOutput('error', 'Usage: diff <file1> <file2>')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const isWindows = vaultPath.includes('\\')
+      const sep = isWindows ? '\\' : '/'
+      
+      const resolvePath = (p: string) => {
+        const matches = resolvePathPattern(p, files)
+        if (matches.length > 0 && !matches[0].isDirectory) {
+          return matches[0].path
+        }
+        const normalizedPath = p.replace(/\\/g, '/').replace(/^\.\//, '')
+        return `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      try {
+        const [result1, result2] = await Promise.all([
+          window.electronAPI?.readFile(resolvePath(path1)),
+          window.electronAPI?.readFile(resolvePath(path2))
+        ])
+        
+        if (!result1?.success || !result1.data) {
+          addOutput('error', `Cannot read ${path1}: ${result1?.error || 'unknown error'}`)
+          return outputs
+        }
+        if (!result2?.success || !result2.data) {
+          addOutput('error', `Cannot read ${path2}: ${result2?.error || 'unknown error'}`)
+          return outputs
+        }
+        
+        const text1 = atob(result1.data)
+        const text2 = atob(result2.data)
+        
+        if (text1 === text2) {
+          addOutput('success', 'Files are identical')
+          return outputs
+        }
+        
+        const lines1 = text1.split('\n')
+        const lines2 = text2.split('\n')
+        
+        const output: string[] = [`--- ${path1}`, `+++ ${path2}`, '']
+        let diffCount = 0
+        const maxDiffs = 50
+        
+        const maxLines = Math.max(lines1.length, lines2.length)
+        for (let i = 0; i < maxLines && diffCount < maxDiffs; i++) {
+          const line1 = lines1[i]
+          const line2 = lines2[i]
+          
+          if (line1 !== line2) {
+            diffCount++
+            if (line1 !== undefined && line2 === undefined) {
+              output.push(`@@ line ${i + 1} @@`)
+              output.push(`- ${line1}`)
+            } else if (line1 === undefined && line2 !== undefined) {
+              output.push(`@@ line ${i + 1} @@`)
+              output.push(`+ ${line2}`)
+            } else {
+              output.push(`@@ line ${i + 1} @@`)
+              output.push(`- ${line1}`)
+              output.push(`+ ${line2}`)
+            }
+          }
+        }
+        
+        if (diffCount >= maxDiffs) {
+          output.push(`... (truncated, showing first ${maxDiffs} differences)`)
+        }
+        
+        addOutput('info', output.join('\n'))
+      } catch (err) {
+        addOutput('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // GREP-CONTENT - Search within file contents
+    // ============================================
+    case 'grep-content':
+    case 'fgrep':
+    case 'rg': {
+      const pattern = parsed.args[0]
+      const searchPath = parsed.args[1] || '.'
+      
+      if (!pattern) {
+        addOutput('error', 'Usage: grep-content <pattern> [path]')
+        addOutput('info', 'Searches text content within files. Use -i for case-insensitive.')
+        return outputs
+      }
+      
+      const { vaultPath, currentFolder } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const caseInsensitive = parsed.flags['i'] === true
+      
+      // Determine which files to search
+      let filesToSearch: LocalFile[]
+      if (searchPath === '.') {
+        // Current folder and subfolders
+        const folderPrefix = currentFolder ? currentFolder + '/' : ''
+        filesToSearch = files.filter(f => {
+          if (f.isDirectory) return false
+          const normalizedPath = f.relativePath.replace(/\\/g, '/')
+          return currentFolder ? normalizedPath.startsWith(folderPrefix) : true
+        })
+      } else {
+        const matches = resolvePathPattern(searchPath, files)
+        if (matches.length === 0) {
+          addOutput('error', `No files match: ${searchPath}`)
+          return outputs
+        }
+        
+        // Expand folders
+        filesToSearch = []
+        for (const match of matches) {
+          if (match.isDirectory) {
+            const folderPath = match.relativePath.replace(/\\/g, '/')
+            const filesInFolder = files.filter(f => {
+              if (f.isDirectory) return false
+              const filePath = f.relativePath.replace(/\\/g, '/')
+              return filePath.startsWith(folderPath + '/')
+            })
+            filesToSearch.push(...filesInFolder)
+          } else {
+            filesToSearch.push(match)
+          }
+        }
+      }
+      
+      // Filter to text files only
+      const textExtensions = ['.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.ts', '.tsx', '.jsx', 
+                             '.yaml', '.yml', '.ini', '.cfg', '.conf', '.log', '.csv', '.sql', '.sh', '.bat',
+                             '.py', '.rb', '.php', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs',
+                             '.vue', '.svelte', '.astro', '.toml', '.env', '.gitignore', '.editorconfig']
+      filesToSearch = filesToSearch.filter(f => {
+        const ext = f.extension?.toLowerCase() || ''
+        return textExtensions.includes(`.${ext}`) || ext === ''
+      })
+      
+      if (filesToSearch.length === 0) {
+        addOutput('info', 'No text files to search')
+        return outputs
+      }
+      
+      addOutput('info', `Searching ${filesToSearch.length} files for "${pattern}"...`)
+      
+      const results: { file: string; line: number; content: string }[] = []
+      const maxResults = 100
+      let searchedCount = 0
+      
+      try {
+        const regex = new RegExp(pattern, caseInsensitive ? 'gi' : 'g')
+        
+        for (const file of filesToSearch.slice(0, 50)) { // Limit files to search
+          if (results.length >= maxResults) break
+          
+          try {
+            const readResult = await window.electronAPI?.readFile(file.path)
+            if (!readResult?.success || !readResult.data) continue
+            
+            const text = atob(readResult.data)
+            // Check if binary
+            if (/[\x00-\x08\x0E-\x1F]/.test(text.substring(0, 500))) continue
+            
+            searchedCount++
+            const lines = text.split('\n')
+            
+            for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+              if (regex.test(lines[i])) {
+                results.push({
+                  file: file.relativePath,
+                  line: i + 1,
+                  content: lines[i].substring(0, 200)
+                })
+                regex.lastIndex = 0 // Reset for next test
+              }
+            }
+          } catch {
+            // Skip files that can't be read
+          }
+        }
+        
+        if (results.length === 0) {
+          addOutput('info', `No matches found in ${searchedCount} files`)
+        } else {
+          const output = results.map(r => 
+            `${r.file}:${r.line}: ${r.content}`
+          )
+          addOutput('info', `Found ${results.length} matches:\n${output.join('\n')}`)
+          if (results.length >= maxResults) {
+            addOutput('info', `(showing first ${maxResults} results)`)
+          }
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          addOutput('error', `Invalid regex pattern: ${pattern}`)
+        } else {
+          addOutput('error', `Search failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      return outputs
+    }
+    
+    // ============================================
+    // SED - Simple find/replace in file
+    // ============================================
+    case 'sed':
+    case 'replace': {
+      const path = parsed.args[0]
+      const findStr = parsed.args[1]
+      const replaceStr = parsed.args[2]
+      
+      if (!path || findStr === undefined) {
+        addOutput('error', 'Usage: sed <file-path> <find> <replace>')
+        addOutput('info', 'Use --all to replace all occurrences (default: first only)')
+        return outputs
+      }
+      
+      const { vaultPath } = usePDMStore.getState()
+      if (!vaultPath) {
+        addOutput('error', 'No vault connected')
+        return outputs
+      }
+      
+      const matches = resolvePathPattern(path, files)
+      let filePath: string
+      
+      if (matches.length > 0 && !matches[0].isDirectory) {
+        filePath = matches[0].path
+      } else {
+        const isWindows = vaultPath.includes('\\')
+        const sep = isWindows ? '\\' : '/'
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\.\//, '')
+        filePath = `${vaultPath}${sep}${normalizedPath.replace(/\//g, sep)}`
+      }
+      
+      const replaceAll = parsed.flags['all'] === true || parsed.flags['g'] === true
+      
+      try {
+        const readResult = await window.electronAPI?.readFile(filePath)
+        if (!readResult?.success || !readResult.data) {
+          addOutput('error', readResult?.error || 'Failed to read file')
+          return outputs
+        }
+        
+        const text = atob(readResult.data)
+        let newText: string
+        let count = 0
+        
+        if (replaceAll) {
+          // Count occurrences and replace all
+          const regex = new RegExp(findStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+          count = (text.match(regex) || []).length
+          newText = text.split(findStr).join(replaceStr || '')
+        } else {
+          // Replace first occurrence only
+          const index = text.indexOf(findStr)
+          if (index !== -1) {
+            newText = text.substring(0, index) + (replaceStr || '') + text.substring(index + findStr.length)
+            count = 1
+          } else {
+            newText = text
+          }
+        }
+        
+        if (count === 0) {
+          addOutput('info', `No occurrences of "${findStr}" found`)
+          return outputs
+        }
+        
+        const base64 = btoa(newText)
+        const writeResult = await window.electronAPI?.writeFile(filePath, base64)
+        
+        if (writeResult?.success) {
+          addOutput('success', `Replaced ${count} occurrence${count > 1 ? 's' : ''} of "${findStr}"`)
+          onRefresh?.(true)
+        } else {
+          addOutput('error', writeResult?.error || 'Failed to write file')
+        }
+      } catch (err) {
+        addOutput('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return outputs
+    }
+    
+    // ============================================
     // ENV - Show environment info
     // ============================================
     case 'env':
@@ -1071,24 +1925,21 @@ export async function executeTerminalCommand(
           return outputs
         }
         
-        const result = await listSnapshots(config)
-        if (!result.success || !result.snapshots) {
-          addOutput('error', result.error || 'Failed to list snapshots')
-          return outputs
-        }
+        const snapshots = await listSnapshots(config)
         
-        if (result.snapshots.length === 0) {
+        if (snapshots.length === 0) {
           addOutput('info', 'No backups found')
           return outputs
         }
         
         const lines = ['📦 Backup Snapshots:']
-        for (const snap of result.snapshots.slice(0, 10)) {
+        for (const snap of snapshots.slice(0, 10)) {
           const date = new Date(snap.time).toLocaleString()
-          lines.push(`  ${snap.short_id} - ${date} (${snap.tags?.join(', ') || 'no tags'})`)
+          const snapId = snap.short_id || snap.id?.substring(0, 8) || 'unknown'
+          lines.push(`  ${snapId} - ${date} (${snap.tags?.join(', ') || 'no tags'})`)
         }
-        if (result.snapshots.length > 10) {
-          lines.push(`  ... and ${result.snapshots.length - 10} more`)
+        if (snapshots.length > 10) {
+          lines.push(`  ... and ${snapshots.length - 10} more`)
         }
         addOutput('info', lines.join('\n'))
       } catch (err) {
@@ -1932,6 +2783,22 @@ File Management:
   copy <src> <dest>    Copy files (alias: cp)
   touch <name>         Create empty file
 
+Text File Operations:
+  cat <path>           Display file contents (alias: type)
+  head <path> [-n N]   Show first N lines (default 10)
+  tail <path> [-n N]   Show last N lines (default 10)
+  wc <path>            Word/line/character count
+  diff <file1> <file2> Compare two text files
+  write <path> <text>  Write text to file (use \\n for newlines)
+  append <path> <text> Append text to file
+  grep-content <p> [d] Search text in files (alias: rg, fgrep) [-i]
+  sed <f> <find> <rep> Find/replace in file (--all for all)
+
+JSON Operations:
+  json <path>          Pretty-print JSON file
+  json-get <path> [k]  Get value by key path (alias: jq)
+  json-set <p> <k> <v> Set value in JSON file
+
 Version Control:
   versions <path>      Show version history
   rollback <path> <v>  Roll back to version (must be checked out)
@@ -2030,6 +2897,10 @@ export function getAutocompleteSuggestions(input: string, files: LocalFile[]): s
       'sync-all', 'checkin-all', 'checkout-all', 'pending',
       // File management
       'mkdir', 'rename', 'move', 'copy', 'touch',
+      // Text file operations
+      'cat', 'type', 'head', 'tail', 'wc', 'diff', 'write', 'append', 'grep-content', 'rg', 'fgrep', 'sed', 'replace',
+      // JSON operations
+      'json', 'json-get', 'jq', 'json-set',
       // Version control
       'versions', 'rollback', 'activity',
       // Trash
@@ -2052,7 +2923,7 @@ export function getAutocompleteSuggestions(input: string, files: LocalFile[]): s
       'sign-out', 'offline', 'reload-app', 'restart',
       // Utilities
       'open', 'reveal', 'pin', 'unpin', 'ignore', 'refresh', 
-      'cancel', 'history', 'clear', 'env', 'help'
+      'cancel', 'history', 'clear', 'env', 'help', 'echo'
     ]
     return commands.filter(c => c.startsWith(parsed.command || ''))
   }

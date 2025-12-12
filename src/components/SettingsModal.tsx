@@ -43,7 +43,8 @@ import {
   FileBox,
   Plug,
   Circle,
-  Activity
+  Activity,
+  Puzzle
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { BackupPanel } from './BackupPanel'
@@ -64,7 +65,7 @@ function buildVaultPath(platform: string, vaultSlug: string): string {
   }
 }
 
-type SettingsTab = 'organization' | 'backup' | 'api' | 'preferences' | 'logs' | 'about'
+type SettingsTab = 'organization' | 'backup' | 'integrations' | 'api' | 'preferences' | 'logs' | 'about'
 
 interface OrgUser {
   id: string
@@ -210,6 +211,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   })
   const [lastApiCheck, setLastApiCheck] = useState<Date | null>(null)
   
+  // Google Drive integration state
+  const [gdriveEnabled, setGdriveEnabled] = useState(false)
+  const [gdriveClientId, setGdriveClientId] = useState('')
+  const [gdriveClientSecret, setGdriveClientSecret] = useState('')
+  const [showGdriveSecret, setShowGdriveSecret] = useState(false)
+  const [isLoadingGdrive, setIsLoadingGdrive] = useState(false)
+  const [isSavingGdrive, setIsSavingGdrive] = useState(false)
+  
   // Get app version and platform
   useEffect(() => {
     if (window.electronAPI) {
@@ -249,6 +258,56 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
       checkApiStatus()
     }
   }, [activeTab])
+  
+  // Load Google Drive settings when integrations tab is selected
+  useEffect(() => {
+    if (activeTab === 'integrations') {
+      loadGdriveSettings()
+    }
+  }, [activeTab])
+  
+  const loadGdriveSettings = async () => {
+    if (!organization?.id) return
+    setIsLoadingGdrive(true)
+    try {
+      const { data, error } = await (supabase.rpc as any)('get_google_drive_settings', { p_org_id: organization.id })
+      if (error) {
+        console.error('Error loading Google Drive settings:', error)
+      } else if (data && data.length > 0) {
+        setGdriveEnabled(data[0].enabled || false)
+        setGdriveClientId(data[0].client_id || '')
+        setGdriveClientSecret(data[0].client_secret || '')
+      }
+    } catch (err) {
+      console.error('Exception loading Google Drive settings:', err)
+    } finally {
+      setIsLoadingGdrive(false)
+    }
+  }
+  
+  const saveGdriveSettings = async () => {
+    if (!organization?.id) return
+    setIsSavingGdrive(true)
+    try {
+      const { error } = await (supabase.rpc as any)('update_google_drive_settings', {
+        p_org_id: organization.id,
+        p_client_id: gdriveClientId || null,
+        p_client_secret: gdriveClientSecret || null,
+        p_enabled: gdriveEnabled
+      })
+      if (error) {
+        console.error('Error saving Google Drive settings:', error)
+        addToast('error', 'Failed to save Google Drive settings')
+      } else {
+        addToast('success', 'Google Drive settings saved')
+      }
+    } catch (err) {
+      console.error('Exception saving Google Drive settings:', err)
+      addToast('error', 'Failed to save Google Drive settings')
+    } finally {
+      setIsSavingGdrive(false)
+    }
+  }
   
   const checkApiStatus = async () => {
     setApiStatus('checking')
@@ -1138,6 +1197,7 @@ See you on the team!`
   const tabs = [
     { id: 'organization' as SettingsTab, icon: Building2, label: 'Organization' },
     { id: 'backup' as SettingsTab, icon: HardDrive, label: 'Backups' },
+    { id: 'integrations' as SettingsTab, icon: Puzzle, label: 'Integrations' },
     { id: 'api' as SettingsTab, icon: Plug, label: 'REST API' },
     { id: 'preferences' as SettingsTab, icon: Settings, label: 'Preferences' },
     { id: 'logs' as SettingsTab, icon: FileText, label: 'Logs' },
@@ -1179,13 +1239,13 @@ See you on the team!`
         {/* Content */}
         <div className="flex-1 flex flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-pdm-border">
+          <div className="flex items-center justify-between p-6 border-b border-pdm-border">
             <h3 className="text-lg font-medium text-pdm-fg">
               {tabs.find(t => t.id === activeTab)?.label}
             </h3>
             <button 
               onClick={onClose}
-              className="p-1 hover:bg-pdm-highlight rounded transition-colors"
+              className="p-2 hover:bg-pdm-highlight rounded transition-colors"
             >
               <X size={18} className="text-pdm-fg-muted" />
             </button>
@@ -1203,12 +1263,70 @@ See you on the team!`
                         <Building2 size={20} className="text-pdm-accent" />
                         <span className="text-lg font-medium text-pdm-fg">{organization.name}</span>
                       </div>
-                      <div className="text-sm text-pdm-fg-muted mb-1">
+                      <div className="text-sm text-pdm-fg-muted mb-3">
                         Email domains: {organization.email_domains?.join(', ')}
                       </div>
-                      <div className="text-xs text-pdm-fg-dim font-mono">
-                        ID: {organization.id}
-                      </div>
+                      
+                      {/* Organization Code (Admin only) */}
+                      {user?.role === 'admin' && (
+                        <div className="pt-3 border-t border-pdm-border">
+                          {showOrgCode && orgCode ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-pdm-fg-muted uppercase tracking-wide">Organization Code</span>
+                                <button
+                                  onClick={() => setShowOrgCode(false)}
+                                  className="text-xs text-pdm-fg-muted hover:text-pdm-fg"
+                                >
+                                  Hide
+                                </button>
+                              </div>
+                              <div className="relative">
+                                <div className="font-mono text-xs bg-pdm-bg-secondary border border-pdm-border rounded-lg p-3 pr-12 break-all text-pdm-fg max-h-24 overflow-y-auto">
+                                  {orgCode}
+                                </div>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(orgCode)
+                                      setCodeCopied(true)
+                                      setTimeout(() => setCodeCopied(false), 2000)
+                                    } catch (err) {
+                                      console.error('Failed to copy:', err)
+                                    }
+                                  }}
+                                  className="absolute top-2 right-2 p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                                  title="Copy to clipboard"
+                                >
+                                  {codeCopied ? (
+                                    <Check size={16} className="text-green-500" />
+                                  ) : (
+                                    <Copy size={16} className="text-pdm-fg-muted" />
+                                  )}
+                                </button>
+                              </div>
+                              <p className="text-xs text-pdm-fg-dim">
+                                Share with team members to connect to your organization.
+                              </p>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                const config = getCurrentConfig()
+                                if (config) {
+                                  const code = generateOrgCode(config)
+                                  setOrgCode(code)
+                                  setShowOrgCode(true)
+                                }
+                              }}
+                              className="flex items-center gap-2 text-sm text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+                            >
+                              <Key size={14} />
+                              Show Organization Code
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                     
                     {/* Vaults */}
@@ -1669,71 +1787,6 @@ See you on the team!`
                       </div>
                     )}
                     
-                    {/* Organization Code (Admin only) */}
-                    {user?.role === 'admin' && (
-                      <div className="space-y-3 pt-4 border-t border-pdm-border">
-                        <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
-                          <Key size={14} />
-                          Organization Code
-                        </div>
-                        <p className="text-sm text-pdm-fg-muted">
-                          Share this code with team members so they can connect to your organization's BluePDM instance.
-                        </p>
-                        
-                        {showOrgCode && orgCode ? (
-                          <div className="space-y-2">
-                            <div className="relative">
-                              <div className="font-mono text-xs bg-pdm-bg border border-pdm-border rounded-lg p-3 pr-12 break-all text-pdm-fg max-h-24 overflow-y-auto">
-                                {orgCode}
-                              </div>
-                              <button
-                                onClick={async () => {
-                                  try {
-                                    await navigator.clipboard.writeText(orgCode)
-                                    setCodeCopied(true)
-                                    setTimeout(() => setCodeCopied(false), 2000)
-                                  } catch (err) {
-                                    console.error('Failed to copy:', err)
-                                  }
-                                }}
-                                className="absolute top-2 right-2 p-1.5 hover:bg-pdm-highlight rounded transition-colors"
-                                title="Copy to clipboard"
-                              >
-                                {codeCopied ? (
-                                  <Check size={16} className="text-green-500" />
-                                ) : (
-                                  <Copy size={16} className="text-pdm-fg-muted" />
-                                )}
-                              </button>
-                            </div>
-                            <button
-                              onClick={() => setShowOrgCode(false)}
-                              className="text-xs text-pdm-fg-muted hover:text-pdm-fg"
-                            >
-                              Hide code
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              const config = getCurrentConfig()
-                              if (config) {
-                                const code = generateOrgCode(config)
-                                setOrgCode(code)
-                                setShowOrgCode(true)
-                              }
-                            }}
-                            className="btn btn-secondary btn-sm flex items-center gap-2"
-                          >
-                            <Eye size={14} />
-                            Show Organization Code
-                          </button>
-                        )}
-                        <p className="text-xs text-pdm-fg-dim">
-                          Keep this code secure – it contains your Supabase credentials.
-                        </p>
-                      </div>
-                    )}
                   </>
                 ) : (
                   <div className="text-center py-12 text-pdm-fg-muted">
@@ -1755,6 +1808,149 @@ See you on the team!`
               </div>
             )}
             
+            {activeTab === 'integrations' && (
+              <div className="p-6 space-y-6">
+                {user?.role !== 'admin' ? (
+                  <div className="text-center py-12">
+                    <Puzzle size={48} className="mx-auto text-pdm-fg-muted mb-4" />
+                    <h3 className="text-lg font-semibold text-pdm-fg mb-2">Admin Access Required</h3>
+                    <p className="text-sm text-pdm-fg-muted">
+                      Only administrators can manage integrations.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Google Drive Integration */}
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-pdm-sidebar flex items-center justify-center">
+                          <HardDrive size={20} className="text-pdm-accent" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-medium text-pdm-fg">Google Drive</h3>
+                          <p className="text-xs text-pdm-fg-muted">
+                            Allow org members to connect their Google Drive
+                          </p>
+                        </div>
+                        {isLoadingGdrive && <Loader2 size={14} className="animate-spin text-pdm-fg-muted ml-auto" />}
+                      </div>
+                      
+                      <div className="space-y-3 p-4 bg-pdm-bg rounded-lg border border-pdm-border">
+                        {/* Enable toggle */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-pdm-fg">Enable Google Drive</span>
+                          <button
+                            onClick={() => setGdriveEnabled(!gdriveEnabled)}
+                            className={`w-10 h-5 rounded-full transition-colors relative ${
+                              gdriveEnabled ? 'bg-pdm-accent' : 'bg-pdm-border'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                              gdriveEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+                        
+                        {gdriveEnabled && (
+                          <>
+                            {/* Client ID */}
+                            <div className="space-y-1">
+                              <label className="text-xs text-pdm-fg-muted">Client ID</label>
+                              <input
+                                type="text"
+                                value={gdriveClientId}
+                                onChange={(e) => setGdriveClientId(e.target.value)}
+                                placeholder="xxxxxxx.apps.googleusercontent.com"
+                                className="w-full px-3 py-2 text-sm bg-pdm-sidebar border border-pdm-border rounded focus:outline-none focus:border-pdm-accent font-mono"
+                              />
+                            </div>
+                            
+                            {/* Client Secret */}
+                            <div className="space-y-1">
+                              <label className="text-xs text-pdm-fg-muted">Client Secret</label>
+                              <div className="relative">
+                                <input
+                                  type={showGdriveSecret ? 'text' : 'password'}
+                                  value={gdriveClientSecret}
+                                  onChange={(e) => setGdriveClientSecret(e.target.value)}
+                                  placeholder="GOCSPX-xxxxxxxxxxxx"
+                                  className="w-full px-3 py-2 pr-10 text-sm bg-pdm-sidebar border border-pdm-border rounded focus:outline-none focus:border-pdm-accent font-mono"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowGdriveSecret(!showGdriveSecret)}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-pdm-fg-muted hover:text-pdm-fg"
+                                >
+                                  {showGdriveSecret ? <EyeOff size={16} /> : <Eye size={16} />}
+                                </button>
+                              </div>
+                            </div>
+                            
+                            {/* Help text */}
+                            <div className="p-3 bg-pdm-sidebar rounded-lg">
+                              <p className="text-xs text-pdm-fg-muted">
+                                <strong>Setup instructions:</strong>
+                              </p>
+                              <ol className="text-xs text-pdm-fg-muted mt-1 space-y-1 list-decimal list-inside">
+                                <li>Go to <a 
+                                  href="https://console.cloud.google.com/apis/credentials" 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="text-pdm-accent hover:underline"
+                                >
+                                  Google Cloud Console
+                                </a></li>
+                                <li>Create or select a project</li>
+                                <li>Enable the Google Drive API</li>
+                                <li>Create OAuth 2.0 credentials (Desktop app type)</li>
+                                <li>Copy the Client ID and Client Secret here</li>
+                              </ol>
+                            </div>
+                            
+                            {/* Save button */}
+                            <button
+                              onClick={saveGdriveSettings}
+                              disabled={isSavingGdrive}
+                              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm bg-pdm-accent text-white rounded hover:bg-pdm-accent/90 transition-colors disabled:opacity-50"
+                            >
+                              {isSavingGdrive ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Check size={14} />
+                              )}
+                              Save Google Drive Settings
+                            </button>
+                          </>
+                        )}
+                        
+                        {!gdriveEnabled && (
+                          <button
+                            onClick={saveGdriveSettings}
+                            disabled={isSavingGdrive}
+                            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm bg-pdm-sidebar text-pdm-fg border border-pdm-border rounded hover:bg-pdm-highlight transition-colors disabled:opacity-50"
+                          >
+                            {isSavingGdrive ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Check size={14} />
+                            )}
+                            Save
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* More integrations placeholder */}
+                    <div className="pt-4 border-t border-pdm-border">
+                      <p className="text-sm text-pdm-fg-muted text-center">
+                        More integrations coming soon...
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            
             {activeTab === 'api' && (
               <div className="p-6 space-y-6">
                 {user?.role !== 'admin' ? (
@@ -1767,12 +1963,9 @@ See you on the team!`
                   </div>
                 ) : (
                   <>
-                <div>
-                  <h3 className="text-lg font-semibold text-pdm-fg mb-1">REST API</h3>
-                  <p className="text-sm text-pdm-fg-muted">
-                    Integration API for external systems like Odoo, SAP, CI/CD pipelines
-                  </p>
-                </div>
+                <p className="text-sm text-pdm-fg-muted mb-4">
+                  Integration API for external systems like Odoo, SAP, CI/CD pipelines
+                </p>
                 
                 {/* Environment Toggle */}
                 <div className="space-y-2">

@@ -17,7 +17,18 @@ import {
   FolderX,
   Unlock,
   AlertTriangle,
-  File
+  File,
+  Send,
+  Users,
+  Check,
+  Loader2,
+  X,
+  Eye,
+  EyeOff as EyeOffIcon,
+  Link,
+  ClipboardList,
+  Calendar,
+  Clock
 } from 'lucide-react'
 import { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
@@ -29,6 +40,18 @@ import {
   getCloudOnlyFilesFromSelection,
   getFilesInFolder
 } from '../lib/commands'
+import { 
+  getOrgUsers, 
+  createReviewRequest, 
+  requestCheckout, 
+  sendFileNotification,
+  watchFile,
+  unwatchFile,
+  isWatchingFile,
+  createShareLink,
+  getActiveECOs,
+  addFileToECO
+} from '../lib/supabase'
 
 interface FileContextMenuProps {
   x: number
@@ -60,7 +83,7 @@ export function FileContextMenu({
   onRename,
   onNewFolder
 }: FileContextMenuProps) {
-  const { user, activeVaultId, addToast, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addIgnorePattern, getIgnorePatterns, serverFolderPaths } = usePDMStore()
+  const { user, activeVaultId, addToast, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addIgnorePattern, getIgnorePatterns, serverFolderPaths, organization } = usePDMStore()
   
   const [showProperties, setShowProperties] = useState(false)
   const [folderSize, setFolderSize] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
@@ -72,6 +95,48 @@ export function FileContextMenu({
   const [platform, setPlatform] = useState<string>('win32')
   const [showIgnoreSubmenu, setShowIgnoreSubmenu] = useState(false)
   const ignoreSubmenuTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  
+  // Review request state
+  const [showReviewModal, setShowReviewModal] = useState(false)
+  const [orgUsers, setOrgUsers] = useState<{ id: string; email: string; full_name: string | null; avatar_url: string | null }[]>([])
+  const [selectedReviewers, setSelectedReviewers] = useState<string[]>([])
+  const [reviewMessage, setReviewMessage] = useState('')
+  const [reviewDueDate, setReviewDueDate] = useState<string>('')
+  const [reviewPriority, setReviewPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal')
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false)
+  const [loadingUsers, setLoadingUsers] = useState(false)
+  
+  // Checkout request state
+  const [showCheckoutRequestModal, setShowCheckoutRequestModal] = useState(false)
+  const [checkoutRequestMessage, setCheckoutRequestMessage] = useState('')
+  const [isSubmittingCheckoutRequest, setIsSubmittingCheckoutRequest] = useState(false)
+  
+  // Mention/notify state
+  const [showMentionModal, setShowMentionModal] = useState(false)
+  const [selectedMentionUsers, setSelectedMentionUsers] = useState<string[]>([])
+  const [mentionMessage, setMentionMessage] = useState('')
+  const [isSubmittingMention, setIsSubmittingMention] = useState(false)
+  
+  // Watch file state
+  const [isWatching, setIsWatching] = useState(false)
+  const [isTogglingWatch, setIsTogglingWatch] = useState(false)
+  
+  // Share link state
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [shareExpiresInDays, setShareExpiresInDays] = useState<number | null>(7)
+  const [shareMaxDownloads, setShareMaxDownloads] = useState<number | null>(null)
+  const [shareRequireAuth, setShareRequireAuth] = useState(false)
+  const [generatedShareLink, setGeneratedShareLink] = useState<string | null>(null)
+  const [isCreatingShareLink, setIsCreatingShareLink] = useState(false)
+  const [copiedLink, setCopiedLink] = useState(false)
+  
+  // Add to ECO state
+  const [showECOModal, setShowECOModal] = useState(false)
+  const [activeECOs, setActiveECOs] = useState<{ id: string; eco_number: string; title: string }[]>([])
+  const [selectedECO, setSelectedECO] = useState<string | null>(null)
+  const [ecoNotes, setEcoNotes] = useState('')
+  const [loadingECOs, setLoadingECOs] = useState(false)
+  const [isAddingToECO, setIsAddingToECO] = useState(false)
   
   // For positioning the menu within viewport bounds
   const menuRef = useRef<HTMLDivElement>(null)
@@ -103,6 +168,15 @@ export function FileContextMenu({
   useEffect(() => {
     window.electronAPI?.getPlatform().then(setPlatform)
   }, [])
+  
+  // Check if user is watching the file
+  useEffect(() => {
+    if (user?.id && contextFiles.length === 1 && !contextFiles[0].isDirectory && contextFiles[0].pdmData?.id) {
+      isWatchingFile(contextFiles[0].pdmData.id, user.id).then(({ watching }) => {
+        setIsWatching(watching)
+      })
+    }
+  }, [user?.id, contextFiles])
   
   // Clean up timeout on unmount
   useEffect(() => {
@@ -332,6 +406,314 @@ export function FileContextMenu({
     setDeleteConfirmFiles([])
     onClose()
     executeCommand('delete-server', { files: contextFiles, deleteLocal: true }, { onRefresh })
+  }
+  
+  // Request Review handlers
+  const handleOpenReviewModal = async () => {
+    if (!organization?.id) {
+      addToast('error', 'No organization connected')
+      return
+    }
+    
+    setShowReviewModal(true)
+    setLoadingUsers(true)
+    
+    const { users } = await getOrgUsers(organization.id)
+    // Filter out current user from the list
+    setOrgUsers(users.filter((u: { id: string }) => u.id !== user?.id))
+    setLoadingUsers(false)
+  }
+  
+  const handleToggleReviewer = (userId: string) => {
+    setSelectedReviewers(prev => 
+      prev.includes(userId)
+        ? prev.filter(id => id !== userId)
+        : [...prev, userId]
+    )
+  }
+  
+  const handleSubmitReviewRequest = async () => {
+    if (!user?.id || !organization?.id || !activeVaultId) {
+      addToast('error', 'Missing required information')
+      return
+    }
+    
+    if (selectedReviewers.length === 0) {
+      addToast('warning', 'Please select at least one reviewer')
+      return
+    }
+    
+    setIsSubmittingReview(true)
+    
+    // Get the first synced file for the review request
+    const syncedFile = contextFiles.find(f => f.pdmData?.id)
+    if (!syncedFile || !syncedFile.pdmData) {
+      addToast('error', 'File must be synced to request a review')
+      setIsSubmittingReview(false)
+      return
+    }
+    
+    const { error } = await createReviewRequest(
+      organization.id,
+      syncedFile.pdmData.id,
+      activeVaultId,
+      user.id,
+      selectedReviewers,
+      syncedFile.pdmData.version || 1,
+      undefined,  // title
+      reviewMessage || undefined,
+      reviewDueDate || undefined,
+      reviewPriority
+    )
+    
+    if (error) {
+      addToast('error', `Failed to create review request: ${error}`)
+    } else {
+      addToast('success', `Review request sent to ${selectedReviewers.length} reviewer${selectedReviewers.length > 1 ? 's' : ''}`)
+      setShowReviewModal(false)
+      setSelectedReviewers([])
+      setReviewMessage('')
+      setReviewDueDate('')
+      setReviewPriority('normal')
+      onClose()
+    }
+    
+    setIsSubmittingReview(false)
+  }
+  
+  // Request Checkout handlers (for files checked out by others)
+  const handleSubmitCheckoutRequest = async () => {
+    if (!user?.id || !organization?.id) {
+      addToast('error', 'Missing required information')
+      return
+    }
+    
+    const syncedFile = contextFiles.find(f => f.pdmData?.id && f.pdmData.checked_out_by && f.pdmData.checked_out_by !== user.id)
+    if (!syncedFile || !syncedFile.pdmData?.checked_out_by) {
+      addToast('error', 'File is not checked out by someone else')
+      setShowCheckoutRequestModal(false)
+      return
+    }
+    
+    setIsSubmittingCheckoutRequest(true)
+    
+    const { error } = await requestCheckout(
+      organization.id,
+      syncedFile.pdmData.id,
+      syncedFile.name,
+      user.id,
+      syncedFile.pdmData.checked_out_by,
+      checkoutRequestMessage || undefined
+    )
+    
+    if (error) {
+      addToast('error', `Failed to send request: ${error}`)
+    } else {
+      addToast('success', 'Checkout request sent')
+      setShowCheckoutRequestModal(false)
+      setCheckoutRequestMessage('')
+      onClose()
+    }
+    
+    setIsSubmittingCheckoutRequest(false)
+  }
+  
+  // Mention/Notify handlers
+  const handleOpenMentionModal = async () => {
+    if (!organization?.id) {
+      addToast('error', 'No organization connected')
+      return
+    }
+    
+    setShowMentionModal(true)
+    setLoadingUsers(true)
+    
+    const { users } = await getOrgUsers(organization.id)
+    // Filter out current user from the list
+    setOrgUsers(users.filter((u: { id: string }) => u.id !== user?.id))
+    setLoadingUsers(false)
+  }
+  
+  const handleToggleMentionUser = (userId: string) => {
+    setSelectedMentionUsers(prev => 
+      prev.includes(userId)
+        ? prev.filter(id => id !== userId)
+        : [...prev, userId]
+    )
+  }
+  
+  const handleSubmitMention = async () => {
+    if (!user?.id || !organization?.id) {
+      addToast('error', 'Missing required information')
+      return
+    }
+    
+    if (selectedMentionUsers.length === 0) {
+      addToast('warning', 'Please select at least one person to notify')
+      return
+    }
+    
+    const syncedFile = contextFiles.find(f => f.pdmData?.id)
+    if (!syncedFile || !syncedFile.pdmData) {
+      addToast('error', 'File must be synced to send notifications')
+      setIsSubmittingMention(false)
+      return
+    }
+    
+    setIsSubmittingMention(true)
+    
+    let successCount = 0
+    for (const toUserId of selectedMentionUsers) {
+      const { success } = await sendFileNotification(
+        organization.id,
+        syncedFile.pdmData.id,
+        syncedFile.name,
+        toUserId,
+        user.id,
+        'mention',
+        mentionMessage || `Check out this file: ${syncedFile.name}`
+      )
+      if (success) successCount++
+    }
+    
+    if (successCount > 0) {
+      addToast('success', `Notification sent to ${successCount} user${successCount > 1 ? 's' : ''}`)
+      setShowMentionModal(false)
+      setSelectedMentionUsers([])
+      setMentionMessage('')
+      onClose()
+    } else {
+      addToast('error', 'Failed to send notifications')
+    }
+    
+    setIsSubmittingMention(false)
+  }
+  
+  // Watch/Unwatch handlers
+  const handleToggleWatch = async () => {
+    if (!user?.id || !organization?.id) return
+    
+    const syncedFile = contextFiles.find(f => f.pdmData?.id)
+    if (!syncedFile || !syncedFile.pdmData) return
+    
+    setIsTogglingWatch(true)
+    
+    if (isWatching) {
+      const { success, error } = await unwatchFile(syncedFile.pdmData.id, user.id)
+      if (success) {
+        setIsWatching(false)
+        addToast('info', `Stopped watching ${syncedFile.name}`)
+      } else {
+        addToast('error', error || 'Failed to unwatch file')
+      }
+    } else {
+      const { success, error } = await watchFile(organization.id, syncedFile.pdmData.id, user.id)
+      if (success) {
+        setIsWatching(true)
+        addToast('success', `Now watching ${syncedFile.name}`)
+      } else {
+        addToast('error', error || 'Failed to watch file')
+      }
+    }
+    
+    setIsTogglingWatch(false)
+    onClose()
+  }
+  
+  // Share link handler - creates link immediately and copies to clipboard
+  const handleQuickShareLink = async (file: LocalFile) => {
+    if (!user?.id || !organization?.id || !file.pdmData?.id) {
+      addToast('error', 'File must be synced to create a share link')
+      return
+    }
+    
+    setIsCreatingShareLink(true)
+    
+    const { link, error } = await createShareLink(
+      organization.id,
+      file.pdmData.id,
+      user.id,
+      { expiresInDays: 7 } // Default 7 days
+    )
+    
+    if (error) {
+      addToast('error', error)
+    } else if (link) {
+      try {
+        await navigator.clipboard.writeText(link.downloadUrl)
+        addToast('success', 'Share link copied! (expires in 7 days)')
+      } catch {
+        // If clipboard fails, show the link in a prompt
+        setGeneratedShareLink(link.downloadUrl)
+        setShowShareModal(true)
+      }
+    }
+    
+    setIsCreatingShareLink(false)
+    onClose()
+  }
+  
+  const handleCopyShareLink = async () => {
+    if (!generatedShareLink) return
+    
+    try {
+      await navigator.clipboard.writeText(generatedShareLink)
+      setCopiedLink(true)
+      addToast('success', 'Link copied to clipboard!')
+      setTimeout(() => setCopiedLink(false), 2000)
+    } catch {
+      addToast('error', 'Failed to copy link')
+    }
+  }
+  
+  // ECO handlers
+  const handleOpenECOModal = async () => {
+    if (!organization?.id) {
+      addToast('error', 'No organization connected')
+      return
+    }
+    
+    setShowECOModal(true)
+    setLoadingECOs(true)
+    
+    const { ecos } = await getActiveECOs(organization.id)
+    setActiveECOs(ecos)
+    setLoadingECOs(false)
+  }
+  
+  const handleAddToECO = async () => {
+    if (!user?.id || !selectedECO) {
+      addToast('warning', 'Please select an ECO')
+      return
+    }
+    
+    const syncedFile = contextFiles.find(f => f.pdmData?.id)
+    if (!syncedFile || !syncedFile.pdmData) {
+      addToast('error', 'File must be synced to add to ECO')
+      return
+    }
+    
+    setIsAddingToECO(true)
+    
+    const { success, error } = await addFileToECO(
+      syncedFile.pdmData.id,
+      selectedECO,
+      user.id,
+      ecoNotes || undefined
+    )
+    
+    if (success) {
+      const eco = activeECOs.find(e => e.id === selectedECO)
+      addToast('success', `Added to ${eco?.eco_number || 'ECO'}`)
+      setShowECOModal(false)
+      setSelectedECO(null)
+      setEcoNotes('')
+      onClose()
+    } else {
+      addToast('error', error || 'Failed to add to ECO')
+    }
+    
+    setIsAddingToECO(false)
   }
 
   return (
@@ -597,6 +979,89 @@ export function FileContextMenu({
           <Info size={14} />
           Properties
         </div>
+        
+        {/* Request Review - only for synced files (not folders) */}
+        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
+          <div 
+            className="context-menu-item"
+            onClick={handleOpenReviewModal}
+          >
+            <Send size={14} className="text-pdm-accent" />
+            Request Review
+          </div>
+        )}
+        
+        {/* Request Checkout - for files checked out by others */}
+        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.checked_out_by && firstFile.pdmData.checked_out_by !== user?.id && (
+          <div 
+            className="context-menu-item"
+            onClick={() => setShowCheckoutRequestModal(true)}
+          >
+            <ArrowDown size={14} className="text-pdm-warning" />
+            Request Checkout
+          </div>
+        )}
+        
+        {/* Notify / Mention - for synced files */}
+        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
+          <div 
+            className="context-menu-item"
+            onClick={handleOpenMentionModal}
+          >
+            <Users size={14} className="text-pdm-fg-dim" />
+            Notify Someone
+          </div>
+        )}
+        
+        {/* Watch/Unwatch - for synced files */}
+        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
+          <div 
+            className={`context-menu-item ${isTogglingWatch ? 'opacity-50' : ''}`}
+            onClick={handleToggleWatch}
+          >
+            {isTogglingWatch ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : isWatching ? (
+              <EyeOffIcon size={14} className="text-pdm-fg-muted" />
+            ) : (
+              <Eye size={14} className="text-pdm-accent" />
+            )}
+            {isWatching ? 'Stop Watching' : 'Watch File'}
+          </div>
+        )}
+        
+        {/* Copy Share Link - for synced files and folders */}
+        {!multiSelect && anySynced && (isFolder || firstFile.pdmData?.id) && (
+          <div 
+            className={`context-menu-item ${isCreatingShareLink ? 'opacity-50' : ''}`}
+            onClick={() => {
+              if (isFolder) {
+                addToast('info', 'Folder sharing coming soon! For now, share individual files.')
+                onClose()
+              } else if (!isCreatingShareLink) {
+                handleQuickShareLink(firstFile)
+              }
+            }}
+          >
+            {isCreatingShareLink ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Link size={14} className="text-pdm-accent" />
+            )}
+            Copy Share Link
+          </div>
+        )}
+        
+        {/* Add to ECO - for synced files */}
+        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
+          <div 
+            className="context-menu-item"
+            onClick={handleOpenECOModal}
+          >
+            <ClipboardList size={14} className="text-pdm-fg-dim" />
+            Add to ECO
+          </div>
+        )}
         
         <div className="context-menu-separator" />
         
@@ -957,6 +1422,531 @@ export function FileContextMenu({
                 className="btn btn-ghost w-full justify-center"
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Review Request Modal */}
+      {showReviewModal && (
+        <div 
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowReviewModal(false); setSelectedReviewers([]); setReviewMessage(''); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                <Send size={20} className="text-pdm-accent" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">
+                  Request Review
+                </h3>
+                <p className="text-sm text-pdm-fg-muted">
+                  {firstFile.name}
+                </p>
+              </div>
+            </div>
+            
+            {/* File info */}
+            <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4">
+              <div className="flex items-center gap-2">
+                <File size={16} className="text-pdm-fg-muted" />
+                <span className="text-pdm-fg font-medium truncate">{firstFile.name}</span>
+                {firstFile.pdmData?.version && (
+                  <span className="text-xs text-pdm-fg-muted">v{firstFile.pdmData.version}</span>
+                )}
+              </div>
+            </div>
+            
+            {/* Reviewers selection */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Select Reviewers
+              </label>
+              {loadingUsers ? (
+                <div className="flex items-center justify-center p-4">
+                  <Loader2 size={20} className="animate-spin text-pdm-accent" />
+                </div>
+              ) : orgUsers.length === 0 ? (
+                <p className="text-sm text-pdm-fg-muted p-2">No other users in your organization</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto border border-pdm-border rounded bg-pdm-bg">
+                  {orgUsers.map(orgUser => (
+                    <label 
+                      key={orgUser.id}
+                      className="flex items-center gap-3 p-2 hover:bg-pdm-highlight cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedReviewers.includes(orgUser.id)}
+                        onChange={() => handleToggleReviewer(orgUser.id)}
+                        className="w-4 h-4 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent"
+                      />
+                      {orgUser.avatar_url ? (
+                        <img 
+                          src={orgUser.avatar_url} 
+                          alt="" 
+                          className="w-6 h-6 rounded-full"
+                        />
+                      ) : (
+                        <div className="w-6 h-6 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                          <Users size={12} className="text-pdm-accent" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-pdm-fg truncate">
+                          {orgUser.full_name || orgUser.email}
+                        </div>
+                        {orgUser.full_name && (
+                          <div className="text-xs text-pdm-fg-muted truncate">
+                            {orgUser.email}
+                          </div>
+                        )}
+                      </div>
+                      {selectedReviewers.includes(orgUser.id) && (
+                        <Check size={16} className="text-pdm-accent flex-shrink-0" />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            {/* Due Date and Priority */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                  <Calendar size={12} className="inline mr-1" />
+                  Due Date (optional)
+                </label>
+                <input
+                  type="date"
+                  value={reviewDueDate}
+                  onChange={(e) => setReviewDueDate(e.target.value)}
+                  min={new Date().toISOString().split('T')[0]}
+                  className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded focus:outline-none focus:border-pdm-accent"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                  Priority
+                </label>
+                <select
+                  value={reviewPriority}
+                  onChange={(e) => setReviewPriority(e.target.value as any)}
+                  className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded focus:outline-none focus:border-pdm-accent"
+                >
+                  <option value="low">Low</option>
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </div>
+            </div>
+            
+            {/* Message */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Message (optional)
+              </label>
+              <textarea
+                value={reviewMessage}
+                onChange={(e) => setReviewMessage(e.target.value)}
+                placeholder="Add a message for the reviewers..."
+                className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded resize-none focus:outline-none focus:border-pdm-accent"
+                rows={2}
+              />
+            </div>
+            
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowReviewModal(false); setSelectedReviewers([]); setReviewMessage(''); setReviewDueDate(''); setReviewPriority('normal'); }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitReviewRequest}
+                disabled={selectedReviewers.length === 0 || isSubmittingReview}
+                className="btn bg-pdm-accent hover:bg-pdm-accent/90 text-white disabled:opacity-50"
+              >
+                {isSubmittingReview ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Send size={14} />
+                )}
+                Send Request {selectedReviewers.length > 0 && `(${selectedReviewers.length})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Checkout Request Modal */}
+      {showCheckoutRequestModal && (
+        <div 
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowCheckoutRequestModal(false); setCheckoutRequestMessage(''); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-warning/20 flex items-center justify-center">
+                <ArrowDown size={20} className="text-pdm-warning" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">
+                  Request Checkout
+                </h3>
+                <p className="text-sm text-pdm-fg-muted">
+                  Ask to check out this file
+                </p>
+              </div>
+            </div>
+            
+            {/* File info */}
+            <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4">
+              <div className="flex items-center gap-2">
+                <File size={16} className="text-pdm-fg-muted" />
+                <span className="text-pdm-fg font-medium truncate">{firstFile.name}</span>
+              </div>
+              <div className="mt-2 text-xs text-pdm-fg-muted">
+                Currently checked out - a notification will be sent to the user who has this file.
+              </div>
+            </div>
+            
+            {/* Message */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Message (optional)
+              </label>
+              <textarea
+                value={checkoutRequestMessage}
+                onChange={(e) => setCheckoutRequestMessage(e.target.value)}
+                placeholder="Why do you need this file? Any deadline?"
+                className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded resize-none focus:outline-none focus:border-pdm-accent"
+                rows={3}
+              />
+            </div>
+            
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowCheckoutRequestModal(false); setCheckoutRequestMessage(''); }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitCheckoutRequest}
+                disabled={isSubmittingCheckoutRequest}
+                className="btn bg-pdm-warning hover:bg-pdm-warning/90 text-white disabled:opacity-50"
+              >
+                {isSubmittingCheckoutRequest ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Send size={14} />
+                )}
+                Send Request
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Notify/Mention Modal */}
+      {showMentionModal && (
+        <div 
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowMentionModal(false); setSelectedMentionUsers([]); setMentionMessage(''); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                <Users size={20} className="text-pdm-accent" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">
+                  Notify Someone
+                </h3>
+                <p className="text-sm text-pdm-fg-muted">
+                  Send a notification about this file
+                </p>
+              </div>
+            </div>
+            
+            {/* File info */}
+            <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4">
+              <div className="flex items-center gap-2">
+                <File size={16} className="text-pdm-fg-muted" />
+                <span className="text-pdm-fg font-medium truncate">{firstFile.name}</span>
+                {firstFile.pdmData?.version && (
+                  <span className="text-xs text-pdm-fg-muted">v{firstFile.pdmData.version}</span>
+                )}
+              </div>
+            </div>
+            
+            {/* User selection */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Select People to Notify
+              </label>
+              {loadingUsers ? (
+                <div className="flex items-center justify-center p-4">
+                  <Loader2 size={20} className="animate-spin text-pdm-accent" />
+                </div>
+              ) : orgUsers.length === 0 ? (
+                <p className="text-sm text-pdm-fg-muted p-2">No other users in your organization</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto border border-pdm-border rounded bg-pdm-bg">
+                  {orgUsers.map(orgUser => (
+                    <label 
+                      key={orgUser.id}
+                      className="flex items-center gap-3 p-2 hover:bg-pdm-highlight cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedMentionUsers.includes(orgUser.id)}
+                        onChange={() => handleToggleMentionUser(orgUser.id)}
+                        className="w-4 h-4 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent"
+                      />
+                      {orgUser.avatar_url ? (
+                        <img 
+                          src={orgUser.avatar_url} 
+                          alt="" 
+                          className="w-6 h-6 rounded-full"
+                        />
+                      ) : (
+                        <div className="w-6 h-6 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                          <Users size={12} className="text-pdm-accent" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-pdm-fg truncate">
+                          {orgUser.full_name || orgUser.email}
+                        </div>
+                        {orgUser.full_name && (
+                          <div className="text-xs text-pdm-fg-muted truncate">
+                            {orgUser.email}
+                          </div>
+                        )}
+                      </div>
+                      {selectedMentionUsers.includes(orgUser.id) && (
+                        <Check size={16} className="text-pdm-accent flex-shrink-0" />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            {/* Message */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Message
+              </label>
+              <textarea
+                value={mentionMessage}
+                onChange={(e) => setMentionMessage(e.target.value)}
+                placeholder="What do you want to tell them about this file?"
+                className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded resize-none focus:outline-none focus:border-pdm-accent"
+                rows={3}
+              />
+            </div>
+            
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowMentionModal(false); setSelectedMentionUsers([]); setMentionMessage(''); }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitMention}
+                disabled={selectedMentionUsers.length === 0 || isSubmittingMention}
+                className="btn bg-pdm-accent hover:bg-pdm-accent/90 text-white disabled:opacity-50"
+              >
+                {isSubmittingMention ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Send size={14} />
+                )}
+                Send {selectedMentionUsers.length > 0 && `(${selectedMentionUsers.length})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Share Link Modal - fallback if clipboard fails */}
+      {showShareModal && generatedShareLink && (
+        <div 
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowShareModal(false); setGeneratedShareLink(null); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                <Link size={20} className="text-pdm-accent" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">Share Link Created</h3>
+                <p className="text-sm text-pdm-fg-muted">Copy the link below</p>
+              </div>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={generatedShareLink}
+                  readOnly
+                  className="flex-1 px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded focus:outline-none"
+                />
+                <button
+                  onClick={handleCopyShareLink}
+                  className="btn bg-pdm-accent hover:bg-pdm-accent/90 text-white"
+                >
+                  {copiedLink ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+              <p className="text-xs text-pdm-fg-muted">Expires in 7 days • Anyone with link can download</p>
+              
+              <div className="flex justify-end">
+                <button
+                  onClick={() => { setShowShareModal(false); setGeneratedShareLink(null); onClose(); }}
+                  className="btn bg-pdm-accent hover:bg-pdm-accent/90 text-white"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Add to ECO Modal */}
+      {showECOModal && (
+        <div 
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowECOModal(false); setSelectedECO(null); setEcoNotes(''); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-accent/20 flex items-center justify-center">
+                <ClipboardList size={20} className="text-pdm-accent" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">
+                  Add to ECO
+                </h3>
+                <p className="text-sm text-pdm-fg-muted">
+                  Add file to Engineering Change Order
+                </p>
+              </div>
+            </div>
+            
+            {/* File info */}
+            <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4">
+              <div className="flex items-center gap-2">
+                <File size={16} className="text-pdm-fg-muted" />
+                <span className="text-pdm-fg font-medium truncate">{firstFile.name}</span>
+              </div>
+            </div>
+            
+            {/* ECO selection */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Select ECO
+              </label>
+              {loadingECOs ? (
+                <div className="flex items-center justify-center p-4">
+                  <Loader2 size={20} className="animate-spin text-pdm-accent" />
+                </div>
+              ) : activeECOs.length === 0 ? (
+                <p className="text-sm text-pdm-fg-muted p-2">No active ECOs found. Create one in the ECO Manager first.</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto border border-pdm-border rounded bg-pdm-bg">
+                  {activeECOs.map(eco => (
+                    <label 
+                      key={eco.id}
+                      className="flex items-center gap-3 p-2 hover:bg-pdm-highlight cursor-pointer"
+                    >
+                      <input
+                        type="radio"
+                        name="eco"
+                        value={eco.id}
+                        checked={selectedECO === eco.id}
+                        onChange={() => setSelectedECO(eco.id)}
+                        className="w-4 h-4 border-pdm-border text-pdm-accent focus:ring-pdm-accent"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-pdm-fg font-medium">
+                          {eco.eco_number}
+                        </div>
+                        {eco.title && (
+                          <div className="text-xs text-pdm-fg-muted truncate">
+                            {eco.title}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            {/* Notes */}
+            <div className="mb-4">
+              <label className="block text-xs text-pdm-fg-muted uppercase tracking-wide mb-2">
+                Notes (optional)
+              </label>
+              <textarea
+                value={ecoNotes}
+                onChange={(e) => setEcoNotes(e.target.value)}
+                placeholder="Why is this file part of this ECO?"
+                className="w-full px-3 py-2 text-sm bg-pdm-bg border border-pdm-border rounded resize-none focus:outline-none focus:border-pdm-accent"
+                rows={2}
+              />
+            </div>
+            
+            {/* Actions */}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowECOModal(false); setSelectedECO(null); setEcoNotes(''); }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddToECO}
+                disabled={!selectedECO || isAddingToECO}
+                className="btn bg-pdm-accent hover:bg-pdm-accent/90 text-white disabled:opacity-50"
+              >
+                {isAddingToECO ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <ClipboardList size={14} />
+                )}
+                Add to ECO
               </button>
             </div>
           </div>

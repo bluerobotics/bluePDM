@@ -35,7 +35,12 @@ CREATE TABLE organizations (
     "require_approval_for_release": true,
     "max_file_size_mb": 500
   }'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Google Drive integration
+  google_drive_client_id TEXT,
+  google_drive_client_secret TEXT,
+  google_drive_enabled BOOLEAN DEFAULT FALSE
 );
 
 -- Index for email domain lookup
@@ -944,3 +949,736 @@ UPDATE users u
 SET avatar_url = COALESCE(au.raw_user_meta_data->>'avatar_url', au.raw_user_meta_data->>'picture')
 FROM auth.users au
 WHERE u.id = au.id AND u.avatar_url IS NULL;
+
+-- ===========================================
+-- ECO (Engineering Change Order) SYSTEM
+-- ===========================================
+
+-- ECO status enum
+CREATE TYPE eco_status AS ENUM ('open', 'in_progress', 'completed', 'cancelled');
+
+-- ECO table
+CREATE TABLE ecos (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- ECO identity
+  eco_number TEXT NOT NULL,              -- e.g., "ECO-001", "ECR-2024-0042"
+  title TEXT,                            -- Short description/title
+  description TEXT,                      -- Detailed description
+  
+  -- Status
+  status eco_status DEFAULT 'open',
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID NOT NULL REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  completed_at TIMESTAMPTZ,              -- When the ECO was completed/closed
+  
+  -- Custom properties for flexibility
+  custom_properties JSONB DEFAULT '{}'::jsonb,
+  
+  -- Unique ECO number per organization
+  UNIQUE(org_id, eco_number)
+);
+
+CREATE INDEX idx_ecos_org_id ON ecos(org_id);
+CREATE INDEX idx_ecos_eco_number ON ecos(eco_number);
+CREATE INDEX idx_ecos_status ON ecos(status);
+CREATE INDEX idx_ecos_created_at ON ecos(created_at DESC);
+
+-- File-ECO junction table (Many-to-Many)
+CREATE TABLE file_ecos (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  eco_id UUID NOT NULL REFERENCES ecos(id) ON DELETE CASCADE,
+  
+  -- When/who tagged this file with the ECO
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID NOT NULL REFERENCES users(id),
+  
+  -- Optional notes about why this file is part of the ECO
+  notes TEXT,
+  
+  -- Prevent duplicate file-eco associations
+  UNIQUE(file_id, eco_id)
+);
+
+CREATE INDEX idx_file_ecos_file_id ON file_ecos(file_id);
+CREATE INDEX idx_file_ecos_eco_id ON file_ecos(eco_id);
+
+-- ECO RLS
+ALTER TABLE ecos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_ecos ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view org ECOs"
+  ON ecos FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Engineers can create ECOs"
+  ON ecos FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
+
+CREATE POLICY "Engineers can update ECOs"
+  ON ecos FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
+
+CREATE POLICY "Admins can delete ECOs"
+  ON ecos FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Users can view file-eco associations"
+  ON file_ecos FOR SELECT
+  USING (eco_id IN (SELECT id FROM ecos WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Engineers can manage file-eco associations"
+  ON file_ecos FOR ALL
+  USING (eco_id IN (SELECT id FROM ecos WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer'))));
+
+-- ===========================================
+-- REVIEWS & NOTIFICATIONS SYSTEM
+-- ===========================================
+
+-- Review status enum
+CREATE TYPE review_status AS ENUM ('pending', 'approved', 'rejected', 'cancelled');
+
+-- Notification type enum
+CREATE TYPE notification_type AS ENUM (
+  'review_request',
+  'review_approved',
+  'review_rejected',
+  'review_comment',
+  'mention',
+  'file_updated'
+);
+
+-- Reviews table (file review requests)
+CREATE TABLE reviews (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  vault_id UUID REFERENCES vaults(id) ON DELETE SET NULL,
+  
+  -- Request info
+  requested_by UUID NOT NULL REFERENCES users(id),
+  requested_at TIMESTAMPTZ DEFAULT NOW(),
+  title TEXT,
+  message TEXT,
+  file_version INTEGER NOT NULL,           -- Version being reviewed
+  
+  -- Status
+  status review_status DEFAULT 'pending',
+  completed_at TIMESTAMPTZ,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_reviews_org_id ON reviews(org_id);
+CREATE INDEX idx_reviews_file_id ON reviews(file_id);
+CREATE INDEX idx_reviews_requested_by ON reviews(requested_by);
+CREATE INDEX idx_reviews_status ON reviews(status);
+CREATE INDEX idx_reviews_created_at ON reviews(created_at DESC);
+
+-- Review responses (individual reviewer responses)
+CREATE TABLE review_responses (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+  reviewer_id UUID NOT NULL REFERENCES users(id),
+  
+  -- Response
+  status review_status DEFAULT 'pending',
+  comment TEXT,
+  responded_at TIMESTAMPTZ,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  UNIQUE(review_id, reviewer_id)
+);
+
+CREATE INDEX idx_review_responses_review_id ON review_responses(review_id);
+CREATE INDEX idx_review_responses_reviewer_id ON review_responses(reviewer_id);
+CREATE INDEX idx_review_responses_status ON review_responses(status);
+
+-- Notifications table
+CREATE TABLE notifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- Who receives the notification
+  
+  -- Notification content
+  type notification_type NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT,
+  
+  -- Related entities
+  review_id UUID REFERENCES reviews(id) ON DELETE CASCADE,
+  file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+  from_user_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- Who triggered the notification
+  
+  -- Read status
+  read BOOLEAN DEFAULT false,
+  read_at TIMESTAMPTZ,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX idx_notifications_org_id ON notifications(org_id);
+CREATE INDEX idx_notifications_read ON notifications(read);
+CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
+CREATE INDEX idx_notifications_type ON notifications(type);
+
+-- Reviews RLS
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE review_responses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view org reviews"
+  ON reviews FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Engineers can create reviews"
+  ON reviews FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
+
+CREATE POLICY "Users can update their reviews"
+  ON reviews FOR UPDATE
+  USING (requested_by = auth.uid() OR org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Users can view review responses"
+  ON review_responses FOR SELECT
+  USING (review_id IN (SELECT id FROM reviews WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Users can create review responses"
+  ON review_responses FOR INSERT
+  WITH CHECK (review_id IN (SELECT id FROM reviews WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Users can update their responses"
+  ON review_responses FOR UPDATE
+  USING (reviewer_id = auth.uid());
+
+CREATE POLICY "Users can view their notifications"
+  ON notifications FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "System can create notifications"
+  ON notifications FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can update their notifications"
+  ON notifications FOR UPDATE
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can delete their notifications"
+  ON notifications FOR DELETE
+  USING (user_id = auth.uid());
+
+-- ===========================================
+-- WORKFLOW SYSTEM
+-- ===========================================
+
+-- Workflow state type enum
+CREATE TYPE workflow_state_type AS ENUM ('initial', 'intermediate', 'final', 'rejected');
+
+-- Workflow gate type enum
+CREATE TYPE gate_type AS ENUM ('approval', 'checklist', 'condition', 'notification');
+
+-- Approval mode enum
+CREATE TYPE approval_mode AS ENUM ('any', 'all', 'sequential');
+
+-- Reviewer type enum
+CREATE TYPE reviewer_type AS ENUM ('user', 'role', 'group', 'file_owner', 'checkout_user');
+
+-- Transition line style enum
+CREATE TYPE transition_line_style AS ENUM ('solid', 'dashed', 'dotted');
+
+-- Workflow templates (org-wide workflow definitions)
+CREATE TABLE workflow_templates (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  is_default BOOLEAN DEFAULT false,
+  is_active BOOLEAN DEFAULT true,
+  
+  -- Canvas configuration for visual builder
+  canvas_config JSONB DEFAULT '{"zoom": 1, "panX": 0, "panY": 0}'::jsonb,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id)
+);
+
+CREATE INDEX idx_workflow_templates_org_id ON workflow_templates(org_id);
+CREATE INDEX idx_workflow_templates_is_default ON workflow_templates(is_default);
+CREATE INDEX idx_workflow_templates_is_active ON workflow_templates(is_active);
+
+-- Workflow states (nodes in the workflow)
+CREATE TABLE workflow_states (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  label TEXT,                              -- Display label (defaults to name)
+  description TEXT,
+  color TEXT DEFAULT '#6B7280',            -- Hex color for visual display
+  icon TEXT DEFAULT 'circle',              -- Icon name for visual display
+  
+  -- Position on canvas
+  position_x INTEGER DEFAULT 0,
+  position_y INTEGER DEFAULT 0,
+  
+  -- State configuration
+  state_type workflow_state_type DEFAULT 'intermediate',
+  maps_to_file_state file_state DEFAULT 'wip',   -- Which file_state this maps to
+  is_editable BOOLEAN DEFAULT true,        -- Can files be edited in this state?
+  requires_checkout BOOLEAN DEFAULT true,  -- Must checkout to edit?
+  auto_increment_revision BOOLEAN DEFAULT false,  -- Auto-bump revision on transition
+  
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_workflow_states_workflow_id ON workflow_states(workflow_id);
+CREATE INDEX idx_workflow_states_state_type ON workflow_states(state_type);
+
+-- Workflow transitions (connections between states)
+CREATE TABLE workflow_transitions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
+  
+  from_state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
+  to_state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
+  
+  name TEXT,                               -- e.g., "Submit for Review"
+  description TEXT,
+  
+  -- Visual styling
+  line_style transition_line_style DEFAULT 'solid',
+  line_color TEXT,
+  
+  -- Permissions
+  allowed_roles user_role[] DEFAULT '{admin,engineer}'::user_role[],
+  
+  -- Auto-transition conditions (optional)
+  auto_conditions JSONB,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Prevent duplicate transitions
+  UNIQUE(from_state_id, to_state_id)
+);
+
+CREATE INDEX idx_workflow_transitions_workflow_id ON workflow_transitions(workflow_id);
+CREATE INDEX idx_workflow_transitions_from_state ON workflow_transitions(from_state_id);
+CREATE INDEX idx_workflow_transitions_to_state ON workflow_transitions(to_state_id);
+
+-- Workflow gates (approval requirements on transitions)
+CREATE TABLE workflow_gates (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  gate_type gate_type DEFAULT 'approval',
+  
+  -- Approval settings
+  required_approvals INTEGER DEFAULT 1,
+  approval_mode approval_mode DEFAULT 'any',
+  
+  -- Checklist items (for checklist gate type)
+  checklist_items JSONB DEFAULT '[]'::jsonb,  -- [{id, label, required}]
+  
+  -- Condition settings (for condition gate type)
+  conditions JSONB,
+  
+  -- Gate behavior
+  is_blocking BOOLEAN DEFAULT true,        -- Must complete before transition
+  can_be_skipped_by user_role[] DEFAULT '{}'::user_role[],  -- Roles that can skip
+  
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_workflow_gates_transition_id ON workflow_gates(transition_id);
+
+-- Gate reviewers (who can approve a gate)
+CREATE TABLE gate_reviewers (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  gate_id UUID NOT NULL REFERENCES workflow_gates(id) ON DELETE CASCADE,
+  
+  reviewer_type reviewer_type NOT NULL,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,     -- For 'user' type
+  role user_role,                                          -- For 'role' type
+  group_name TEXT,                                         -- For 'group' type
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_gate_reviewers_gate_id ON gate_reviewers(gate_id);
+CREATE INDEX idx_gate_reviewers_user_id ON gate_reviewers(user_id);
+
+-- File workflow assignments (which workflow is assigned to a file)
+CREATE TABLE file_workflow_assignments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE UNIQUE,
+  workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
+  current_state_id UUID REFERENCES workflow_states(id) ON DELETE SET NULL,
+  
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  assigned_by UUID REFERENCES users(id)
+);
+
+CREATE INDEX idx_file_workflow_assignments_file_id ON file_workflow_assignments(file_id);
+CREATE INDEX idx_file_workflow_assignments_workflow_id ON file_workflow_assignments(workflow_id);
+CREATE INDEX idx_file_workflow_assignments_current_state ON file_workflow_assignments(current_state_id);
+
+-- Pending workflow reviews (active gate reviews)
+CREATE TABLE pending_workflow_reviews (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  gate_id UUID NOT NULL REFERENCES workflow_gates(id) ON DELETE CASCADE,
+  
+  requested_by UUID NOT NULL REFERENCES users(id),
+  requested_at TIMESTAMPTZ DEFAULT NOW(),
+  status review_status DEFAULT 'pending',
+  
+  assigned_to UUID REFERENCES users(id),   -- Specific user assigned (optional)
+  reviewed_by UUID REFERENCES users(id),
+  reviewed_at TIMESTAMPTZ,
+  review_comment TEXT,
+  
+  -- Checklist responses (for checklist gate type)
+  checklist_responses JSONB DEFAULT '{}'::jsonb,
+  
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_pending_workflow_reviews_org_id ON pending_workflow_reviews(org_id);
+CREATE INDEX idx_pending_workflow_reviews_file_id ON pending_workflow_reviews(file_id);
+CREATE INDEX idx_pending_workflow_reviews_status ON pending_workflow_reviews(status);
+CREATE INDEX idx_pending_workflow_reviews_assigned_to ON pending_workflow_reviews(assigned_to);
+
+-- Workflow review history (audit trail)
+CREATE TABLE workflow_review_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Snapshot data (preserved even if related records are deleted)
+  file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+  file_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  workflow_id UUID REFERENCES workflow_templates(id) ON DELETE SET NULL,
+  workflow_name TEXT NOT NULL,
+  transition_id UUID REFERENCES workflow_transitions(id) ON DELETE SET NULL,
+  from_state_name TEXT NOT NULL,
+  to_state_name TEXT NOT NULL,
+  gate_id UUID REFERENCES workflow_gates(id) ON DELETE SET NULL,
+  gate_name TEXT NOT NULL,
+  
+  -- Review details
+  requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  requested_by_email TEXT NOT NULL,
+  requested_at TIMESTAMPTZ NOT NULL,
+  reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_by_email TEXT NOT NULL,
+  reviewed_at TIMESTAMPTZ NOT NULL,
+  decision TEXT NOT NULL,  -- 'approved' or 'rejected'
+  comment TEXT,
+  checklist_responses JSONB,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_workflow_review_history_org_id ON workflow_review_history(org_id);
+CREATE INDEX idx_workflow_review_history_file_id ON workflow_review_history(file_id);
+CREATE INDEX idx_workflow_review_history_created_at ON workflow_review_history(created_at DESC);
+
+-- Workflow RLS
+ALTER TABLE workflow_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_transitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_gates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gate_reviewers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_workflow_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pending_workflow_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_review_history ENABLE ROW LEVEL SECURITY;
+
+-- Workflow templates: org members can view, admins can modify
+CREATE POLICY "Users can view org workflows"
+  ON workflow_templates FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Admins can create workflows"
+  ON workflow_templates FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can update workflows"
+  ON workflow_templates FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can delete workflows"
+  ON workflow_templates FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Workflow states: linked to templates
+CREATE POLICY "Users can view workflow states"
+  ON workflow_states FOR SELECT
+  USING (workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Admins can manage workflow states"
+  ON workflow_states FOR ALL
+  USING (workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- Workflow transitions: linked to templates
+CREATE POLICY "Users can view workflow transitions"
+  ON workflow_transitions FOR SELECT
+  USING (workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Admins can manage workflow transitions"
+  ON workflow_transitions FOR ALL
+  USING (workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- Workflow gates: linked to transitions
+CREATE POLICY "Users can view workflow gates"
+  ON workflow_gates FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+CREATE POLICY "Admins can manage workflow gates"
+  ON workflow_gates FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Gate reviewers: linked to gates
+CREATE POLICY "Users can view gate reviewers"
+  ON gate_reviewers FOR SELECT
+  USING (gate_id IN (SELECT id FROM workflow_gates WHERE transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())))));
+
+CREATE POLICY "Admins can manage gate reviewers"
+  ON gate_reviewers FOR ALL
+  USING (gate_id IN (SELECT id FROM workflow_gates WHERE transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')))));
+
+-- File workflow assignments
+CREATE POLICY "Users can view file workflow assignments"
+  ON file_workflow_assignments FOR SELECT
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+CREATE POLICY "Engineers can manage file workflow assignments"
+  ON file_workflow_assignments FOR ALL
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer'))));
+
+-- Pending workflow reviews
+CREATE POLICY "Users can view pending workflow reviews"
+  ON pending_workflow_reviews FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Engineers can create pending workflow reviews"
+  ON pending_workflow_reviews FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
+
+CREATE POLICY "Users can update pending workflow reviews"
+  ON pending_workflow_reviews FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Workflow review history
+CREATE POLICY "Users can view workflow review history"
+  ON workflow_review_history FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "System can insert workflow review history"
+  ON workflow_review_history FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- ===========================================
+-- WORKFLOW HELPER FUNCTIONS
+-- ===========================================
+
+-- Function to create a default workflow for an organization
+CREATE OR REPLACE FUNCTION create_default_workflow(
+  p_org_id UUID,
+  p_created_by UUID
+)
+RETURNS UUID AS $$
+DECLARE
+  v_workflow_id UUID;
+  v_wip_state_id UUID;
+  v_review_state_id UUID;
+  v_released_state_id UUID;
+  v_obsolete_state_id UUID;
+BEGIN
+  -- Create the workflow template
+  INSERT INTO workflow_templates (org_id, name, description, is_default, created_by)
+  VALUES (p_org_id, 'Standard Release Process', 'Default workflow for releasing engineering files', true, p_created_by)
+  RETURNING id INTO v_workflow_id;
+  
+  -- Create states
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, state_type, maps_to_file_state, is_editable, requires_checkout, sort_order)
+  VALUES (v_workflow_id, 'WIP', 'Work In Progress', '#EAB308', 'pencil', 100, 200, 'initial', 'wip', true, true, 1)
+  RETURNING id INTO v_wip_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, state_type, maps_to_file_state, is_editable, requires_checkout, sort_order)
+  VALUES (v_workflow_id, 'In Review', 'In Review', '#3B82F6', 'eye', 350, 200, 'intermediate', 'in_review', false, false, 2)
+  RETURNING id INTO v_review_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, state_type, maps_to_file_state, is_editable, requires_checkout, auto_increment_revision, sort_order)
+  VALUES (v_workflow_id, 'Released', 'Released', '#22C55E', 'check-circle', 600, 200, 'final', 'released', false, false, true, 3)
+  RETURNING id INTO v_released_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, state_type, maps_to_file_state, is_editable, requires_checkout, sort_order)
+  VALUES (v_workflow_id, 'Obsolete', 'Obsolete', '#6B7280', 'archive', 600, 350, 'rejected', 'obsolete', false, false, 4)
+  RETURNING id INTO v_obsolete_state_id;
+  
+  -- Create transitions
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_wip_state_id, v_review_state_id, 'Submit for Review', 'solid');
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_review_state_id, v_released_state_id, 'Approve', 'solid');
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_review_state_id, v_wip_state_id, 'Reject', 'dashed');
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_released_state_id, v_wip_state_id, 'Revise', 'dashed');
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_released_state_id, v_obsolete_state_id, 'Obsolete', 'dotted');
+  
+  RETURN v_workflow_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to get available transitions for a file
+CREATE OR REPLACE FUNCTION get_available_transitions(
+  p_file_id UUID,
+  p_user_id UUID
+)
+RETURNS TABLE (
+  transition_id UUID,
+  transition_name TEXT,
+  to_state_id UUID,
+  to_state_name TEXT,
+  to_state_color TEXT,
+  has_gates BOOLEAN,
+  user_can_transition BOOLEAN
+) AS $$
+DECLARE
+  v_current_state_id UUID;
+  v_user_role user_role;
+BEGIN
+  -- Get user's role
+  SELECT role INTO v_user_role FROM users WHERE id = p_user_id;
+  
+  -- Get file's current workflow state
+  SELECT fwa.current_state_id INTO v_current_state_id
+  FROM file_workflow_assignments fwa
+  WHERE fwa.file_id = p_file_id;
+  
+  -- If no workflow assigned, return empty
+  IF v_current_state_id IS NULL THEN
+    RETURN;
+  END IF;
+  
+  -- Return available transitions
+  RETURN QUERY
+  SELECT 
+    wt.id AS transition_id,
+    wt.name AS transition_name,
+    ws.id AS to_state_id,
+    ws.name AS to_state_name,
+    ws.color AS to_state_color,
+    EXISTS(SELECT 1 FROM workflow_gates wg WHERE wg.transition_id = wt.id) AS has_gates,
+    v_user_role = ANY(wt.allowed_roles) AS user_can_transition
+  FROM workflow_transitions wt
+  JOIN workflow_states ws ON wt.to_state_id = ws.id
+  WHERE wt.from_state_id = v_current_state_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ===========================================
+-- GOOGLE DRIVE INTEGRATION FUNCTIONS
+-- ===========================================
+
+-- Function to get Google Drive settings (only returns if user is in the org)
+CREATE OR REPLACE FUNCTION get_google_drive_settings(p_org_id UUID)
+RETURNS TABLE (
+  client_id TEXT,
+  client_secret TEXT,
+  enabled BOOLEAN
+) 
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Check if user is in the organization
+  IF NOT EXISTS (
+    SELECT 1 FROM users 
+    WHERE id = auth.uid() 
+    AND org_id = p_org_id
+  ) THEN
+    RAISE EXCEPTION 'User not authorized to access this organization';
+  END IF;
+  
+  RETURN QUERY
+  SELECT 
+    o.google_drive_client_id,
+    o.google_drive_client_secret,
+    o.google_drive_enabled
+  FROM organizations o
+  WHERE o.id = p_org_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to update Google Drive settings (admin only)
+CREATE OR REPLACE FUNCTION update_google_drive_settings(
+  p_org_id UUID,
+  p_client_id TEXT,
+  p_client_secret TEXT,
+  p_enabled BOOLEAN
+)
+RETURNS BOOLEAN
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_role TEXT;
+BEGIN
+  -- Check if user is an admin in the organization
+  SELECT role INTO v_user_role
+  FROM users 
+  WHERE id = auth.uid() 
+  AND org_id = p_org_id;
+  
+  IF v_user_role IS NULL THEN
+    RAISE EXCEPTION 'User not found in organization';
+  END IF;
+  
+  IF v_user_role != 'admin' THEN
+    RAISE EXCEPTION 'Only admins can update Google Drive settings';
+  END IF;
+  
+  -- Update the settings
+  UPDATE organizations
+  SET 
+    google_drive_client_id = p_client_id,
+    google_drive_client_secret = p_client_secret,
+    google_drive_enabled = p_enabled
+  WHERE id = p_org_id;
+  
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Grant execute permissions for Google Drive functions
+GRANT EXECUTE ON FUNCTION get_google_drive_settings(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_google_drive_settings(UUID, TEXT, TEXT, BOOLEAN) TO authenticated;

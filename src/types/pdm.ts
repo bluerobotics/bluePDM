@@ -87,6 +87,9 @@ export interface PDMFile {
   // Custom properties (from SolidWorks custom properties)
   custom_properties: Record<string, string | number | null>
   
+  // ECO tags (denormalized from file_ecos junction table)
+  eco_tags?: string[]
+  
   // Soft delete (trash bin)
   deleted_at: string | null
   deleted_by: string | null

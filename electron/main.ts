@@ -996,6 +996,201 @@ ipcMain.handle('auth:open-oauth-window', async (_, url: string) => {
 })
 
 // ============================================
+// Google Drive OAuth Handler
+// ============================================
+// Note: For production use, you would need to configure your own Google Cloud credentials
+// This implementation uses environment variables or a config file for credentials
+
+// Default credentials from environment variables
+const DEFAULT_GOOGLE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || ''
+const DEFAULT_GOOGLE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET || ''
+const GOOGLE_DRIVE_SCOPES = [
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+].join(' ')
+
+// Accept credentials as parameter (from org settings) or fall back to env variables
+ipcMain.handle('auth:google-drive', async (_, credentials?: { clientId?: string; clientSecret?: string }) => {
+  return new Promise((resolve) => {
+    log('[GoogleDrive] Starting OAuth flow')
+    
+    // Use provided credentials or fall back to environment variables
+    const GOOGLE_CLIENT_ID = credentials?.clientId || DEFAULT_GOOGLE_CLIENT_ID
+    const GOOGLE_CLIENT_SECRET = credentials?.clientSecret || DEFAULT_GOOGLE_CLIENT_SECRET
+    
+    // Check if credentials are configured
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      log('[GoogleDrive] OAuth credentials not configured')
+      resolve({ 
+        success: false, 
+        error: 'Google Drive integration requires OAuth credentials. Ask your admin to configure Google Drive in Settings → REST API → Google Drive Integration.' 
+      })
+      return
+    }
+    
+    log('[GoogleDrive] Using credentials:', { hasClientId: !!GOOGLE_CLIENT_ID, source: credentials?.clientId ? 'org' : 'env' })
+    
+    let hasResolved = false
+    const safeResolve = (result: { success: boolean; accessToken?: string; refreshToken?: string; expiry?: number; error?: string }) => {
+      if (!hasResolved) {
+        hasResolved = true
+        if (gdAuthServer) {
+          gdAuthServer.close()
+          gdAuthServer = null
+        }
+        resolve(result)
+      }
+    }
+    
+    // Create local server to receive the callback
+    let gdAuthServer: http.Server | null = null
+    
+    gdAuthServer = http.createServer(async (req, res) => {
+      const reqUrl = new URL(req.url || '/', 'http://localhost')
+      
+      log('[GoogleDrive] Received callback:', reqUrl.pathname)
+      
+      if (reqUrl.pathname === '/auth/google-callback') {
+        const code = reqUrl.searchParams.get('code')
+        const error = reqUrl.searchParams.get('error')
+        
+        if (error) {
+          log('[GoogleDrive] OAuth error:', error)
+          res.writeHead(200, { 'Content-Type': 'text/html' })
+          res.end(`
+            <html>
+              <head><title>Google Drive - Error</title></head>
+              <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1e1e2e; color: #cdd6f4;">
+                <div style="text-align: center; padding: 40px; background: #313244; border-radius: 16px;">
+                  <h1 style="color: #f38ba8;">Authentication Failed</h1>
+                  <p>Error: ${error}</p>
+                  <p style="opacity: 0.7; margin-top: 20px;">You can close this window.</p>
+                </div>
+              </body>
+            </html>
+          `)
+          safeResolve({ success: false, error })
+          return
+        }
+        
+        if (!code) {
+          res.writeHead(400, { 'Content-Type': 'text/html' })
+          res.end('<html><body>Missing authorization code</body></html>')
+          safeResolve({ success: false, error: 'Missing authorization code' })
+          return
+        }
+        
+        // Exchange authorization code for tokens
+        try {
+          const port = (gdAuthServer?.address() as AddressInfo)?.port || 8090
+          const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              code,
+              client_id: GOOGLE_CLIENT_ID,
+              client_secret: GOOGLE_CLIENT_SECRET,
+              redirect_uri: `http://localhost:${port}/auth/google-callback`,
+              grant_type: 'authorization_code'
+            }).toString()
+          })
+          
+          const tokens = await tokenResponse.json() as { 
+            access_token?: string
+            refresh_token?: string
+            expires_in?: number
+            error?: string
+            error_description?: string 
+          }
+          
+          if (tokens.error) {
+            log('[GoogleDrive] Token exchange error:', tokens.error)
+            res.writeHead(200, { 'Content-Type': 'text/html' })
+            res.end(`
+              <html>
+                <head><title>Google Drive - Error</title></head>
+                <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1e1e2e; color: #cdd6f4;">
+                  <div style="text-align: center; padding: 40px; background: #313244; border-radius: 16px;">
+                    <h1 style="color: #f38ba8;">Authentication Failed</h1>
+                    <p>${tokens.error_description || tokens.error}</p>
+                    <p style="opacity: 0.7; margin-top: 20px;">You can close this window.</p>
+                  </div>
+                </body>
+              </html>
+            `)
+            safeResolve({ success: false, error: tokens.error_description || tokens.error })
+            return
+          }
+          
+          log('[GoogleDrive] Token exchange successful')
+          
+          // Success page
+          res.writeHead(200, { 'Content-Type': 'text/html' })
+          res.end(`
+            <html>
+              <head><title>Google Drive - Connected</title></head>
+              <body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1e1e2e; color: #cdd6f4;">
+                <div style="text-align: center; padding: 40px; background: #313244; border-radius: 16px;">
+                  <div style="width: 64px; height: 64px; background: linear-gradient(135deg, #4285f4, #34a853, #fbbc05, #ea4335); border-radius: 50%; margin: 0 auto 20px;"></div>
+                  <h1 style="color: #a6e3a1; margin: 0 0 10px;">Connected to Google Drive!</h1>
+                  <p style="opacity: 0.7;">You can close this window and return to BluePDM.</p>
+                </div>
+                <script>setTimeout(() => window.close(), 3000);</script>
+              </body>
+            </html>
+          `)
+          
+          safeResolve({
+            success: true,
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiry: tokens.expires_in ? Date.now() + (tokens.expires_in * 1000) : undefined
+          })
+        } catch (err) {
+          log('[GoogleDrive] Token exchange failed:', err)
+          res.writeHead(500, { 'Content-Type': 'text/html' })
+          res.end('<html><body>Failed to exchange authorization code</body></html>')
+          safeResolve({ success: false, error: String(err) })
+        }
+      } else {
+        res.writeHead(404)
+        res.end('Not found')
+      }
+    })
+    
+    gdAuthServer.listen(0, '127.0.0.1', () => {
+      const port = (gdAuthServer?.address() as AddressInfo)?.port
+      log('[GoogleDrive] Callback server listening on port', port)
+      
+      // Build OAuth URL
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth')
+      authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID)
+      authUrl.searchParams.set('redirect_uri', `http://localhost:${port}/auth/google-callback`)
+      authUrl.searchParams.set('response_type', 'code')
+      authUrl.searchParams.set('scope', GOOGLE_DRIVE_SCOPES)
+      authUrl.searchParams.set('access_type', 'offline')
+      authUrl.searchParams.set('prompt', 'consent')
+      
+      // Open in system browser
+      log('[GoogleDrive] Opening auth URL in browser')
+      shell.openExternal(authUrl.toString())
+      
+      // Timeout after 5 minutes
+      setTimeout(() => {
+        safeResolve({ success: false, error: 'Authentication timed out. Please try again.' })
+      }, 5 * 60 * 1000)
+    })
+    
+    gdAuthServer.on('error', (err) => {
+      log('[GoogleDrive] Server error:', err)
+      safeResolve({ success: false, error: String(err) })
+    })
+  })
+})
+
+// ============================================
 // IPC Handlers - App Info
 // ============================================
 ipcMain.handle('app:get-version', () => app.getVersion())

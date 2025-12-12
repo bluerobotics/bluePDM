@@ -86,6 +86,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // OAuth
   openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:open-oauth-window', url),
+  openGoogleDriveAuth: (credentials?: { clientId?: string; clientSecret?: string }) => 
+    ipcRenderer.invoke('auth:google-drive', credentials),
   getPlatform: () => ipcRenderer.invoke('app:get-platform'),
   getTitleBarOverlayRect: (): Promise<TitleBarOverlayRect> => ipcRenderer.invoke('app:get-titlebar-overlay-rect'),
   

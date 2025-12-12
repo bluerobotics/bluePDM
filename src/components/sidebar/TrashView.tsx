@@ -123,13 +123,14 @@ export function TrashView() {
     })
   }, [deletedFiles, searchQuery, deletedByFilter, folderFilter])
   
-  // Separate files from folders (folders have file_type 'folder' or no extension and ends with /)
-  const { deletedFilesOnly, deletedFoldersOnly } = useMemo(() => {
+  // Separate actual file records from folder records
+  // Also extract top-level deleted folders from file paths
+  const { deletedFilesOnly, deletedFoldersOnly, topLevelFolders } = useMemo(() => {
     const filesOnly: DeletedFile[] = []
     const foldersOnly: DeletedFile[] = []
     
     filteredFiles.forEach(file => {
-      // Check if it's a folder - extension is empty and name has no extension
+      // Check if it's a folder record - extension is empty and name has no extension
       const isFolder = file.extension === '' && !file.file_name.includes('.')
       
       if (isFolder) {
@@ -139,12 +140,46 @@ export function TrashView() {
       }
     })
     
-    return { deletedFilesOnly: filesOnly, deletedFoldersOnly: foldersOnly }
+    // Extract top-level folders from file paths
+    // A top-level folder is the first folder segment in a deleted file's path
+    const topLevelSet = new Map<string, { name: string; path: string; count: number; latestDelete: string; deletedBy?: DeletedFile['deleted_by_user'] }>()
+    
+    filesOnly.forEach(file => {
+      const firstSlash = file.file_path.indexOf('/')
+      if (firstSlash > 0) {
+        const topFolder = file.file_path.substring(0, firstSlash)
+        const existing = topLevelSet.get(topFolder)
+        if (existing) {
+          existing.count++
+          if (new Date(file.deleted_at) > new Date(existing.latestDelete)) {
+            existing.latestDelete = file.deleted_at
+            existing.deletedBy = file.deleted_by_user
+          }
+        } else {
+          topLevelSet.set(topFolder, {
+            name: topFolder,
+            path: topFolder,
+            count: 1,
+            latestDelete: file.deleted_at,
+            deletedBy: file.deleted_by_user
+          })
+        }
+      }
+    })
+    
+    return { 
+      deletedFilesOnly: filesOnly, 
+      deletedFoldersOnly: foldersOnly,
+      topLevelFolders: Array.from(topLevelSet.values()).sort((a, b) => 
+        new Date(b.latestDelete).getTime() - new Date(a.latestDelete).getTime()
+      )
+    }
   }, [filteredFiles])
   
-  // Group files by folder for nested display
+  // Group files by folder for nested display - build full folder hierarchy
   const groupedByFolder = useMemo(() => {
     const groups = new Map<string, DeletedFile[]>()
+    const allFolderPaths = new Set<string>()
     
     // Only use actual files (not folders) for nested view
     deletedFilesOnly.forEach(file => {
@@ -155,6 +190,23 @@ export function TrashView() {
         groups.set(folder, [])
       }
       groups.get(folder)!.push(file)
+      
+      // Also track all parent folders in the hierarchy
+      if (lastSlash > 0) {
+        const parts = file.file_path.substring(0, lastSlash).split('/')
+        let currentPath = ''
+        for (const part of parts) {
+          currentPath = currentPath ? `${currentPath}/${part}` : part
+          allFolderPaths.add(currentPath)
+        }
+      }
+    })
+    
+    // Add empty folder entries for any parent folders not already in groups
+    allFolderPaths.forEach(folderPath => {
+      if (!groups.has(folderPath)) {
+        groups.set(folderPath, [])
+      }
     })
     
     // Sort folders alphabetically
@@ -188,12 +240,20 @@ export function TrashView() {
     })
   }
   
-  // Select all files in a folder
+  // Get all files recursively in a folder (including subfolders)
+  const getFilesInFolderRecursive = (folderPath: string): DeletedFile[] => {
+    return deletedFilesOnly.filter(f => 
+      f.file_path.startsWith(folderPath + '/') || 
+      f.file_path.substring(0, f.file_path.lastIndexOf('/')) === folderPath
+    )
+  }
+  
+  // Select all files in a folder (recursively including subfolders)
   const selectFolder = (folder: string) => {
-    const folderFiles = groupedByFolder.get(folder) || []
+    const folderFiles = getFilesInFolderRecursive(folder)
     setSelectedFiles(prev => {
       const next = new Set(prev)
-      const allSelected = folderFiles.every(f => prev.has(f.id))
+      const allSelected = folderFiles.length > 0 && folderFiles.every(f => prev.has(f.id))
       
       if (allSelected) {
         // Deselect all in folder
@@ -206,17 +266,22 @@ export function TrashView() {
     })
   }
   
-  // Check if all files in folder are selected
+  // Check if all files in folder are selected (recursively)
   const isFolderSelected = (folder: string) => {
-    const folderFiles = groupedByFolder.get(folder) || []
+    const folderFiles = getFilesInFolderRecursive(folder)
     return folderFiles.length > 0 && folderFiles.every(f => selectedFiles.has(f.id))
   }
   
-  // Check if some (but not all) files in folder are selected
+  // Check if some (but not all) files in folder are selected (recursively)
   const isFolderPartiallySelected = (folder: string) => {
-    const folderFiles = groupedByFolder.get(folder) || []
+    const folderFiles = getFilesInFolderRecursive(folder)
     const selectedCount = folderFiles.filter(f => selectedFiles.has(f.id)).length
     return selectedCount > 0 && selectedCount < folderFiles.length
+  }
+  
+  // Get recursive file count for a folder
+  const getRecursiveFileCount = (folder: string) => {
+    return getFilesInFolderRecursive(folder).length
   }
   
   // Clear all filters
@@ -230,11 +295,16 @@ export function TrashView() {
   const hasActiveFilters = searchQuery || deletedByFilter || folderFilter || vaultFilter
   
   // Get the current view items (files, folders, or all files in nested view)
+  // Note: For folder view, we select/deselect files within folders, not folder records themselves
   const currentViewItems = useMemo(() => {
     if (viewMode === 'files') return deletedFilesOnly
-    if (viewMode === 'folders') return deletedFoldersOnly
+    if (viewMode === 'folders') {
+      // In folder view, selecting folders selects all files within them
+      // So currentViewItems should still be files for selection purposes
+      return deletedFilesOnly
+    }
     return deletedFilesOnly // nested view shows files within folder groups
-  }, [viewMode, deletedFilesOnly, deletedFoldersOnly])
+  }, [viewMode, deletedFilesOnly])
   
   // Select all items in current view
   const selectAll = () => {
@@ -529,7 +599,7 @@ export function TrashView() {
                 </>
               ) : viewMode === 'folders' ? (
                 <>
-                  {deletedFoldersOnly.length} folder{deletedFoldersOnly.length !== 1 ? 's' : ''}
+                  {deletedFoldersOnly.length + topLevelFolders.length} folder{(deletedFoldersOnly.length + topLevelFolders.length) !== 1 ? 's' : ''}
                 </>
               ) : (
                 <>
@@ -908,73 +978,162 @@ export function TrashView() {
             )}
           </div>
         ) : viewMode === 'folders' ? (
-          /* Folder view - only show deleted folders */
+          /* Folder view - show top-level folders extracted from deleted files */
           <div className="py-1">
-            {foldersSortedByTime.length === 0 ? (
+            {topLevelFolders.length === 0 && deletedFoldersOnly.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-pdm-fg-muted">
                 <Folder size={48} className="opacity-30 mb-3" />
                 <p className="text-sm">No deleted folders</p>
-                <p className="text-xs mt-1 opacity-70">Only files are in the trash</p>
+                <p className="text-xs mt-1 opacity-70">Only root-level files are in the trash</p>
               </div>
             ) : (
-              foldersSortedByTime.map((folder) => {
-                const isSelected = selectedFiles.has(folder.id)
-                const daysRemaining = getDaysRemaining(folder.deleted_at)
-                
-                return (
-                  <div
-                    key={folder.id}
-                    onClick={(e) => toggleFileSelection(folder.id, e.shiftKey, e.ctrlKey || e.metaKey)}
-                    className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
-                      isSelected
-                        ? 'bg-pdm-accent/10 border-pdm-accent'
-                        : 'hover:bg-pdm-bg-light border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleFileSelection(folder.id, false, true)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
-                      />
-                      <FolderOpen size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
-                      <div className="flex-1 min-w-0 overflow-hidden">
-                        <div className="text-sm text-pdm-fg truncate" title={folder.file_name}>
-                          {folder.file_name}
-                        </div>
-                        <div className="text-xs text-pdm-fg-muted truncate mt-0.5" title={folder.file_path}>
-                          {folder.file_path}
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
-                          <span className="flex items-center gap-1">
-                            <Clock size={10} />
-                            {formatDistanceToNow(new Date(folder.deleted_at), { addSuffix: true })}
-                          </span>
-                          {folder.deleted_by_user && (
+              <>
+                {/* Show actual folder records first */}
+                {deletedFoldersOnly.map((folder) => {
+                  const isSelected = selectedFiles.has(folder.id)
+                  const daysRemaining = getDaysRemaining(folder.deleted_at)
+                  
+                  return (
+                    <div
+                      key={folder.id}
+                      onClick={(e) => toggleFileSelection(folder.id, e.shiftKey, e.ctrlKey || e.metaKey)}
+                      className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                        isSelected
+                          ? 'bg-pdm-accent/10 border-pdm-accent'
+                          : 'hover:bg-pdm-bg-light border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleFileSelection(folder.id, false, true)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                        />
+                        <FolderOpen size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <div className="text-sm text-pdm-fg truncate" title={folder.file_name}>
+                            {folder.file_name}
+                          </div>
+                          <div className="text-xs text-pdm-fg-muted truncate mt-0.5" title={folder.file_path}>
+                            {folder.file_path}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
                             <span className="flex items-center gap-1">
-                              <User size={10} />
-                              {folder.deleted_by_user.full_name || folder.deleted_by_user.email.split('@')[0]}
+                              <Clock size={10} />
+                              {formatDistanceToNow(new Date(folder.deleted_at), { addSuffix: true })}
                             </span>
+                            {folder.deleted_by_user && (
+                              <span className="flex items-center gap-1">
+                                <User size={10} />
+                                {folder.deleted_by_user.full_name || folder.deleted_by_user.email.split('@')[0]}
+                              </span>
+                            )}
+                          </div>
+                          {daysRemaining <= 7 && (
+                            <div className={`flex items-center gap-1 text-xs mt-1 ${
+                              daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
+                            }`}>
+                              <AlertTriangle size={10} />
+                              {daysRemaining === 0 
+                                ? 'Expires today!' 
+                                : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
+                              }
+                            </div>
                           )}
                         </div>
-                        {daysRemaining <= 7 && (
-                          <div className={`flex items-center gap-1 text-xs mt-1 ${
-                            daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
-                          }`}>
-                            <AlertTriangle size={10} />
-                            {daysRemaining === 0 
-                              ? 'Expires today!' 
-                              : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
-                            }
-                          </div>
-                        )}
                       </div>
                     </div>
-                  </div>
-                )
-              })
+                  )
+                })}
+                
+                {/* Show top-level folders extracted from file paths */}
+                {topLevelFolders.map((folder) => {
+                  // Get all files in this folder to allow selection
+                  const filesInFolder = deletedFilesOnly.filter(f => 
+                    f.file_path.startsWith(folder.path + '/')
+                  )
+                  const allFilesSelected = filesInFolder.length > 0 && filesInFolder.every(f => selectedFiles.has(f.id))
+                  const someFilesSelected = filesInFolder.some(f => selectedFiles.has(f.id)) && !allFilesSelected
+                  const daysRemaining = getDaysRemaining(folder.latestDelete)
+                  
+                  const handleFolderClick = () => {
+                    if (allFilesSelected) {
+                      // Deselect all files in folder
+                      setSelectedFiles(prev => {
+                        const next = new Set(prev)
+                        filesInFolder.forEach(f => next.delete(f.id))
+                        return next
+                      })
+                    } else {
+                      // Select all files in folder
+                      setSelectedFiles(prev => {
+                        const next = new Set(prev)
+                        filesInFolder.forEach(f => next.add(f.id))
+                        return next
+                      })
+                    }
+                  }
+                  
+                  return (
+                    <div
+                      key={folder.path}
+                      onClick={handleFolderClick}
+                      className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                        allFilesSelected
+                          ? 'bg-pdm-accent/10 border-pdm-accent'
+                          : someFilesSelected
+                          ? 'bg-pdm-accent/5 border-pdm-accent/50'
+                          : 'hover:bg-pdm-bg-light border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={allFilesSelected}
+                          ref={(el) => { if (el) el.indeterminate = someFilesSelected }}
+                          onChange={handleFolderClick}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                        />
+                        <FolderOpen size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <div className="text-sm text-pdm-fg truncate flex items-center gap-2" title={folder.name}>
+                            {folder.name}
+                            <span className="text-xs text-pdm-fg-muted">
+                              ({folder.count} file{folder.count !== 1 ? 's' : ''})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
+                            <span className="flex items-center gap-1">
+                              <Clock size={10} />
+                              {formatDistanceToNow(new Date(folder.latestDelete), { addSuffix: true })}
+                            </span>
+                            {folder.deletedBy && (
+                              <span className="flex items-center gap-1">
+                                <User size={10} />
+                                {folder.deletedBy.full_name || folder.deletedBy.email.split('@')[0]}
+                              </span>
+                            )}
+                          </div>
+                          {daysRemaining <= 7 && (
+                            <div className={`flex items-center gap-1 text-xs mt-1 ${
+                              daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
+                            }`}>
+                              <AlertTriangle size={10} />
+                              {daysRemaining === 0 
+                                ? 'Expires today!' 
+                                : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
+                              }
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </>
             )}
           </div>
         ) : (
@@ -992,12 +1151,16 @@ export function TrashView() {
                 const folderSelected = isFolderSelected(folder)
                 const folderPartial = isFolderPartiallySelected(folder)
                 const folderName = folder === '/' ? '(root)' : folder.split('/').pop() || folder
+                const folderDepth = folder === '/' ? 0 : folder.split('/').length - 1
+                const indentPx = folderDepth * 16 // 16px per level
+                const recursiveCount = getRecursiveFileCount(folder) // Total files in this folder and subfolders
                 
                 return (
                   <div key={folder}>
                     {/* Folder header - clickable to select all files in folder */}
                     <div
-                      className={`px-2 py-1.5 flex items-center gap-1.5 cursor-pointer border-l-2 transition-colors ${
+                      style={{ paddingLeft: `${8 + indentPx}px` }}
+                      className={`pr-2 py-1.5 flex items-center gap-1.5 cursor-pointer border-l-2 transition-colors ${
                         folderSelected
                           ? 'bg-pdm-accent/10 border-pdm-accent'
                           : folderPartial
@@ -1022,12 +1185,12 @@ export function TrashView() {
                         onClick={() => selectFolder(folder)}
                         className="flex-1 flex items-center gap-1.5 min-w-0"
                       >
-                        <FolderOpen size={14} className="text-pdm-fg-muted flex-shrink-0" />
-                        <span className="text-sm text-pdm-fg truncate" title={folder}>
+                        <FolderOpen size={14} className={`flex-shrink-0 ${recursiveCount === 0 ? 'text-pdm-fg-muted/50' : 'text-pdm-fg-muted'}`} />
+                        <span className={`text-sm truncate ${recursiveCount === 0 ? 'text-pdm-fg-muted' : 'text-pdm-fg'}`} title={folder}>
                           {folderName}
                         </span>
                         <span className="text-xs text-pdm-fg-muted">
-                          ({files.length})
+                          ({recursiveCount}{files.length > 0 ? ` here` : ''}{recursiveCount === 0 ? ' - empty' : ''})
                         </span>
                       </div>
                     </div>
@@ -1036,12 +1199,14 @@ export function TrashView() {
                     {isExpanded && files.map((file) => {
                       const isSelected = selectedFiles.has(file.id)
                       const daysRemaining = getDaysRemaining(file.deleted_at)
+                      const fileIndentPx = (folderDepth + 1) * 16 + 24 // folder indent + extra for file
                       
                       return (
                         <div
                           key={file.id}
                           onClick={(e) => toggleFileSelection(file.id, e.shiftKey, e.ctrlKey || e.metaKey)}
-                          className={`pl-6 pr-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                          style={{ paddingLeft: `${fileIndentPx}px` }}
+                          className={`pr-3 py-2 cursor-pointer border-l-2 transition-colors ${
                             isSelected
                               ? 'bg-pdm-accent/10 border-pdm-accent'
                               : 'hover:bg-pdm-bg-light border-transparent'

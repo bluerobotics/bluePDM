@@ -251,13 +251,15 @@ export function Terminal({ onRefresh }: TerminalProps) {
     }
   }
 
-  if (!terminalVisible) return null
-
+  // Keep terminal mounted but hidden to preserve CLI listener
+  // This ensures CLI commands are processed even when terminal is not visible
   return (
     <div 
       ref={containerRef}
-      className="flex flex-col bg-[#0d1117] border-t border-[#30363d] select-none"
-      style={{ height: terminalHeight }}
+      className={`flex flex-col bg-[#0d1117] border-t border-[#30363d] select-none ${
+        terminalVisible ? '' : 'hidden'
+      }`}
+      style={{ height: terminalVisible ? terminalHeight : 0 }}
       data-testid="terminal-panel"
     >
       {/* Resize handle */}

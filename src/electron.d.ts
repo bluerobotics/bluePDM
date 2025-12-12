@@ -107,6 +107,15 @@ declare global {
       // OAuth
       openOAuthWindow: (url: string) => Promise<{ success: boolean; canceled?: boolean; error?: string }>
       
+      // Google Drive OAuth
+      openGoogleDriveAuth: (credentials?: { clientId?: string; clientSecret?: string }) => Promise<{ 
+        success: boolean
+        accessToken?: string
+        refreshToken?: string
+        expiry?: number
+        error?: string 
+      }>
+      
       // Logging
       getLogs: () => Promise<Array<{ timestamp: string; level: string; message: string; data?: unknown }>>
       getLogPath: () => Promise<string | null>

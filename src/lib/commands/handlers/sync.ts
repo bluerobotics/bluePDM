@@ -103,7 +103,8 @@ export const syncCommand: Command<SyncParams> = {
         
         if (error || !syncedFile) {
           progress.update()
-          return { success: false, error: `${file.name}: ${error || 'Upload failed'}` }
+          const errorMsg = error instanceof Error ? error.message : (typeof error === 'object' && error !== null ? (error as any).message || String(error) : String(error || 'Upload failed'))
+          return { success: false, error: `${file.name}: ${errorMsg}` }
         }
         
         await window.electronAPI?.setReadonly(file.path, true)

@@ -5,7 +5,7 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
 import { downloadFile } from '../lib/storage'
-import { ContainsTab, WhereUsedTab, SWPropertiesPanel, SWExportActions } from './SolidWorksPanel'
+import { ContainsTab, WhereUsedTab, SWPropertiesTab } from './SolidWorksPanel'
 import { 
   FileBox, 
   Layers, 
@@ -639,6 +639,9 @@ export function DetailsPanel() {
     return <DetailsPanelIcon file={file} size={32} />
   }
 
+  // Check if file is SolidWorks
+  const isSolidWorksFile = file && ['.sldprt', '.sldasm', '.slddrw'].includes(file.extension?.toLowerCase() || '')
+
   const allTabs = [
     { id: 'preview', label: 'Preview' },
     { id: 'properties', label: 'Properties' },
@@ -701,174 +704,174 @@ export function DetailsPanel() {
         ) : file && (
           <>
             {detailsPanelTab === 'properties' && (
-              <div className="flex gap-6">
-                {/* File/Folder icon and name */}
-                <div className="flex items-start gap-4 flex-shrink-0">
-                  {getFileIcon()}
-                  <div>
-                    <div className="font-semibold text-lg">{file.name}</div>
-                    <div className="text-sm text-pdm-fg-muted">{file.relativePath}</div>
-                    {!isFolder && file.pdmData?.state && (
-                      <span className={`state-badge ${file.pdmData.state.replace('_', '-')} mt-2`}>
-                        {STATE_INFO[file.pdmData.state]?.label}
-                      </span>
+              isSolidWorksFile && !isFolder ? (
+                // SolidWorks files get the full SW Properties view with export options
+                <SWPropertiesTab file={file} />
+              ) : (
+                // Standard properties view for non-SW files and folders
+                <div className="flex gap-6">
+                  {/* File/Folder icon and name */}
+                  <div className="flex items-start gap-4 flex-shrink-0">
+                    {getFileIcon()}
+                    <div>
+                      <div className="font-semibold text-lg">{file.name}</div>
+                      <div className="text-sm text-pdm-fg-muted">{file.relativePath}</div>
+                      {!isFolder && file.pdmData?.state && (
+                        <span className={`state-badge ${file.pdmData.state.replace('_', '-')} mt-2`}>
+                          {STATE_INFO[file.pdmData.state]?.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Properties grid */}
+                  <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
+                    {isFolder ? (
+                      // Folder properties
+                      <>
+                        <PropertyItem 
+                          icon={<Info size={14} />}
+                          label="Type"
+                          value="Folder"
+                        />
+                        <PropertyItem 
+                          icon={<Info size={14} />}
+                          label="Size"
+                          value={folderStats ? formatFileSize(folderStats.size) : 'Calculating...'}
+                        />
+                        <PropertyItem 
+                          icon={<File size={14} />}
+                          label="Files"
+                          value={folderStats ? String(folderStats.fileCount) : '...'}
+                        />
+                        <PropertyItem 
+                          icon={<FolderOpen size={14} />}
+                          label="Folders"
+                          value={folderStats ? String(folderStats.folderCount) : '...'}
+                        />
+                        <PropertyItem 
+                          icon={<Clock size={14} />}
+                          label="Modified"
+                          value={file.modifiedTime ? (() => {
+                            try {
+                              const date = new Date(file.modifiedTime)
+                              return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
+                            } catch { return '-' }
+                          })() : '-'}
+                        />
+                        <PropertyItem 
+                          icon={<Cloud size={14} />}
+                          label="Location"
+                          value={file.relativePath.includes('/') 
+                            ? file.relativePath.substring(0, file.relativePath.lastIndexOf('/'))
+                            : '/'}
+                        />
+                      </>
+                    ) : (
+                      // File properties (non-SW files)
+                      <>
+                        <EditablePropertyItem 
+                          icon={<Tag size={14} />}
+                          label="Item Number"
+                          value={file.pdmData?.part_number || '-'}
+                          isEditing={editingField === 'itemNumber'}
+                          editValue={editValue}
+                          isSaving={isSavingEdit}
+                          editable={!!isFileEditable}
+                          onStartEdit={() => handleStartEdit('itemNumber')}
+                          onSave={handleSaveEdit}
+                          onCancel={handleCancelEdit}
+                          onEditValueChange={setEditValue}
+                          placeholder="-"
+                        />
+                        <EditablePropertyItem 
+                          icon={<FileText size={14} />}
+                          label="Description"
+                          value={file.pdmData?.description || '-'}
+                          isEditing={editingField === 'description'}
+                          editValue={editValue}
+                          isSaving={isSavingEdit}
+                          editable={!!isFileEditable}
+                          onStartEdit={() => handleStartEdit('description')}
+                          onSave={handleSaveEdit}
+                          onCancel={handleCancelEdit}
+                          onEditValueChange={setEditValue}
+                          placeholder="-"
+                        />
+                        <EditablePropertyItem 
+                          icon={<Hash size={14} />}
+                          label="Revision"
+                          value={file.pdmData?.revision || 'A'}
+                          isEditing={editingField === 'revision'}
+                          editValue={editValue}
+                          isSaving={isSavingEdit}
+                          editable={!!isFileEditable}
+                          onStartEdit={() => handleStartEdit('revision')}
+                          onSave={handleSaveEdit}
+                          onCancel={handleCancelEdit}
+                          onEditValueChange={setEditValue}
+                          placeholder="A"
+                        />
+                        <StatePropertyItem
+                          icon={<RefreshCw size={14} />}
+                          label="State"
+                          state={file.pdmData?.state || 'not_tracked'}
+                          isEditing={editingField === 'state'}
+                          editValue={editValue}
+                          isSaving={isSavingEdit}
+                          editable={canEditState}
+                          onStartEdit={() => handleStartEdit('state')}
+                          onStateChange={handleStateChange}
+                          onCancel={handleCancelEdit}
+                        />
+                        <PropertyItem 
+                          icon={<Hash size={14} />}
+                          label="Version"
+                          value={String(file.pdmData?.version || 1)}
+                        />
+                        <PropertyItem 
+                          icon={<Info size={14} />}
+                          label="Type"
+                          value={file.extension 
+                            ? lowercaseExtensions !== false
+                              ? file.extension.replace('.', '').toLowerCase() 
+                              : file.extension.replace('.', '').toUpperCase() 
+                            : 'File'}
+                        />
+                        <PropertyItem 
+                          icon={<Clock size={14} />}
+                          label="Modified"
+                          value={file.modifiedTime ? (() => {
+                            try {
+                              const date = new Date(file.modifiedTime)
+                              return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
+                            } catch { return '-' }
+                          })() : '-'}
+                        />
+                        <PropertyItem 
+                          icon={<Info size={14} />}
+                          label="Size"
+                          value={formatFileSize(file.size)}
+                        />
+                        <PropertyItem 
+                          icon={<User size={14} />}
+                          label="Checked Out"
+                          value={file.pdmData?.checked_out_by ? 
+                            ((file.pdmData as any).checked_out_user?.full_name || 
+                             (file.pdmData as any).checked_out_user?.email || 
+                             'Someone') 
+                            : 'Not checked out'}
+                        />
+                        <PropertyItem 
+                          icon={<Cloud size={14} />}
+                          label="Sync Status"
+                          value={file.pdmData ? 'Synced' : (file.diffStatus === 'ignored' ? 'Local only (ignored)' : 'Local only')}
+                        />
+                      </>
                     )}
                   </div>
                 </div>
-
-                {/* Properties grid */}
-                <div className="flex-1 grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-                  {isFolder ? (
-                    // Folder properties
-                    <>
-                      <PropertyItem 
-                        icon={<Info size={14} />}
-                        label="Type"
-                        value="Folder"
-                      />
-                      <PropertyItem 
-                        icon={<Info size={14} />}
-                        label="Size"
-                        value={folderStats ? formatFileSize(folderStats.size) : 'Calculating...'}
-                      />
-                      <PropertyItem 
-                        icon={<File size={14} />}
-                        label="Files"
-                        value={folderStats ? String(folderStats.fileCount) : '...'}
-                      />
-                      <PropertyItem 
-                        icon={<FolderOpen size={14} />}
-                        label="Folders"
-                        value={folderStats ? String(folderStats.folderCount) : '...'}
-                      />
-                      <PropertyItem 
-                        icon={<Clock size={14} />}
-                        label="Modified"
-                        value={file.modifiedTime ? (() => {
-                          try {
-                            const date = new Date(file.modifiedTime)
-                            return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
-                          } catch { return '-' }
-                        })() : '-'}
-                      />
-                      <PropertyItem 
-                        icon={<Cloud size={14} />}
-                        label="Location"
-                        value={file.relativePath.includes('/') 
-                          ? file.relativePath.substring(0, file.relativePath.lastIndexOf('/'))
-                          : '/'}
-                      />
-                    </>
-                  ) : (
-                    // File properties
-                    <>
-                      <EditablePropertyItem 
-                        icon={<Tag size={14} />}
-                        label="Item Number"
-                        value={file.pdmData?.part_number || '-'}
-                        isEditing={editingField === 'itemNumber'}
-                        editValue={editValue}
-                        isSaving={isSavingEdit}
-                        editable={!!isFileEditable}
-                        onStartEdit={() => handleStartEdit('itemNumber')}
-                        onSave={handleSaveEdit}
-                        onCancel={handleCancelEdit}
-                        onEditValueChange={setEditValue}
-                        placeholder="-"
-                      />
-                      <EditablePropertyItem 
-                        icon={<FileText size={14} />}
-                        label="Description"
-                        value={file.pdmData?.description || '-'}
-                        isEditing={editingField === 'description'}
-                        editValue={editValue}
-                        isSaving={isSavingEdit}
-                        editable={!!isFileEditable}
-                        onStartEdit={() => handleStartEdit('description')}
-                        onSave={handleSaveEdit}
-                        onCancel={handleCancelEdit}
-                        onEditValueChange={setEditValue}
-                        placeholder="-"
-                      />
-                      <EditablePropertyItem 
-                        icon={<Hash size={14} />}
-                        label="Revision"
-                        value={file.pdmData?.revision || 'A'}
-                        isEditing={editingField === 'revision'}
-                        editValue={editValue}
-                        isSaving={isSavingEdit}
-                        editable={!!isFileEditable}
-                        onStartEdit={() => handleStartEdit('revision')}
-                        onSave={handleSaveEdit}
-                        onCancel={handleCancelEdit}
-                        onEditValueChange={setEditValue}
-                        placeholder="A"
-                      />
-                      <StatePropertyItem
-                        icon={<RefreshCw size={14} />}
-                        label="State"
-                        state={file.pdmData?.state || 'not_tracked'}
-                        isEditing={editingField === 'state'}
-                        editValue={editValue}
-                        isSaving={isSavingEdit}
-                        editable={canEditState}
-                        onStartEdit={() => handleStartEdit('state')}
-                        onStateChange={handleStateChange}
-                        onCancel={handleCancelEdit}
-                      />
-                      <PropertyItem 
-                        icon={<Hash size={14} />}
-                        label="Version"
-                        value={String(file.pdmData?.version || 1)}
-                      />
-                      <PropertyItem 
-                        icon={<Info size={14} />}
-                        label="Type"
-                        value={file.extension 
-                          ? lowercaseExtensions !== false
-                            ? file.extension.replace('.', '').toLowerCase() 
-                            : file.extension.replace('.', '').toUpperCase() 
-                          : 'File'}
-                      />
-                      <PropertyItem 
-                        icon={<Clock size={14} />}
-                        label="Modified"
-                        value={file.modifiedTime ? (() => {
-                          try {
-                            const date = new Date(file.modifiedTime)
-                            return isNaN(date.getTime()) ? '-' : format(date, 'MMM d, yyyy HH:mm')
-                          } catch { return '-' }
-                        })() : '-'}
-                      />
-                      <PropertyItem 
-                        icon={<Info size={14} />}
-                        label="Size"
-                        value={formatFileSize(file.size)}
-                      />
-                      <PropertyItem 
-                        icon={<User size={14} />}
-                        label="Checked Out"
-                        value={file.pdmData?.checked_out_by ? 
-                          ((file.pdmData as any).checked_out_user?.full_name || 
-                           (file.pdmData as any).checked_out_user?.email || 
-                           'Someone') 
-                          : 'Not checked out'}
-                      />
-                      <PropertyItem 
-                        icon={<Cloud size={14} />}
-                        label="Sync Status"
-                        value={file.pdmData ? 'Synced' : (file.diffStatus === 'ignored' ? 'Local only (ignored)' : 'Local only')}
-                      />
-                    </>
-                  )}
-                </div>
-                
-                {/* SolidWorks-specific properties */}
-                {!isFolder && <SWPropertiesPanel file={file} />}
-                
-                {/* Export actions for SW files */}
-                {!isFolder && <SWExportActions file={file} />}
-              </div>
+              )
             )}
 
             {detailsPanelTab === 'preview' && (

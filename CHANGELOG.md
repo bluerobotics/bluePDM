@@ -2,6 +2,61 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [2.0.0] - 2025-12-12
+
+### Added
+- **Command Line Interface (CLI)**: Built-in terminal with file operations, navigation, queries, and batch commands. Also available externally via `node cli/bluepdm.js`
+- **REST API for ERP/Integrations**: Fastify + TypeScript API with Swagger docs, webhooks, signed URLs for file transfers. Docker image auto-published; one-click deploy to Railway/Render
+- **REST API Settings** (admin-only): Local/External toggle, org-wide API URL sync, server status, deployment credentials, quick tests
+- **Vault Backup System**: Automated Restic backups (encrypted, deduplicated) with configurable schedule. Supports local disk, S3, Backblaze B2, SFTP
+- **SolidWorks Document Manager Integration**: Instant BOM, properties, configs without launching SolidWorks
+- **SolidWorks Service**: Headless .NET executable for BOM, properties, exports, mass props, Pack and Go
+- **ECO Tags Column**: New "ECOs" column in file browser shows all ECO numbers associated with each file. Automatically synced via database triggers when ECOs are added/removed. Sortable and searchable.
+- **Reviews & Notifications System**: New sidebar tab for managing reviews and notifications
+  - Request reviews from teammates with optional due dates and priority levels (Low/Normal/High/Urgent)
+  - Reviewers get notifications and can approve/reject with comments
+  - Track all your outgoing review requests and their status
+  - Notification badges on sidebar icon show unread count
+  - Overdue reviews highlighted with visual indicators
+- **File Right-Click Menu Enhancements**:
+  - **Request Review**: Send files for review with due dates and priority
+  - **Request Checkout**: Ask someone to release a file they have checked out
+  - **Notify Someone**: Send a quick notification to teammates about any file
+  - **Watch File**: Subscribe to get notified when a file is checked in, checked out, or changes state
+  - **Copy Share Link**: Generate a signed download URL (expires in 7 days) that anyone can use to download the file - auto-copies to clipboard
+  - **Add to ECO**: Quickly add any synced file to an active Engineering Change Order
+- **Google Drive Integration**:
+  - New sidebar tab to browse personal Google Drive and Shared Drives (team drives)
+  - Sidebar explorer with nested folder tree view (expand/collapse folders, see all files)
+  - Drive selector dropdown to switch between My Drive and Shared Drives
+  - Edit Google Sheets, Docs, Slides, and Forms directly in the app (inline document viewer)
+  - Double-click files in sidebar explorer to open them in the main panel
+  - Quick access buttons for Starred, Recent, Shared with me, and Trash
+  - Full file browser with grid/list view, search, breadcrumb navigation
+  - Context menu actions: rename, star, download, delete, open in browser
+  - Persistent state: remembers last selected drive, folder, and expanded folders
+  - Organization-level OAuth credentials (admin configures once in Settings → Integrations)
+- **Integrations Settings Tab** (admin-only): New settings section for configuring third-party integrations like Google Drive
+- **Visual Workflow Builder**: New sidebar tab for creating and managing file state workflows
+  - Drag-and-drop canvas for designing workflow states and transitions
+  - Create workflow states with custom names, colors, and types (WIP, In Review, Released, Obsolete)
+  - Connect states with transition arrows to define valid state changes
+  - Add approval gates to transitions requiring reviews before state changes
+  - Fully interactive canvas with pan, zoom (mouse wheel centers on cursor), and state repositioning
+  - Arrow endpoints snap to any point along box edges (not just center)
+  - Draggable curve control handle (orange diamond) to bend/straighten arrows - positioned ON the curve
+  - Draggable label handle (green circle) to reposition transition labels independently
+  - Double-click handles to reset positions to default
+  - Drag arrow endpoints to empty space shows error (must drop on valid state)
+  - Automatic sidebar width expansion when entering workflow view
+  - Admin-only editing; all users can view workflows
+  - Database schema with RLS policies for organization-wide workflow sync
+
+### Fixed
+- Files not uploading after app restart due to 1000-file query limit on initial sync
+
+---
+
 ## [1.5.0] - 2025-12-11
 
 ### Added

@@ -11,7 +11,7 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
   return `${vaultPath}${sep}${normalizedRelative}`
 }
 
-export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash' | 'settings' | 'terminal'
+export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash' | 'settings' | 'terminal' | 'reviews' | 'eco' | 'workflows' | 'google-drive'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
@@ -155,6 +155,13 @@ interface PDMState {
   rightPanelTab: DetailsPanelTab | null
   rightPanelTabs: DetailsPanelTab[]  // Tabs stacked in right panel
   
+  // Google Drive navigation (shared between sidebar and main panel)
+  gdriveCurrentFolderId: string | null
+  gdriveCurrentFolderName: string | null
+  gdriveDriveId: string | null  // For shared drives
+  gdriveIsSharedDrive: boolean
+  gdriveOpenDocument: { id: string; name: string; mimeType: string; webViewLink?: string } | null
+  
   // Columns configuration
   columns: ColumnConfig[]
   
@@ -225,6 +232,10 @@ interface PDMState {
   // Ignore patterns (per-vault, keyed by vault ID)
   // Patterns like: "*.sim", "build/", "__pycache__/", "*.sldprt~"
   ignorePatterns: Record<string, string[]>
+  
+  // Notifications & Reviews
+  unreadNotificationCount: number
+  pendingReviewCount: number
   
   // Actions - Toasts
   addToast: (type: ToastType, message: string, duration?: number) => void
@@ -325,6 +336,8 @@ interface PDMState {
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
   setActiveView: (view: SidebarView) => void
+  setGdriveNavigation: (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => void
+  setGdriveOpenDocument: (doc: { id: string; name: string; mimeType: string; webViewLink?: string } | null) => void
   toggleDetailsPanel: () => void
   setDetailsPanelHeight: (height: number) => void
   setDetailsPanelTab: (tab: DetailsPanelTab) => void
@@ -353,6 +366,12 @@ interface PDMState {
   setIgnorePatterns: (vaultId: string, patterns: string[]) => void
   getIgnorePatterns: (vaultId: string) => string[]
   isPathIgnored: (vaultId: string, relativePath: string) => boolean
+  
+  // Actions - Notifications & Reviews
+  setUnreadNotificationCount: (count: number) => void
+  setPendingReviewCount: (count: number) => void
+  incrementNotificationCount: () => void
+  decrementNotificationCount: (amount?: number) => void
   
   // Actions - Columns
   setColumnWidth: (id: string, width: number) => void
@@ -400,6 +419,7 @@ const defaultColumns: ColumnConfig[] = [
   { id: 'description', label: 'Description', width: 200, visible: true, sortable: true },
   { id: 'revision', label: 'Rev', width: 50, visible: true, sortable: true },
   { id: 'state', label: 'State', width: 90, visible: true, sortable: true },
+  { id: 'ecoTags', label: 'ECOs', width: 120, visible: true, sortable: true },
   { id: 'extension', label: 'Type', width: 70, visible: true, sortable: true },
   { id: 'size', label: 'Size', width: 80, visible: true, sortable: true },
   { id: 'modifiedTime', label: 'Modified', width: 140, visible: true, sortable: true },
@@ -453,6 +473,13 @@ export const usePDMStore = create<PDMState>()(
       rightPanelTab: null,
       rightPanelTabs: [],
       
+      // Google Drive navigation
+      gdriveCurrentFolderId: null,
+      gdriveCurrentFolderName: null,
+      gdriveDriveId: null,
+      gdriveIsSharedDrive: false,
+      gdriveOpenDocument: null,
+      
       columns: defaultColumns,
       
       isLoading: false,
@@ -498,6 +525,10 @@ export const usePDMStore = create<PDMState>()(
       terminalVisible: false,
       terminalHeight: 250,
       terminalHistory: [],
+      
+      // Notifications & Reviews
+      unreadNotificationCount: 0,
+      pendingReviewCount: 0,
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
@@ -843,8 +874,15 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Layout
       toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
-      setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(500, width)) }),
+      setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(900, width)) }),
       setActiveView: (activeView) => set({ activeView, sidebarVisible: true }),
+      setGdriveNavigation: (folderId, folderName, isSharedDrive, driveId) => set({
+        gdriveCurrentFolderId: folderId,
+        gdriveCurrentFolderName: folderName || null,
+        gdriveIsSharedDrive: isSharedDrive || false,
+        gdriveDriveId: driveId || null
+      }),
+      setGdriveOpenDocument: (doc) => set({ gdriveOpenDocument: doc }),
       toggleDetailsPanel: () => set((s) => ({ detailsPanelVisible: !s.detailsPanelVisible })),
       setDetailsPanelHeight: (height) => set({ detailsPanelHeight: Math.max(100, Math.min(1200, height)) }),
       setDetailsPanelTab: (detailsPanelTab) => set({ detailsPanelTab }),
@@ -969,6 +1007,14 @@ export const usePDMStore = create<PDMState>()(
         }
         return false
       },
+      
+      // Actions - Notifications & Reviews
+      setUnreadNotificationCount: (count) => set({ unreadNotificationCount: count }),
+      setPendingReviewCount: (count) => set({ pendingReviewCount: count }),
+      incrementNotificationCount: () => set(state => ({ unreadNotificationCount: state.unreadNotificationCount + 1 })),
+      decrementNotificationCount: (amount = 1) => set(state => ({ 
+        unreadNotificationCount: Math.max(0, state.unreadNotificationCount - amount) 
+      })),
       
       // Actions - Columns
       setColumnWidth: (id, width) => {

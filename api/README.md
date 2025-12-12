@@ -728,6 +728,218 @@ Valid states: `not_tracked`, `wip`, `in_review`, `released`, `obsolete`
 
 ---
 
+### Suppliers & Costing
+
+Endpoints for managing suppliers/vendors and part costing. Perfect for Odoo/ERP integration.
+
+#### `GET /suppliers`
+List all suppliers in your organization.
+
+**Query Parameters:**
+- `active_only` - Only active suppliers
+- `approved_only` - Only approved vendors
+- `search` - Search by name or code
+- `limit` / `offset` - Pagination
+
+```bash
+curl http://localhost:3001/suppliers \
+  -H "Authorization: Bearer $TOKEN"
+
+# Search for a supplier
+curl "http://localhost:3001/suppliers?search=mcmaster" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### `POST /suppliers`
+Create a new supplier (engineer/admin only).
+
+```bash
+curl -X POST http://localhost:3001/suppliers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "McMaster-Carr",
+    "code": "MCMASTER",
+    "website": "https://mcmaster.com",
+    "payment_terms": "Net 30",
+    "default_lead_time_days": 3,
+    "currency": "USD",
+    "is_approved": true
+  }'
+```
+
+#### `GET /suppliers/:id`
+Get supplier details.
+
+#### `PATCH /suppliers/:id`
+Update supplier info.
+
+#### `DELETE /suppliers/:id`
+Delete a supplier (admin only).
+
+---
+
+### Part-Supplier Links (Pricing)
+
+#### `GET /files/:id/suppliers`
+Get all suppliers and pricing for a part.
+
+```bash
+curl http://localhost:3001/files/part-uuid/suppliers \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "file_id": "uuid",
+  "part_number": "BRK-001",
+  "file_name": "bracket.SLDPRT",
+  "suppliers": [
+    {
+      "id": "link-uuid",
+      "supplier": {
+        "id": "supplier-uuid",
+        "name": "McMaster-Carr",
+        "code": "MCMASTER"
+      },
+      "supplier_part_number": "91251A540",
+      "unit_price": 2.50,
+      "currency": "USD",
+      "price_breaks": [
+        {"qty": 1, "price": 2.50},
+        {"qty": 100, "price": 2.10},
+        {"qty": 1000, "price": 1.85}
+      ],
+      "min_order_qty": 1,
+      "lead_time_days": 3,
+      "is_preferred": true
+    }
+  ]
+}
+```
+
+#### `POST /files/:id/suppliers`
+Link a supplier to a part with pricing.
+
+```bash
+curl -X POST http://localhost:3001/files/part-uuid/suppliers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "supplier_id": "supplier-uuid",
+    "supplier_part_number": "91251A540",
+    "unit_price": 2.50,
+    "currency": "USD",
+    "price_breaks": [
+      {"qty": 1, "price": 2.50},
+      {"qty": 100, "price": 2.10},
+      {"qty": 1000, "price": 1.85}
+    ],
+    "min_order_qty": 1,
+    "lead_time_days": 3,
+    "is_preferred": true
+  }'
+```
+
+#### `PATCH /files/:id/suppliers/:supplierId`
+Update pricing/info for a part-supplier link.
+
+#### `DELETE /files/:id/suppliers/:supplierId`
+Remove supplier from a part.
+
+---
+
+### Costing Queries
+
+#### `GET /parts/:id/costing`
+Get complete costing info for a part including volume pricing.
+
+**Query Parameters:**
+- `quantity` - Quantity to calculate pricing for (default: 1)
+
+```bash
+# Get pricing at qty 100
+curl "http://localhost:3001/parts/part-uuid/costing?quantity=100" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "part": {
+    "id": "uuid",
+    "part_number": "BRK-001",
+    "file_name": "bracket.SLDPRT",
+    "description": "Mounting bracket",
+    "revision": "A",
+    "state": "released"
+  },
+  "quantity": 100,
+  "preferred_supplier": {
+    "supplier_id": "uuid",
+    "supplier_name": "McMaster-Carr",
+    "supplier_code": "MCMASTER",
+    "supplier_part_number": "91251A540",
+    "unit_price": 2.10,
+    "total_price": 210.00,
+    "currency": "USD",
+    "lead_time_days": 3
+  },
+  "lowest_cost": {
+    "supplier_id": "uuid",
+    "supplier_name": "AliExpress",
+    "unit_price": 0.85,
+    "total_price": 85.00,
+    "currency": "USD"
+  },
+  "all_suppliers": [...]
+}
+```
+
+#### `GET /suppliers/:id/parts`
+List all parts available from a specific supplier.
+
+```bash
+curl http://localhost:3001/suppliers/supplier-uuid/parts \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Odoo Supplier Sync Example
+
+```python
+import requests
+
+API_URL = "https://api.bluepdm.yourcompany.com"
+TOKEN = "your-jwt-token"
+headers = {"Authorization": f"Bearer {TOKEN}"}
+
+# Sync suppliers from BluePDM to Odoo
+response = requests.get(f"{API_URL}/suppliers?active_only=true", headers=headers)
+for supplier in response.json()["suppliers"]:
+    # Create/update vendor in Odoo
+    odoo.execute_kw(db, uid, password, "res.partner", "create", [{
+        "name": supplier["name"],
+        "ref": supplier["code"],
+        "supplier_rank": 1,
+        "website": supplier["website"],
+        "x_pdm_id": supplier["id"]
+    }])
+
+# Get costing for a part at production quantity
+costing = requests.get(
+    f"{API_URL}/parts/{part_id}/costing?quantity=1000",
+    headers=headers
+).json()
+
+# Use preferred supplier's pricing in Odoo BOM
+if costing["preferred_supplier"]:
+    price = costing["preferred_supplier"]["unit_price"]
+    supplier_code = costing["preferred_supplier"]["supplier_code"]
+```
+
+---
+
 ### References (BOM)
 
 #### `GET /files/:id/where-used`

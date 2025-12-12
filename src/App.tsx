@@ -12,6 +12,8 @@ import { WelcomeScreen } from './components/WelcomeScreen'
 import { SetupScreen } from './components/SetupScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
+import { GoogleDrivePanel } from './components/GoogleDrivePanel'
+import { executeTerminalCommand } from './lib/commands/parser'
 
 // Build full path using the correct separator for the platform
 function buildFullPath(vaultPath: string, relativePath: string): string {
@@ -31,6 +33,7 @@ function App() {
     isVaultConnected,
     connectedVaults,
     activeVaultId,
+    activeView,
     sidebarVisible,
     setSidebarWidth,
     toggleSidebar,
@@ -765,6 +768,36 @@ function App() {
     }
   }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage, setFilesLoaded])
 
+  // CLI command listener - always active so CLI works even when terminal is hidden
+  useEffect(() => {
+    if (!window.electronAPI?.onCliCommand) return
+    
+    const unsubscribe = window.electronAPI.onCliCommand(async ({ requestId, command }) => {
+      console.log('[App] Received CLI command:', command)
+      
+      try {
+        const results = await executeTerminalCommand(command, loadFiles)
+        
+        // Handle clear command
+        if (results.length === 1 && results[0].content === '__CLEAR__') {
+          window.electronAPI?.sendCliResponse(requestId, { 
+            outputs: [{ type: 'info', content: 'Cleared' }] 
+          })
+        } else {
+          window.electronAPI?.sendCliResponse(requestId, { 
+            outputs: results.map(r => ({ type: r.type, content: r.content }))
+          })
+        }
+      } catch (err) {
+        window.electronAPI?.sendCliResponse(requestId, { 
+          outputs: [{ type: 'error', content: `Error: ${err instanceof Error ? err.message : String(err)}` }] 
+        })
+      }
+    })
+    
+    return () => unsubscribe()
+  }, [loadFiles])
+
   // Open working directory
   const handleOpenVault = useCallback(async () => {
     if (!window.electronAPI) return
@@ -1191,6 +1224,9 @@ function App() {
             <WelcomeScreen 
               onOpenRecentVault={handleOpenRecentVault}
             />
+          ) : activeView === 'google-drive' ? (
+            /* Google Drive View - replaces entire main content area */
+            <GoogleDrivePanel />
           ) : (
             <>
               {/* File Browser */}
