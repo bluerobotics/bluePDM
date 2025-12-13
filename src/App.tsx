@@ -1295,14 +1295,17 @@ function App() {
               onRefresh={loadFiles}
             />
             <div
-              className="w-1 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0"
+              className="w-1.5 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0 relative group"
               onMouseDown={() => setIsResizingSidebar(true)}
-            />
+            >
+              {/* Wider invisible hit area for easier grabbing */}
+              <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
+            </div>
           </>
         )}
 
         {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className={`flex-1 flex flex-col overflow-hidden min-w-0 ${isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}`}>
           {showWelcome ? (
             <WelcomeScreen 
               onOpenRecentVault={handleOpenRecentVault}
@@ -1335,10 +1338,15 @@ function App() {
         {rightPanelVisible && rightPanelTabs.length > 0 && !showWelcome && (
           <>
             <div
-              className="w-1 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0"
+              className="w-1.5 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0 relative"
               onMouseDown={() => setIsResizingRightPanel(true)}
-            />
-            <RightPanel />
+            >
+              {/* Wider invisible hit area for easier grabbing */}
+              <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
+            </div>
+            <div className={isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}>
+              <RightPanel />
+            </div>
           </>
         )}
       </div>

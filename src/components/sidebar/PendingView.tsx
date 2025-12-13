@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, memo } from 'react'
-import { Lock, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle, Shield, Unlock, FolderOpen } from 'lucide-react'
+import { Lock, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle, Shield, Unlock, FolderOpen, CloudOff } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../../stores/pdmStore'
 import { getInitials } from '../../types/pdm'
 // Use command system instead of direct supabase calls
@@ -189,6 +189,75 @@ const AddedFileRow = memo(function AddedFileRow({
   )
 })
 
+interface DeletedRemoteFileRowProps {
+  file: LocalFile
+  isSelected: boolean
+  isBeingProcessed: boolean
+  onToggleSelect: (path: string) => void
+  onNavigate: (file: LocalFile) => void
+}
+
+const DeletedRemoteFileRow = memo(function DeletedRemoteFileRow({ 
+  file, 
+  isSelected, 
+  isBeingProcessed,
+  onToggleSelect,
+  onNavigate
+}: DeletedRemoteFileRowProps) {
+  // Show processing state for files being processed
+  if (isBeingProcessed) {
+    return (
+      <div className="flex items-center gap-2 px-2 py-1.5 rounded text-sm opacity-50 cursor-not-allowed">
+        <div className="w-4 h-4 border-2 border-pdm-error border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <CloudOff size={14} className="flex-shrink-0 text-pdm-fg-muted" />
+        <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
+        <span className="truncate text-pdm-fg-muted flex-1" title={file.relativePath}>
+          {file.name}
+        </span>
+      </div>
+    )
+  }
+  
+  return (
+    <div
+      className={`flex items-center gap-2 px-2 py-1.5 rounded text-sm cursor-pointer transition-colors ${
+        isSelected ? 'bg-pdm-error/20' : 'hover:bg-pdm-error/10'
+      }`}
+      onClick={() => onToggleSelect(file.path)}
+    >
+      <button 
+        className="flex-shrink-0"
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggleSelect(file.path)
+        }}
+      >
+        {isSelected ? (
+          <CheckSquare size={16} className="text-pdm-error" />
+        ) : (
+          <Square size={16} className="text-pdm-fg-muted" />
+        )}
+      </button>
+      <CloudOff size={14} className="flex-shrink-0 text-pdm-error" />
+      <File size={14} className="text-pdm-fg-muted flex-shrink-0" />
+      <span className="truncate flex-1" title={file.relativePath}>
+        {file.name}
+      </span>
+      {/* Navigate to file location */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onNavigate(file)
+        }}
+        className="flex-shrink-0 p-0.5 rounded hover:bg-pdm-highlight text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+        title="Show in Explorer"
+      >
+        <FolderOpen size={14} />
+      </button>
+    </div>
+  )
+})
+
 // ============================================
 // Main Component
 // ============================================
@@ -202,21 +271,24 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [selectedAddedFiles, setSelectedAddedFiles] = useState<Set<string>>(new Set())
   const [selectedOthersFiles, setSelectedOthersFiles] = useState<Set<string>>(new Set())
+  const [selectedDeletedRemoteFiles, setSelectedDeletedRemoteFiles] = useState<Set<string>>(new Set())
   const [isProcessingCheckedOut, setIsProcessingCheckedOut] = useState(false)
   const [isProcessingAdded, setIsProcessingAdded] = useState(false)
   const [isProcessingOthers, setIsProcessingOthers] = useState(false)
+  const [isProcessingDeletedRemote, setIsProcessingDeletedRemote] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [processingPaths, setProcessingPaths] = useState<Set<string>>(new Set())
   
   // Memoize expensive file filtering - only recompute when files or user changes
-  const { checkedOutFiles, myCheckedOutFiles, othersCheckedOutFiles, addedFiles, syncedFilesCount } = useMemo(() => {
+  const { checkedOutFiles, myCheckedOutFiles, othersCheckedOutFiles, addedFiles, deletedRemoteFiles, syncedFilesCount } = useMemo(() => {
     const checkedOut = files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by)
     const myCheckedOut = checkedOut.filter(f => f.pdmData?.checked_out_by === user?.id)
     const othersCheckedOut = checkedOut.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
     const added = files.filter(f => !f.isDirectory && f.diffStatus === 'added')
+    const deletedRemote = files.filter(f => !f.isDirectory && f.diffStatus === 'deleted_remote')
     const synced = files.filter(f => !f.isDirectory && f.pdmData).length
     
-    return { checkedOutFiles: checkedOut, myCheckedOutFiles: myCheckedOut, othersCheckedOutFiles: othersCheckedOut, addedFiles: added, syncedFilesCount: synced }
+    return { checkedOutFiles: checkedOut, myCheckedOutFiles: myCheckedOut, othersCheckedOutFiles: othersCheckedOut, addedFiles: added, deletedRemoteFiles: deletedRemote, syncedFilesCount: synced }
   }, [files, user?.id])
   
   // Stable callbacks for row components
@@ -240,6 +312,15 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   
   const toggleSelectOthers = useCallback((path: string) => {
     setSelectedOthersFiles(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
+  
+  const toggleSelectDeletedRemote = useCallback((path: string) => {
+    setSelectedDeletedRemoteFiles(prev => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
       else next.add(path)
@@ -289,6 +370,14 @@ export function PendingView({ onRefresh }: PendingViewProps) {
     setSelectedOthersFiles(new Set())
   }, [])
   
+  const selectAllDeletedRemote = useCallback(() => {
+    setSelectedDeletedRemoteFiles(new Set(deletedRemoteFiles.map(f => f.path)))
+  }, [deletedRemoteFiles])
+  
+  const selectNoneDeletedRemote = useCallback(() => {
+    setSelectedDeletedRemoteFiles(new Set())
+  }, [])
+  
   const selectedCount = selectedFiles.size
   const allSelected = myCheckedOutFiles.length > 0 && selectedCount === myCheckedOutFiles.length
   const selectedAddedCount = selectedAddedFiles.size
@@ -296,6 +385,8 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   const isAdmin = user?.role === 'admin'
   const selectedOthersCount = selectedOthersFiles.size
   const allOthersSelected = othersCheckedOutFiles.length > 0 && selectedOthersCount === othersCheckedOutFiles.length
+  const selectedDeletedRemoteCount = selectedDeletedRemoteFiles.size
+  const allDeletedRemoteSelected = deletedRemoteFiles.length > 0 && selectedDeletedRemoteCount === deletedRemoteFiles.length
   
   // Command handlers
   const handleCheckin = useCallback(async () => {
@@ -418,6 +509,55 @@ export function PendingView({ onRefresh }: PendingViewProps) {
       setIsProcessingOthers(false)
     }
   }, [isAdmin, selectedOthersFiles, othersCheckedOutFiles, onRefresh])
+  
+  // Handler to delete orphaned local files (files deleted from server)
+  const handleDeleteOrphanedFiles = useCallback(async () => {
+    if (selectedDeletedRemoteFiles.size === 0) return
+    
+    setIsProcessingDeletedRemote(true)
+    const filesToDelete = Array.from(selectedDeletedRemoteFiles)
+    setProcessingPaths(prev => new Set([...prev, ...filesToDelete]))
+    setSelectedDeletedRemoteFiles(new Set())
+    
+    const pathToFile = new Map(deletedRemoteFiles.map(f => [f.path, f]))
+    const fileObjects = filesToDelete.map(path => pathToFile.get(path)).filter(Boolean) as LocalFile[]
+    
+    try {
+      await executeCommand('delete-local', { files: fileObjects }, { onRefresh })
+    } finally {
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToDelete.forEach(p => next.delete(p))
+        return next
+      })
+      setIsProcessingDeletedRemote(false)
+    }
+  }, [selectedDeletedRemoteFiles, deletedRemoteFiles, onRefresh])
+  
+  // Handler to re-upload orphaned files to server (treats them as new files)
+  const handleReuploadOrphanedFiles = useCallback(async () => {
+    if (selectedDeletedRemoteFiles.size === 0) return
+    
+    setIsProcessingDeletedRemote(true)
+    const filesToUpload = Array.from(selectedDeletedRemoteFiles)
+    setProcessingPaths(prev => new Set([...prev, ...filesToUpload]))
+    setSelectedDeletedRemoteFiles(new Set())
+    
+    const pathToFile = new Map(deletedRemoteFiles.map(f => [f.path, f]))
+    const fileObjects = filesToUpload.map(path => pathToFile.get(path)).filter(Boolean) as LocalFile[]
+    
+    try {
+      // Sync command will upload these as new files since they have no pdmData
+      await executeCommand('sync', { files: fileObjects }, { onRefresh })
+    } finally {
+      setProcessingPaths(prev => {
+        const next = new Set(prev)
+        filesToUpload.forEach(p => next.delete(p))
+        return next
+      })
+      setIsProcessingDeletedRemote(false)
+    }
+  }, [selectedDeletedRemoteFiles, deletedRemoteFiles, onRefresh])
 
   return (
     <div className="flex flex-col h-full">
@@ -611,6 +751,71 @@ export function PendingView({ onRefresh }: PendingViewProps) {
           </div>
         )}
 
+        {/* Deleted from Server - files that exist locally but were deleted by another user */}
+        {deletedRemoteFiles.length > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-pdm-fg-muted uppercase tracking-wide flex items-center gap-2">
+                <CloudOff size={12} className="text-pdm-error" />
+                Deleted from Server ({deletedRemoteFiles.length})
+              </div>
+              {deletedRemoteFiles.length > 0 && (
+                <button
+                  onClick={allDeletedRemoteSelected ? selectNoneDeletedRemote : selectAllDeletedRemote}
+                  className="text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+                >
+                  {allDeletedRemoteSelected ? 'Deselect All' : 'Select All'}
+                </button>
+              )}
+            </div>
+            
+            {selectedDeletedRemoteCount > 0 && (
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-pdm-border">
+                <span className="text-xs text-pdm-fg-muted">{selectedDeletedRemoteCount} selected</span>
+                <div className="flex-1" />
+                <button
+                  onClick={handleReuploadOrphanedFiles}
+                  disabled={isProcessingDeletedRemote}
+                  className="btn btn-primary btn-sm text-xs flex items-center gap-1"
+                  title="Re-upload these files to the server as new files"
+                >
+                  <Upload size={12} />
+                  Re-upload
+                </button>
+                <button
+                  onClick={handleDeleteOrphanedFiles}
+                  disabled={isProcessingDeletedRemote}
+                  className="btn btn-sm text-xs flex items-center gap-1 bg-pdm-error hover:bg-pdm-error/80 text-white"
+                  title="Delete these orphaned local files"
+                >
+                  <Trash2 size={12} />
+                  Delete Local
+                </button>
+              </div>
+            )}
+            
+            {selectedDeletedRemoteCount === 0 && (
+              <div className="text-xs text-pdm-fg-muted mb-2 px-2 py-1 bg-pdm-error/10 border border-pdm-error/20 rounded flex items-center gap-1">
+                <AlertTriangle size={10} className="text-pdm-error" />
+                Another user deleted these files from the server. Your local copies are orphaned.
+              </div>
+            )}
+            
+            <div className="space-y-1">
+              {deletedRemoteFiles.map(file => (
+                <DeletedRemoteFileRow 
+                  key={file.path} 
+                  file={file}
+                  isSelected={selectedDeletedRemoteFiles.has(file.path)}
+                  isBeingProcessed={processingPaths.has(file.path)}
+                  onToggleSelect={toggleSelectDeletedRemote}
+                  onNavigate={navigateToFile}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Summary */}
         <div className="text-xs text-pdm-fg-muted border-t border-pdm-border pt-4">
           <div className="flex justify-between mb-1">
@@ -621,10 +826,16 @@ export function PendingView({ onRefresh }: PendingViewProps) {
             <span>Total checked out:</span>
             <span>{checkedOutFiles.length}</span>
           </div>
-          <div className="flex justify-between">
+          <div className="flex justify-between mb-1">
             <span>New files to sync:</span>
             <span className={addedFiles.length > 0 ? 'text-pdm-success' : ''}>{addedFiles.length}</span>
           </div>
+          {deletedRemoteFiles.length > 0 && (
+            <div className="flex justify-between">
+              <span>Deleted from server:</span>
+              <span className="text-pdm-error">{deletedRemoteFiles.length}</span>
+            </div>
+          )}
         </div>
       </div>
       

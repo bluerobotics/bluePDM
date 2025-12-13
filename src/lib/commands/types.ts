@@ -260,6 +260,7 @@ export function getSyncedFilesFromSelection(files: LocalFile[], selection: Local
 }
 
 // Helper to get unsynced files from selection
+// Includes both 'added' (truly new) and 'deleted_remote' (orphaned local files)
 export function getUnsyncedFilesFromSelection(files: LocalFile[], selection: LocalFile[]): LocalFile[] {
   const result: LocalFile[] = []
   
@@ -267,10 +268,10 @@ export function getUnsyncedFilesFromSelection(files: LocalFile[], selection: Loc
     if (item.isDirectory) {
       const filesInFolder = getFilesInFolder(files, item.relativePath)
       const unsyncedInFolder = filesInFolder.filter(f => 
-        !f.pdmData || f.diffStatus === 'added'
+        !f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote'
       )
       result.push(...unsyncedInFolder)
-    } else if (!item.pdmData || item.diffStatus === 'added') {
+    } else if (!item.pdmData || item.diffStatus === 'added' || item.diffStatus === 'deleted_remote') {
       result.push(item)
     }
   }

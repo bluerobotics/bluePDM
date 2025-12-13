@@ -567,6 +567,33 @@ TO authenticated
 USING (bucket_id = 'vault');
 
 -- ===========================================
+-- REALTIME SUBSCRIPTIONS
+-- ===========================================
+-- Enable real-time updates for file changes across all connected clients
+-- This allows instant updates when someone checks out, checks in, or modifies files
+
+-- Enable REPLICA IDENTITY FULL so Supabase sends old + new records on UPDATE/DELETE
+ALTER TABLE files REPLICA IDENTITY FULL;
+ALTER TABLE activity REPLICA IDENTITY FULL;
+
+-- Add tables to Supabase realtime publication
+-- Note: supabase_realtime publication is created automatically by Supabase
+DO $$
+BEGIN
+  -- Add files table to realtime (ignore if already added)
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE files;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL; -- Already added, ignore
+  END;
+  
+  -- Add activity table to realtime (ignore if already added)
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE activity;
+  EXCEPTION WHEN duplicate_object THEN
+    NULL; -- Already added, ignore
+  END;
+END $$;
 
 -- ===========================================
 -- SYNC EXISTING AUTH USERS

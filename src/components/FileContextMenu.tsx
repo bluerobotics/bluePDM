@@ -1243,13 +1243,14 @@ export function FileContextMenu({
               {/* Sync Status */}
               <div>
                 <div className="text-xs text-pdm-fg-muted uppercase tracking-wide mb-1">Sync Status</div>
-                <div className="text-sm">
+                <div className={`text-sm ${firstFile.diffStatus === 'deleted_remote' ? 'text-pdm-error' : ''}`}>
                   {firstFile.diffStatus === 'cloud' ? 'Cloud only (not downloaded)' 
                     : firstFile.diffStatus === 'added' ? 'Local only (not synced)'
                     : firstFile.diffStatus === 'ignored' ? 'Local only (ignored from sync)'
                     : firstFile.diffStatus === 'modified' ? 'Modified locally'
                     : firstFile.diffStatus === 'moved' ? 'Moved (path changed)'
                     : firstFile.diffStatus === 'outdated' ? 'Outdated (newer version on server)'
+                    : firstFile.diffStatus === 'deleted_remote' ? 'Deleted from server (orphaned)'
                     : firstFile.pdmData ? 'Synced' : 'Not synced'}
                 </div>
               </div>

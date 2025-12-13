@@ -516,8 +516,11 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                     {(file.diffStatus === 'added' || file.diffStatus === 'ignored') && (
                       <span title="Local only"><HardDrive size={statusIconSize} className="text-pdm-fg-muted" /></span>
                     )}
+                    {file.diffStatus === 'deleted_remote' && (
+                      <span title="Deleted from server - your local copy is orphaned"><Trash2 size={statusIconSize} className="text-pdm-error" /></span>
+                    )}
                     {file.diffStatus === 'modified' && (
-                      <span title="Modified"><Pencil size={statusIconSize} className="text-yellow-400" /></span>
+                      <span title="Modified"><ArrowUp size={statusIconSize} className="text-yellow-400" /></span>
                     )}
                     {file.diffStatus === 'outdated' && (
                       <span title="Outdated"><AlertTriangle size={statusIconSize} className="text-purple-400" /></span>
@@ -638,7 +641,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                   )}
                   
                   {/* FILE: Local only - green up arrow for first check in */}
-                  {!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored' && onUpload && (
+                  {!file.isDirectory && (!file.pdmData || file.diffStatus === 'added' || file.diffStatus === 'deleted_remote') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored' && onUpload && (
                     <button
                       className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success transition-colors cursor-pointer"
                       title="First Check In"
@@ -3163,12 +3166,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         
         // Check if folder has unsynced files (for first check in)
         const hasUnsyncedFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
         )
         
         // Get local-only (unsynced) files count for folders
         const localOnlyFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
+          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
         ).length : 0
         
         // Get cloud files count for folders (files others have added that you haven't downloaded)
@@ -3402,7 +3405,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             {!isBeingProcessed(file.relativePath) && (
               <span className="inline-actions flex items-center gap-0.5 flex-shrink-0">
                 {/* First Check In - for local only files/folders */}
-                {((!file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored') || hasUnsyncedFiles) && (
+                {((!file.isDirectory && (!file.pdmData || file.diffStatus === 'added' || file.diffStatus === 'deleted_remote') && file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored') || hasUnsyncedFiles) && (
                   <button
                     className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
                     onClick={(e) => handleInlineUpload(e, file)}
@@ -4218,6 +4221,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 : file.diffStatus === 'modified' ? 'diff-modified'
                 : file.diffStatus === 'moved' ? 'diff-moved'
                 : file.diffStatus === 'deleted' ? 'diff-deleted'
+                : file.diffStatus === 'deleted_remote' ? 'diff-deleted-remote'
                 : file.diffStatus === 'outdated' ? 'diff-outdated'
                 : file.diffStatus === 'cloud' ? 'diff-cloud' : ''
               const isProcessing = isBeingProcessed(file.relativePath)
@@ -4365,6 +4369,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         const syncedFilesInSelection = getSyncedFilesInSelection()
         
         // Get all unsynced files - either directly selected or inside selected folders
+        // Includes both 'added' (truly new) and 'deleted_remote' (orphaned) files
         const getUnsyncedFilesInSelection = (): LocalFile[] => {
           const result: LocalFile[] = []
           for (const item of contextFiles) {
@@ -4373,13 +4378,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               const folderPrefix = item.relativePath + '/'
               const filesInFolder = files.filter(f => 
                 !f.isDirectory && 
-                !f.pdmData &&
+                (!f.pdmData || f.diffStatus === 'deleted_remote') &&
                 f.diffStatus !== 'ignored' &&
                 (f.relativePath.startsWith(folderPrefix) || 
                  f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
               )
               result.push(...filesInFolder)
-            } else if (!item.pdmData && item.diffStatus !== 'ignored') {
+            } else if ((!item.pdmData || item.diffStatus === 'deleted_remote') && item.diffStatus !== 'ignored') {
               result.push(item)
             }
           }
@@ -5274,11 +5279,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 }
                 
                 const allFilesInSelection = getAllFilesFromSelection()
-                const syncedFilesInSelection = allFilesInSelection.filter(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'added')
-                const unsyncedFilesInSelection = allFilesInSelection.filter(f => !f.pdmData || f.diffStatus === 'added')
+                const syncedFilesInSelection = allFilesInSelection.filter(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'added' && f.diffStatus !== 'deleted_remote')
+                const unsyncedFilesInSelection = allFilesInSelection.filter(f => !f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote')
                 const hasLocalFiles = contextFiles.some(f => f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
                 const hasSyncedFiles = syncedFilesInSelection.length > 0 || contextFiles.some(f => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
-                const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0 || contextFiles.some(f => (!f.pdmData || f.diffStatus === 'added') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
+                const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0 || contextFiles.some(f => (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new')
                 
                 return (
                   <>
@@ -5329,7 +5334,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           // Get all unsynced files to delete
                           const filesToDelete = unsyncedFilesInSelection.length > 0 
                             ? unsyncedFilesInSelection 
-                            : contextFiles.filter(f => !f.pdmData || f.diffStatus === 'added')
+                            : contextFiles.filter(f => !f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote')
                           
                           if (filesToDelete.length === 0) {
                             addToast('info', 'No local files to delete')

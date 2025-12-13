@@ -1511,7 +1511,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 </span>
               ) : null}
               {diffCounts && diffCounts.modified > 0 && (
-                <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
+                <span className="text-pdm-warning font-medium flex items-center gap-0.5"><ArrowUp size={10} />{diffCounts.modified}</span>
               )}
               {diffCounts && diffCounts.moved > 0 && (
                 <span className="text-pdm-accent font-medium">→{diffCounts.moved}</span>
@@ -2375,7 +2375,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                             </span>
                           )}
                           {diffCounts && diffCounts.modified > 0 && (
-                            <span className="text-pdm-warning font-medium">~{diffCounts.modified}</span>
+                            <span className="text-pdm-warning font-medium flex items-center gap-0.5"><ArrowUp size={10} />{diffCounts.modified}</span>
                           )}
                           {diffCounts && diffCounts.moved > 0 && (
                             <span className="text-pdm-accent font-medium">→{diffCounts.moved}</span>

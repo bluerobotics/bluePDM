@@ -15,7 +15,7 @@ export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
-export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored'
+export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
 
 // Connected vault - an org vault that's connected locally
 export interface ConnectedVault {
@@ -954,20 +954,20 @@ export const usePDMStore = create<PDMState>()(
         set(state => ({
           files: state.files.filter(f => {
             // Only remove cloud-only files (files that exist on server but not locally)
-            // Keep files that exist locally (they should remain as 'added' status)
+            // Keep files that exist locally - mark as 'deleted_remote' so user knows
             if (f.pdmData?.id === fileId && f.diffStatus === 'cloud') {
               return false // Remove this file
             }
-            // If file exists locally but had pdmData, just clear the pdmData
+            // If file exists locally but had pdmData, keep it
             if (f.pdmData?.id === fileId) {
-              // This will be handled by updateFileInStore to clear pdmData
               return true
             }
             return true
           }).map(f => {
-            // Clear pdmData from locally existing files that were deleted on server
+            // Mark locally existing files as 'deleted_remote' - server deleted but you still have local copy
+            // This shows as red diff so user knows the server version was deleted
             if (f.pdmData?.id === fileId && f.diffStatus !== 'cloud') {
-              return { ...f, pdmData: undefined, isSynced: false, diffStatus: 'added' }
+              return { ...f, pdmData: undefined, isSynced: false, diffStatus: 'deleted_remote' as const }
             }
             return f
           })
