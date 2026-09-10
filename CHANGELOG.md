@@ -4,6 +4,80 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [4.3.3] - 2026-09-10
+
+Renderer-only release — no schema change, no API change.
+
+### Fixed
+
+- **An unreconciled folder rename no longer empties the folder for everyone else.** When a
+  file's local path diverges from the path the vault records for it (an accidental rename, a
+  Windows Explorer rename, an in-app rename whose background server write failed), the file used
+  to be silently dropped from the folder the vault still thinks it is in — a whole-folder rename
+  on one machine could make that folder look completely empty to every other user, with no stub,
+  no tooltip, and no indication anything had happened. A real case of exactly this cost one user
+  65 files' visibility into a subfolder. The merge now leaves a `moved_away` stub behind at the
+  vault's recorded path, naming where the file's content actually lives now, and the pending-move
+  count this always computed but never rendered is now visible on the folder-tree row, the file
+  row, and the grid card — a moved file no longer reports as "Checked In."
+- **Resolving a pending move in either direction is now possible without a terminal.** Only one
+  half of this existed before: `reconcile-moved-paths`, which writes the local path to the
+  server (local wins), was a terminal-only command with no discoverable entry point and no
+  inverse. The disk-is-wrong case — the far more common one in practice — had no resolution at
+  all; running the one command that did exist would have propagated the mistake to the whole
+  organization. A new `adopt-server-paths` command (alias `adopt-paths`) renames the local file
+  back to the server's recorded path instead (server wins), writing only to the local disk and
+  the local sync index, and a new **Resolve Pending Moves** dialog puts both directions behind a
+  clickable folder-tree badge and a file's own context menu, in plain language rather than
+  command names, with each direction's own preflight (eligible / blocked / skipped, and why)
+  shown before either one is asked to run.
+- **Several existing commands could still target the stub half of a moved file instead of its
+  real content, or fail to see the stub at all.** `packAndGo.ts`, `bulkAssembly.ts`'s four bulk
+  commands (checkout/checkin/delete/download), and `delete.ts`'s keep-local-copy path each built
+  or consumed an `id -> file` map, or matched a server path back to a local row, without
+  accounting for the `moved_away` stub sharing that id (or that server path) with its `moved`
+  partner — whichever row won by iteration order or path lookup, sometimes the stub itself. A
+  Pack and Go could ship the wrong file into the zip; a bulk operation could validate against, or
+  act on, a path with nothing on it while skipping the file that actually had content; deleting a
+  moved file from the server while keeping a local copy could keep the stub — clearing its
+  `pdmData` and leaving the real copy still pointing at the record the delete had just removed.
+  `pickCanonicalLocalFile`, `buildCanonicalFileMap`, `findCanonicalFileById`, and
+  `hasLocalContent`, all in `fileOperations/assemblyResolver.ts`, are now the one place this
+  resolution happens, and every one of these call sites goes through them.
+- **Sync Metadata could write SolidWorks custom properties into a file at a path with nothing on
+  it.** Its eligibility filter tested `pdmData.id` and `checked_out_by` alone, with no
+  `diffStatus` check anywhere in it — a `moved_away` stub is not local-only and carries its
+  partner's checkout, so it passed for any file the current user had checked out, and the
+  command drove the SolidWorks Document Manager API to open and write a path with nothing there,
+  while silently never reaching the file the user actually meant. `getSwFilesFromSelection` and
+  the eligibility filter now resolve a matched row to its real-content partner first; the filter
+  also now excludes a `cloud` row carrying a checkout taken from another machine, which had the
+  identical shape of gap. A drawing's parent-model lookup by reference-database path had the same
+  issue on the read side (a failed property read rather than a wrong write) and is fixed the same
+  way.
+- **Renaming or moving a `moved_away` stub through the command layer — rather than through the
+  UI that already blocks both — attempted a filesystem rename on a path with nothing on it.**
+  `rename` and `move` now refuse a directly-selected stub independently, in the context menu's
+  own wording, rather than relying on the UI gates alone. A folder move's decision to skip the
+  local filesystem rename when nothing inside the folder has real content also miscounted a
+  `moved_away` stub as local content, which could send an effectively-empty folder into a real
+  rename attempt against a path that may no longer exist.
+
+### Added
+
+- `adopt-server-paths` / `adopt-paths` — dry-run by default, guarded the same way
+  `reconcile-moved-paths` is (destination already occupied, content no longer matching what the
+  server recorded, held by another user's checkout), with `--force` to include held targets in
+  the run. A successful run re-keys the local sync index so the move does not re-arm on the next
+  load, and recycles any directory the renames left empty using the same re-confirmed-empty,
+  never-permanently-deletes handler that shipped in 4.3.2.
+- **Resolve Pending Moves dialog** — lists affected files as from/to pairs, offers a scope
+  selector (this file, this folder, or the whole vault) for reviewing the list without being
+  overwhelmed by a large vault, and requires the same explicit confirmation — naming the
+  direction and the file count — that each command already built in. Both directions run through
+  the existing command layer and refresh the file list afterward; a failed or partial run reports
+  accurately rather than being folded into a success message.
+
 ## [4.3.2] - 2026-09-10
 
 **This release requires a database update to schema release 101.** See **Schema** at the end of

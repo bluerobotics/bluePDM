@@ -362,6 +362,7 @@ export const es: TranslationDict = {
     serverPathUpdateFailed:
       'Algunos cambios de nombre no llegaron al servidor, que sigue registrando las rutas anteriores. Los archivos afectados aparecen como movidos; ejecute reconcile-moved-paths para actualizarlos.',
     cloudRenameFailed: 'No se pudo cambiar el nombre en el servidor',
+    movedAwayBlocked: 'El archivo se ha movido - resuelva primero el movimiento pendiente',
     checkIn: 'Registrar',
     checkOut: 'Extraer',
     download: 'Descargar',
@@ -420,7 +421,26 @@ export const es: TranslationDict = {
     cloud: 'Nube',
     cloudNew: 'Nuevo (Nube)',
     moved: 'Movido',
+    movedAway: 'Movido (anterior)',
     ignored: 'Ignorado',
+  },
+
+  fileStatus: {
+    deletedFromServer: 'Eliminado del servidor',
+    movedTooltip: 'Este archivo ahora está aquí, pero el almacén todavía registra su ruta anterior',
+    movedAwayTooltip: 'El almacén todavía indica este archivo aquí, pero se ha movido',
+    movedAwayTooltipTo: 'Movido a {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} movimiento de archivo pendiente — haga clic para revisar',
+    pendingMovesBadgeTitle_other:
+      '{{count}} movimientos de archivos pendientes — haga clic para revisar',
+    disconnectWarningMoved_one:
+      '{{count}} archivo se movió y el almacén todavía registra su ruta anterior',
+    disconnectWarningMoved_other:
+      '{{count}} archivos se movieron y el almacén todavía registra sus rutas anteriores',
+    disconnectWarningMovedHint: 'Actualice el almacén para que coincida, o devuelva los archivos',
   },
 
   vaultSetup: {
@@ -506,6 +526,105 @@ export const es: TranslationDict = {
     summaryNotAttempted: '{{count}} sin intentar',
     summaryBlocked: '{{count}} desprotegidos por otros',
     summarySkipped: '{{count}} omitidos',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: 'Inicie sesión primero',
+    noVault: 'Ningún almacén conectado',
+    nothingToAdopt: 'Ningún archivo está esperando volver a la ruta que registra el servidor',
+
+    reportHeading:
+      '{{count}} archivos están en una ruta local que ya no coincide con lo que el servidor registra para ellos.',
+    reportEligible: '{{count}} pueden renombrarse ahora a su ruta del servidor.',
+    reportBlocked:
+      '{{count}} están desprotegidos por otras personas y se dejarán intactos salvo que se fuerce:',
+    reportHolder: '{{count}} en manos de {{user}}',
+    unknownHolder: 'otro usuario',
+    reportConflict: '{{count}} omitidos — ya hay otro archivo en el destino en el disco:',
+    reportUnverified:
+      '{{count}} omitidos — el contenido del archivo ya no coincide con lo que el servidor registró para él, por lo que el movimiento no se puede verificar:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… y {{count}} más',
+
+    dryRunSummary:
+      'Solo comprobación previa: {{eligible}} de {{total}} archivos pueden renombrarse a su ruta del servidor. No se escribió nada.',
+    dryRunNote: 'Solo informe. No se escribe nada sin --apply.',
+
+    refused:
+      'No se renombró nada: {{count}} de estos archivos están desprotegidos por otras personas ({{holders}}). El cambio solo afecta a su propio disco y es seguro de todos modos — pregúnteles primero, o vuelva a ejecutarlo con --force para renombrarlos también.',
+    nothingEligible: 'No se puede renombrar nada: {{skipped}} se omitieron.',
+    confirmUnavailable:
+      'No se renombró nada: este comando necesita un diálogo de confirmación y no había ninguno disponible.',
+
+    confirmTitle: '¿Renombrar {{count}} archivos a su ruta del servidor?',
+    confirmMessage:
+      '{{count}} archivos de este equipo se renombrarán a la ruta que el servidor ya registra para ellos. Esto solo cambia su disco local — no se escribe nada en el servidor.',
+    confirmRemainder: '{{count}} más quedan sin cambios ({{detail}}).',
+    confirmText: 'Renombrar {{count}} archivos',
+    declined: 'Cancelado. No se renombró nada.',
+
+    progress: 'Renombrando {{count}} archivos a su ruta del servidor…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Error desconocido',
+    destinationAppeared: 'Otro archivo apareció en "{{path}}" después de la comprobación previa',
+    createFolderFailed: 'No se pudo crear la carpeta de destino — {{error}}',
+
+    summaryComplete: 'Se renombraron {{count}} archivos a su ruta del servidor.',
+    summaryPartial:
+      'Se renombraron {{succeeded}} de {{total}} archivos — {{leftovers}}. Vuelva a ejecutarlo para terminar.',
+    summaryFailed: '{{count}} con error',
+    summaryNotAttempted: '{{count}} sin intentar',
+    summaryBlocked: '{{count}} desprotegidos por otros',
+    summarySkipped: '{{count}} omitidos',
+  },
+
+  resolveMoves: {
+    title: 'Resolver movimientos pendientes',
+    subtitle:
+      'Algunos archivos están en una ruta distinta a la que registra el almacén. Elija qué lado debe prevalecer.',
+    noPendingMoves: 'No hay nada que resolver — no se encontraron movimientos pendientes.',
+
+    scopeLabel: 'Mostrar',
+    scopeFile: 'Este archivo',
+    scopeFolder: 'Esta carpeta',
+    scopeVault: 'Todo el almacén',
+    vaultWideNote:
+      'Resolver siempre procesa todos los movimientos pendientes del almacén, no solo los que se muestran arriba.',
+
+    listHeading_one: '{{count}} movimiento pendiente mostrado',
+    listHeading_other: '{{count}} movimientos pendientes mostrados',
+    noMovesInScope: 'No hay movimientos pendientes en este ámbito.',
+    moreFiles: '… y {{count}} más',
+
+    reconcileOptionTitle: 'Mantener la nueva ubicación y actualizar el almacén para que coincida',
+    reconcileOptionDescription:
+      'Escribe la ruta de su disco en el servidor. Todos los demás obtienen la nueva ubicación en su próxima sincronización.',
+    adoptOptionTitle: 'Devolver los archivos a donde los tiene el almacén',
+    adoptOptionDescription:
+      'Renombra los archivos de su disco de vuelta a la ruta que el servidor ya registra. No se escribe nada en el servidor.',
+
+    eligibleCount_one: '{{count}} archivo listo',
+    eligibleCount_other: '{{count}} archivos listos',
+    blockedCount_one: '{{count}} archivo desprotegido por otra persona',
+    blockedCount_other: '{{count}} archivos desprotegidos por otros',
+    conflictCount_one: '{{count}} archivo omitido — destino ya ocupado',
+    conflictCount_other: '{{count}} archivos omitidos — destino ya ocupado',
+    unverifiedCount_one: '{{count}} archivo omitido — el contenido ya no coincide',
+    unverifiedCount_other: '{{count}} archivos omitidos — el contenido ya no coincide',
+    noEligible: 'Aquí todavía no hay nada que se pueda resolver.',
+    unknownHolder: 'otro usuario',
+
+    skipCheckedOutLabel_one:
+      'Omitir el archivo desprotegido por otra persona y actualizar el resto',
+    skipCheckedOutLabel_other:
+      'Omitir los {{count}} archivos desprotegidos por otros y actualizar el resto',
+    forceLabel_one: 'Renombrar también el archivo desprotegido por otra persona',
+    forceLabel_other: 'Renombrar también los {{count}} archivos desprotegidos por otros',
+
+    runReconcile: 'Actualizar el almacén',
+    runAdopt: 'Restaurar archivos locales',
+
+    contextMenuItem: 'Resolver archivos movidos…',
   },
 
   hiddenFolders: {

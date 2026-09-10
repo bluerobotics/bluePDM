@@ -105,11 +105,13 @@ export function FileCardActions({
           </button>
         ))}
 
-      {/* File check-in button */}
+      {/* File check-in button. Excludes 'moved_away': the stub carries the real file's
+          checkout state, but there is nothing at the stub's own path to check in. */}
       {!isDeleting &&
         !file.isDirectory &&
         file.pdmData?.checked_out_by === userId &&
         file.diffStatus !== 'deleted' &&
+        file.diffStatus !== 'moved_away' &&
         onCheckin && (
           <InlineCheckinButton
             onClick={(e) => onCheckin(e, file)}
@@ -149,13 +151,15 @@ export function FileCardActions({
           />
         )}
 
-      {/* File checkout button */}
+      {/* File checkout button. Excludes 'moved_away': the stub carries the real file's
+          pdmData, but there is nothing at the stub's own path to check out. */}
       {!isDeleting &&
         !file.isDirectory &&
         file.pdmData &&
         !file.pdmData.checked_out_by &&
         file.diffStatus !== 'cloud' &&
         file.diffStatus !== 'deleted' &&
+        file.diffStatus !== 'moved_away' &&
         onCheckout &&
         (isCheckingOut ? (
           <Loader2 size={16} className="text-sky-400 animate-spin" />

@@ -1,7 +1,7 @@
 /**
  * File Status column cell renderer
  */
-import { AlertTriangle, ArrowDown, Cloud, HardDrive, Loader2, Monitor } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUpRight, Cloud, HardDrive, Loader2, Monitor, Move } from 'lucide-react'
 import { t } from '@/lib/i18n'
 import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import { getInitials } from '@/lib/utils'
@@ -35,10 +35,12 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
   // 0. PROCESSING - always show spinner first (prevents flickering)
   // 1. Update files (outdated) - needs update from server
   // 2. Cloud files (cloud only, not downloaded)
-  // 3. Avatar checkout (checked out by someone)
-  // 4. Drift warning (checked in but local differs from server)
-  // 5. Green cloud (synced/checked in)
-  // 6. Local files (not synced) - lowest priority
+  // 3. Moved away (stub - nothing lives here locally, the file moved elsewhere)
+  // 4. Avatar checkout (checked out by someone)
+  // 5. Moved (this file lives here, but the vault still records the old path)
+  // 6. Drift warning (checked in but local differs from server)
+  // 7. Green cloud (synced/checked in)
+  // 8. Local files (not synced) - lowest priority
 
   // 0. HIGHEST: Processing state - show spinner immediately
   if (operationType) {
@@ -77,7 +79,26 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
     )
   }
 
-  // 3. Avatar checkout (checked out by someone)
+  // 3. Moved away (a stub at the vault's recorded path - the file itself lives elsewhere now).
+  // Checked before checkout, since the stub's pdmData carries the real file's checkout state
+  // and showing an avatar here for a file that isn't at this path would be misleading.
+  if (file.diffStatus === 'moved_away') {
+    return (
+      <span
+        className="flex items-center gap-1 text-blue-400/70"
+        title={
+          file.movedToRelativePath
+            ? t('fileStatus.movedAwayTooltipTo', { path: file.movedToRelativePath })
+            : t('fileStatus.movedAwayTooltip')
+        }
+      >
+        <ArrowUpRight size={12} className="flex-shrink-0" />
+        {t('diffStatus.movedAway')}
+      </span>
+    )
+  }
+
+  // 4. Avatar checkout (checked out by someone)
   const checkoutDisplay = deriveCheckoutDisplay(file, user, checkoutHydrationState)
   if (checkoutDisplay.state !== 'none') {
     const pdmData = file.pdmData
@@ -143,7 +164,18 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
     )
   }
 
-  // 4. Drift warning: checked in but local file differs from server.
+  // 5. Moved: this file's content lives here, but the vault still records it at a different
+  // path - a pending move waiting to be resolved in either direction.
+  if (file.pdmData && !file.pdmData.checked_out_by && file.diffStatus === 'moved') {
+    return (
+      <span className="flex items-center gap-1 text-blue-400" title={t('fileStatus.movedTooltip')}>
+        <Move size={12} className="flex-shrink-0" />
+        {t('diffStatus.moved')}
+      </span>
+    )
+  }
+
+  // 6. Drift warning: checked in but local file differs from server.
   // SolidWorks can modify a file after check-in (e.g., reference rebuild),
   // leaving local changes that are NOT on the server and NOT protected by a lock.
   if (file.pdmData && !file.pdmData.checked_out_by && file.diffStatus === 'modified') {
@@ -158,7 +190,7 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
     )
   }
 
-  // 5. Green cloud (synced/checked in - has pdmData, no checkout)
+  // 7. Green cloud (synced/checked in - has pdmData, no checkout)
   if (file.pdmData) {
     return (
       <span className="flex items-center gap-1 text-plm-success" title="Synced and checked in">
@@ -168,7 +200,7 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
     )
   }
 
-  // 6. LOWEST: Local files (not synced - no pdmData)
+  // 8. LOWEST: Local files (not synced - no pdmData)
   return (
     <span
       className="flex items-center gap-1 text-plm-fg-muted"

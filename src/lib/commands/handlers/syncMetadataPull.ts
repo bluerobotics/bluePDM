@@ -15,6 +15,7 @@ import { getContains } from '@/lib/supabase'
 import { getParentDir } from '@/lib/utils'
 
 import { buildFullPath, type LocalFile } from '../types'
+import { hasLocalContent } from '../../fileOperations/assemblyResolver'
 
 import {
   PART_ASSEMBLY_EXTENSIONS,
@@ -125,7 +126,24 @@ async function inferParentFromReferenceDatabase(
       const localMatch = store.files.find(
         (candidate) => candidate.relativePath.toLowerCase() === childPath.toLowerCase(),
       )
-      if (localMatch) return localMatch.path
+      if (localMatch) {
+        if (hasLocalContent(localMatch)) return localMatch.path
+
+        // `childPath` is the database's recorded path, which for a moved file is where the
+        // `'moved_away'` stub sits, not where the content actually is - reading properties
+        // from the stub's path would just fail, losing a parent this drawing could otherwise
+        // have inherited from. `movedToRelativePath` names the partner that has it.
+        if (localMatch.diffStatus === 'moved_away' && localMatch.movedToRelativePath) {
+          const partner = store.files.find(
+            (candidate) =>
+              !candidate.isDirectory &&
+              candidate.relativePath.toLowerCase() ===
+                localMatch.movedToRelativePath!.toLowerCase() &&
+              hasLocalContent(candidate),
+          )
+          if (partner) return partner.path
+        }
+      }
 
       if (store.vaultPath) return buildFullPath(store.vaultPath, childPath)
     }

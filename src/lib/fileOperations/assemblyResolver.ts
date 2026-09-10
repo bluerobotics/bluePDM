@@ -27,6 +27,87 @@ interface SWBomItem {
 }
 
 /**
+ * Pick which local row to use for a `pdmData.id` that more than one row in the input array
+ * carries. The only known case is a `'moved_away'` stub and its `'moved'` partner: two rows
+ * for one logical file, sharing an id, at two different paths. Whichever of the two an
+ * ordinary `Map.set(id, file)` loop visits last would win by iteration order alone - if the
+ * stub won, every downstream lookup by this id would resolve to a path with nothing on disk;
+ * if the partner won, the same lookups would happen to work, but only by luck.
+ *
+ * Prefers the row that actually has local content. Falls back to the stub's own
+ * `movedToRelativePath` - the partner's relative path, stamped in at merge time - so that even
+ * if the partner was not present under the same id in this particular input (a caller passing
+ * a filtered subset of files, say), the real content can still be found by path rather than
+ * silently dropping a file the user legitimately expects downstream.
+ */
+export function pickCanonicalLocalFile(
+  candidates: LocalFile[],
+  allLocalFiles: LocalFile[],
+): LocalFile | undefined {
+  const withContent = candidates.find((f) => f.diffStatus !== 'moved_away')
+  if (withContent) return withContent
+
+  const stub = candidates[0]
+  if (!stub?.movedToRelativePath) return stub
+
+  const byDestination = allLocalFiles.find(
+    (f) => f.relativePath === stub.movedToRelativePath && f.diffStatus !== 'moved_away',
+  )
+  return byDestination ?? stub
+}
+
+/**
+ * Build an `id -> file` map from an array of local rows, one entry per distinct
+ * `pdmData.id`, resolved through {@link pickCanonicalLocalFile} rather than a plain
+ * `set(id, file)` per row. This is the map-building logic `resolveAssociatedFiles` itself uses
+ * for its array input, extracted so a caller that needs its own `id -> file` map ahead of
+ * calling the resolver (or for any other purpose) does not have to re-implement the same
+ * policy - `bulkAssembly.ts`'s `resolveFilesForBulkOperation` originally did, with a plain
+ * `set()` loop that let a `'moved_away'` stub silently win an id over its `'moved'` partner.
+ */
+export function buildCanonicalFileMap(files: LocalFile[]): Map<string, LocalFile> {
+  const byId = new Map<string, LocalFile[]>()
+  for (const file of files) {
+    const id = file.pdmData?.id
+    if (!id) continue
+    const existing = byId.get(id)
+    if (existing) existing.push(file)
+    else byId.set(id, [file])
+  }
+
+  const result = new Map<string, LocalFile>()
+  for (const [id, candidates] of byId) {
+    const canonical = pickCanonicalLocalFile(candidates, files)
+    if (canonical) result.set(id, canonical)
+  }
+  return result
+}
+
+/**
+ * Find the canonical row for one `pdmData.id` within an array of local rows - the single-id
+ * counterpart to {@link buildCanonicalFileMap}, for a caller that only needs one lookup (e.g. a
+ * root-assembly check in a `validate()`) rather than a full map.
+ */
+export function findCanonicalFileById(files: LocalFile[], id: string): LocalFile | undefined {
+  const candidates = files.filter((f) => f.pdmData?.id === id)
+  if (candidates.length === 0) return undefined
+  return pickCanonicalLocalFile(candidates, files)
+}
+
+/**
+ * Whether a resolved row has actual content on disk. Excludes `'cloud'` (never downloaded)
+ * and `'moved_away'` (a stub at the server's recorded path with no local file behind it -
+ * {@link pickCanonicalLocalFile} already resolves an id shared between a stub and its
+ * `'moved'` partner to the partner whenever one is present, but every caller that reads a
+ * resolved row's `diffStatus` to decide whether an operation belongs on it should still check
+ * this directly, as the last line of defense for the case resolution could not find a partner
+ * at all - nothing should treat a path that does not exist on disk as one it can act on.
+ */
+export function hasLocalContent(file: Pick<LocalFile, 'diffStatus'>): boolean {
+  return file.diffStatus !== 'cloud' && file.diffStatus !== 'moved_away'
+}
+
+/**
  * Find a local file matching the given component path.
  * Tries exact match first, then falls back to filename match within the vault.
  */
@@ -158,8 +239,15 @@ export interface AssociatedFilesResult {
  *
  * @param rootFileId - The ID of the root assembly file
  * @param orgId - Organization ID (for validation)
- * @param allFiles - Map or Record of LocalFile objects keyed by file ID, or array of LocalFile objects
- *                   Used to enrich database file data with local file information
+ * @param allFiles - Map or Record of LocalFile objects keyed by file ID, or array of LocalFile
+ *                   objects. Used to enrich database file data with local file information.
+ *                   Passing the raw array is the safer choice: `pickCanonicalLocalFile` only
+ *                   runs on this path, so a `'moved_away'` stub and its `'moved'` partner are
+ *                   resolved correctly regardless of which one this array happens to list
+ *                   first. A caller that pre-builds its own `id -> file` Map before calling in
+ *                   (bypassing this normalization) must apply the same resolution itself, or a
+ *                   stub can silently win the id and every lookup through it will point at a
+ *                   path with nothing on disk.
  * @param onProgress - Optional callback for progress updates during resolution
  * @returns AssociatedFilesResult with all resolved files and statistics
  */
@@ -182,12 +270,11 @@ export async function resolveAssociatedFiles(
   // Normalize allFiles to a Map for consistent lookup
   let filesMap: Map<string, LocalFile>
   if (Array.isArray(allFiles)) {
-    filesMap = new Map<string, LocalFile>()
-    for (const file of allFiles) {
-      if (file.pdmData?.id) {
-        filesMap.set(file.pdmData.id, file)
-      }
-    }
+    // `buildCanonicalFileMap` groups by id and resolves through `pickCanonicalLocalFile`
+    // rather than a single `set(id, file)` per row, because a `'moved_away'` stub and its
+    // `'moved'` partner share one id - see that function for why the winner cannot be left
+    // to iteration order.
+    filesMap = buildCanonicalFileMap(allFiles)
   } else if (allFiles instanceof Map) {
     filesMap = allFiles
   } else {

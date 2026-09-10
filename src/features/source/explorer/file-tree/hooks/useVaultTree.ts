@@ -75,6 +75,12 @@ export interface FolderMetrics {
   modifiedCount: number
   /** Number of moved files (path changed, pending sync) */
   movedCount: number
+  /**
+   * Number of 'moved_away' stubs - the same moves as movedCount, counted at the
+   * old location instead of the new one. Never overlaps movedCount: each moved
+   * file contributes to exactly one of the two, at different folders.
+   */
+  movedAwayCount: number
   /** Number of deleted files (removed locally, pending sync) */
   deletedCount: number
   /** Number of files deleted on remote (exists locally but removed from cloud) */
@@ -303,12 +309,15 @@ export function useVaultTree() {
       addedCount: 0,
       modifiedCount: 0,
       movedCount: 0,
+      movedAwayCount: 0,
       deletedCount: 0,
       deletedRemoteCount: 0,
     })
 
-    // Server-only statuses (files not locally present)
-    const serverOnlyStatuses = ['cloud', 'deleted']
+    // Server-only statuses (files not locally present). 'moved_away' is a stub
+    // for a file whose content lives elsewhere - it has no local presence either,
+    // so it belongs in this list alongside 'cloud' and 'deleted'.
+    const serverOnlyStatuses = ['cloud', 'deleted', 'moved_away']
 
     // Single pass through all files to compute folder metrics AND collect checkout users
     // Previously this was two O(N) passes; now merged for ~40% faster computation
@@ -347,12 +356,15 @@ export function useVaultTree() {
           m.hasUnsyncedFiles = true
         }
 
-        // Checkoutable files (synced, not checked out, exists locally)
+        // Checkoutable files (synced, not checked out, exists locally). A
+        // 'moved_away' stub has no local file behind it, so it must never be
+        // checkoutable even though it can carry an unset checked_out_by.
         if (
           file.pdmData &&
           !file.pdmData.checked_out_by &&
           file.diffStatus !== 'cloud' &&
-          file.diffStatus !== 'deleted'
+          file.diffStatus !== 'deleted' &&
+          file.diffStatus !== 'moved_away'
         ) {
           m.checkoutableFilesCount++
           m.hasCheckoutableFiles = true
@@ -363,8 +375,15 @@ export function useVaultTree() {
           m.outdatedFilesCount++
         }
 
-        // Synced count (has pdmData, not checked out, not cloud-only)
-        if (file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') {
+        // Synced count (has pdmData, not checked out, not cloud-only, not a
+        // moved-away stub - the stub is not "synced", it is a shadow of a file
+        // that is synced-or-not at its actual location).
+        if (
+          file.pdmData &&
+          !file.pdmData.checked_out_by &&
+          file.diffStatus !== 'cloud' &&
+          file.diffStatus !== 'moved_away'
+        ) {
           m.syncedFilesCount++
         }
 
@@ -396,6 +415,8 @@ export function useVaultTree() {
           m.modifiedCount++
         } else if (file.diffStatus === 'moved') {
           m.movedCount++
+        } else if (file.diffStatus === 'moved_away') {
+          m.movedAwayCount++
         } else if (file.diffStatus === 'deleted') {
           m.deletedCount++
         } else if (file.diffStatus === 'deleted_remote') {
@@ -648,6 +669,7 @@ export function useVaultTree() {
           added: metrics.addedCount,
           modified: metrics.modifiedCount,
           moved: metrics.movedCount,
+          movedAway: metrics.movedAwayCount,
           deleted: metrics.deletedCount,
           outdated: metrics.outdatedFilesCount,
           cloud: metrics.cloudFilesCount,
@@ -662,6 +684,7 @@ export function useVaultTree() {
       let added = 0,
         modified = 0,
         moved = 0,
+        movedAway = 0,
         deleted = 0,
         outdated = 0,
         cloud = 0,
@@ -676,6 +699,7 @@ export function useVaultTree() {
         if (file.diffStatus === 'added') added++
         else if (file.diffStatus === 'modified') modified++
         else if (file.diffStatus === 'moved') moved++
+        else if (file.diffStatus === 'moved_away') movedAway++
         else if (file.diffStatus === 'deleted') deleted++
         else if (file.diffStatus === 'outdated') outdated++
         else if (file.diffStatus === 'cloud') {
@@ -684,7 +708,7 @@ export function useVaultTree() {
         }
       }
 
-      return { added, modified, moved, deleted, outdated, cloud, cloudNew }
+      return { added, modified, moved, movedAway, deleted, outdated, cloud, cloudNew }
     },
     [folderMetrics, deferredFiles, hideSolidworksTempFiles],
   )

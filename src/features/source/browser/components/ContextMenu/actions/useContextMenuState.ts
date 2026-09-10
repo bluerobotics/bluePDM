@@ -27,7 +27,10 @@ export function useContextMenuSelectionState({
 }: UseContextMenuStateParams): UseContextMenuStateReturn {
   const { files } = usePDMStore()
 
-  // Get all synced files - either directly selected or inside selected folders
+  // Get all synced files - either directly selected or inside selected folders.
+  // Excludes 'cloud' (nothing downloaded to act on) and 'moved_away' (a stub sharing the
+  // real file's pdmData/checkout state, but with no local file at its own path - the checkout
+  // and checkin counts below must not count it as an actionable target).
   const syncedFilesInSelection = useMemo(() => {
     const result: LocalFile[] = []
     for (const item of contextFiles) {
@@ -38,11 +41,12 @@ export function useContextMenuSelectionState({
             !f.isDirectory &&
             f.pdmData &&
             f.diffStatus !== 'cloud' &&
+            f.diffStatus !== 'moved_away' &&
             (f.relativePath.startsWith(folderPrefix) ||
               f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath),
         )
         result.push(...filesInFolder)
-      } else if (item.pdmData && item.diffStatus !== 'cloud') {
+      } else if (item.pdmData && item.diffStatus !== 'cloud' && item.diffStatus !== 'moved_away') {
         result.push(item)
       }
     }
@@ -127,11 +131,16 @@ export function useContextMenuSelectionState({
               !f.isDirectory &&
               f.pdmData &&
               f.diffStatus !== 'cloud' &&
+              f.diffStatus !== 'moved_away' &&
               (f.relativePath.startsWith(folderPrefix) ||
                 f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath),
           )
           if (hasSyncedInFolder) return true
-        } else if (item.pdmData && item.diffStatus !== 'cloud') {
+        } else if (
+          item.pdmData &&
+          item.diffStatus !== 'cloud' &&
+          item.diffStatus !== 'moved_away'
+        ) {
           return true
         }
       }

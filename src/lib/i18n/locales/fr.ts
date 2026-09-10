@@ -364,6 +364,7 @@ export const fr: TranslationDict = {
     serverPathUpdateFailed:
       'Certains renommages ne sont pas parvenus au serveur, qui enregistre toujours les anciens chemins. Les fichiers concernés apparaissent comme déplacés ; exécutez reconcile-moved-paths pour les mettre à jour.',
     cloudRenameFailed: 'Impossible de renommer sur le serveur',
+    movedAwayBlocked: "Le fichier a été déplacé - résolvez d'abord le déplacement en attente",
     checkIn: 'Archiver',
     checkOut: 'Extraire',
     download: 'Télécharger',
@@ -422,7 +423,29 @@ export const fr: TranslationDict = {
     cloud: 'Cloud',
     cloudNew: 'Nouveau (Cloud)',
     moved: 'Déplacé',
+    movedAway: 'Déplacé (ancien)',
     ignored: 'Ignoré',
+  },
+
+  fileStatus: {
+    deletedFromServer: 'Supprimé du serveur',
+    movedTooltip:
+      'Ce fichier se trouve ici maintenant, mais le coffre enregistre encore son ancien chemin',
+    movedAwayTooltip: 'Le coffre indique encore ce fichier ici, mais il a été déplacé',
+    movedAwayTooltipTo: 'Déplacé vers {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one:
+      '{{count}} déplacement de fichier en attente — cliquez pour vérifier',
+    pendingMovesBadgeTitle_other:
+      '{{count}} déplacements de fichiers en attente — cliquez pour vérifier',
+    disconnectWarningMoved_one:
+      '{{count}} fichier a été déplacé, et le coffre enregistre encore son ancien chemin',
+    disconnectWarningMoved_other:
+      '{{count}} fichiers ont été déplacés, et le coffre enregistre encore leurs anciens chemins',
+    disconnectWarningMovedHint:
+      'Mettez à jour le coffre pour correspondre, ou remettez les fichiers à leur place',
   },
 
   vaultSetup: {
@@ -508,6 +531,105 @@ export const fr: TranslationDict = {
     summaryNotAttempted: '{{count}} non tentés',
     summaryBlocked: '{{count}} extraits par d’autres',
     summarySkipped: '{{count}} ignorés',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: 'Veuillez d’abord vous connecter',
+    noVault: 'Aucun coffre connecté',
+    nothingToAdopt: 'Aucun fichier n’attend d’être renommé vers le chemin du serveur',
+
+    reportHeading:
+      '{{count}} fichiers se trouvent à un chemin local qui ne correspond plus à ce que le serveur enregistre pour eux.',
+    reportEligible: '{{count}} peuvent être renommés vers leur chemin serveur maintenant.',
+    reportBlocked:
+      '{{count}} sont extraits par d’autres personnes et resteront intacts sauf en cas de forçage :',
+    reportHolder: '{{count}} détenus par {{user}}',
+    unknownHolder: 'un autre utilisateur',
+    reportConflict: '{{count}} ignorés — un autre fichier occupe déjà la destination sur le disque :',
+    reportUnverified:
+      '{{count}} ignorés — le contenu du fichier ne correspond plus à ce que le serveur a enregistré pour lui, le déplacement ne peut donc pas être vérifié :',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… et {{count}} de plus',
+
+    dryRunSummary:
+      'Contrôle préalable uniquement : {{eligible}} fichiers sur {{total}} peuvent être renommés vers leur chemin serveur. Rien n’a été écrit.',
+    dryRunNote: 'Rapport uniquement. Rien n’est écrit sans --apply.',
+
+    refused:
+      'Rien n’a été renommé : {{count}} de ces fichiers sont extraits par d’autres personnes ({{holders}}). Le renommage n’affecte que votre propre disque et reste sûr dans tous les cas — demandez-leur d’abord, ou relancez avec --force pour les renommer aussi.',
+    nothingEligible: 'Rien ne peut être renommé : {{skipped}} ont été ignorés.',
+    confirmUnavailable:
+      'Rien n’a été renommé : cette commande nécessite une boîte de dialogue de confirmation et aucune n’était disponible.',
+
+    confirmTitle: 'Renommer {{count}} fichiers vers leur chemin serveur ?',
+    confirmMessage:
+      '{{count}} fichiers sur cet ordinateur seront renommés vers le chemin que le serveur enregistre déjà pour eux. Cela ne change que votre disque local — rien n’est écrit sur le serveur.',
+    confirmRemainder: '{{count}} autres restent inchangés ({{detail}}).',
+    confirmText: 'Renommer {{count}} fichiers',
+    declined: 'Annulé. Rien n’a été renommé.',
+
+    progress: 'Renommage de {{count}} fichiers vers leur chemin serveur…',
+    failureItem: '{{path}} : {{error}}',
+    unknownError: 'Erreur inconnue',
+    destinationAppeared: 'Un autre fichier est apparu à « {{path}} » depuis le contrôle préalable',
+    createFolderFailed: 'Impossible de créer le dossier de destination — {{error}}',
+
+    summaryComplete: '{{count}} fichiers renommés vers leur chemin serveur.',
+    summaryPartial:
+      '{{succeeded}} fichiers sur {{total}} renommés — {{leftovers}}. Relancez la commande pour terminer.',
+    summaryFailed: '{{count}} en échec',
+    summaryNotAttempted: '{{count}} non tentés',
+    summaryBlocked: '{{count}} extraits par d’autres',
+    summarySkipped: '{{count}} ignorés',
+  },
+
+  resolveMoves: {
+    title: 'Résoudre les déplacements en attente',
+    subtitle:
+      'Certains fichiers se trouvent à un chemin différent de celui enregistré par le coffre. Choisissez quel côté doit l’emporter.',
+    noPendingMoves: 'Il n’y a rien à résoudre — aucun déplacement en attente trouvé.',
+
+    scopeLabel: 'Afficher',
+    scopeFile: 'Ce fichier',
+    scopeFolder: 'Ce dossier',
+    scopeVault: 'Tout le coffre',
+    vaultWideNote:
+      'La résolution traite toujours tous les déplacements en attente du coffre, pas seulement ceux affichés ci-dessus.',
+
+    listHeading_one: '{{count}} déplacement en attente affiché',
+    listHeading_other: '{{count}} déplacements en attente affichés',
+    noMovesInScope: 'Aucun déplacement en attente dans ce périmètre.',
+    moreFiles: '… et {{count}} de plus',
+
+    reconcileOptionTitle: 'Conserver le nouvel emplacement et mettre à jour le coffre en conséquence',
+    reconcileOptionDescription:
+      'Écrit le chemin de votre disque sur le serveur. Tous les autres récupèrent le nouvel emplacement à leur prochaine synchronisation.',
+    adoptOptionTitle: 'Remettre les fichiers là où le coffre les situe',
+    adoptOptionDescription:
+      'Renomme les fichiers de votre disque vers le chemin déjà enregistré par le serveur. Rien n’est écrit sur le serveur.',
+
+    eligibleCount_one: '{{count}} fichier prêt',
+    eligibleCount_other: '{{count}} fichiers prêts',
+    blockedCount_one: '{{count}} fichier extrait par quelqu’un d’autre',
+    blockedCount_other: '{{count}} fichiers extraits par d’autres',
+    conflictCount_one: '{{count}} fichier ignoré — destination déjà occupée',
+    conflictCount_other: '{{count}} fichiers ignorés — destination déjà occupée',
+    unverifiedCount_one: '{{count}} fichier ignoré — le contenu ne correspond plus',
+    unverifiedCount_other: '{{count}} fichiers ignorés — le contenu ne correspond plus',
+    noEligible: 'Il n’y a encore rien à résoudre ici.',
+    unknownHolder: 'un autre utilisateur',
+
+    skipCheckedOutLabel_one:
+      'Ignorer le fichier extrait par quelqu’un d’autre et mettre à jour le reste',
+    skipCheckedOutLabel_other:
+      'Ignorer les {{count}} fichiers extraits par d’autres et mettre à jour le reste',
+    forceLabel_one: 'Renommer aussi le fichier extrait par quelqu’un d’autre',
+    forceLabel_other: 'Renommer aussi les {{count}} fichiers extraits par d’autres',
+
+    runReconcile: 'Mettre à jour le coffre',
+    runAdopt: 'Restaurer les fichiers locaux',
+
+    contextMenuItem: 'Résoudre les fichiers déplacés…',
   },
 
   hiddenFolders: {

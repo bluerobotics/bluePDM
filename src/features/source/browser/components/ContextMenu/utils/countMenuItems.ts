@@ -154,12 +154,15 @@ export function countDeleteActions(props: MenuItemCountProps): number {
   }
 
   const allFilesInSelection = getAllFilesFromSelection()
+  // Mirrors the 'moved_away' exclusion in DeleteActions.tsx - keeps this count in sync with
+  // what that component actually renders.
   const syncedFilesInDelete = allFilesInSelection.filter(
     (f) =>
       f.pdmData &&
       f.diffStatus !== 'cloud' &&
       f.diffStatus !== 'added' &&
-      f.diffStatus !== 'deleted_remote',
+      f.diffStatus !== 'deleted_remote' &&
+      f.diffStatus !== 'moved_away',
   )
   const unsyncedFilesInDelete = allFilesInSelection.filter(
     (f) => !f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote',
@@ -168,7 +171,9 @@ export function countDeleteActions(props: MenuItemCountProps): number {
   const hasLocalFiles = contextFiles.some((f) => f.diffStatus !== 'cloud')
   const hasSyncedFiles =
     syncedFilesInDelete.length > 0 ||
-    contextFiles.some((f) => f.pdmData && f.diffStatus !== 'cloud')
+    contextFiles.some(
+      (f) => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'moved_away',
+    )
   const hasUnsyncedLocalFiles =
     unsyncedFilesInDelete.length > 0 ||
     contextFiles.some(

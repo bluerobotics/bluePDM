@@ -39,6 +39,7 @@ import {
 import { isPathWithinDirectory } from '../../utils'
 import { checkinFile, softDeleteFile, deleteFolderByPath } from '../../supabase'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
+import { hasLocalContent } from '../../fileOperations/assemblyResolver'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
 import { clearVaultCache } from '../../cache/vaultFileCache'
@@ -1045,8 +1046,28 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
         const keptLocalFiles: LocalFile[] = []
         uniqueFiles.forEach((target, i) => {
           const localFile = target.localFile
-          if (serverResults[i] && localFile && localFile.diffStatus !== 'cloud') {
+          if (!serverResults[i] || !localFile) return
+
+          // `target.localFile` is looked up by the *server's* recorded path
+          // (`getServerDeletionTargets`), so for a moved file it is the `'moved_away'` stub, not
+          // the `'moved'` partner that actually has content - `hasLocalContent` excludes it.
+          // The real local copy the user asked to keep is the partner, found by
+          // `movedToRelativePath`; falling through to the stub itself would clear its pdmData
+          // and mark it 'added' at a path with nothing on disk, while leaving the partner's
+          // pdmData still pointing at the server record this branch just deleted.
+          if (hasLocalContent(localFile)) {
             keptLocalFiles.push(localFile)
+            return
+          }
+          if (localFile.diffStatus === 'moved_away' && localFile.movedToRelativePath) {
+            const partner = ctx.files.find(
+              (f) =>
+                !f.isDirectory &&
+                f.relativePath.replace(/\\/g, '/').toLowerCase() ===
+                  localFile.movedToRelativePath!.replace(/\\/g, '/').toLowerCase() &&
+                hasLocalContent(f),
+            )
+            if (partner) keptLocalFiles.push(partner)
           }
         })
 

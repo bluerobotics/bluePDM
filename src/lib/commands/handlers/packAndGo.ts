@@ -11,7 +11,7 @@
  */
 
 import type { Command, CommandResult, PackAndGoParams } from '../types'
-import { resolveAssociatedFiles } from '../../fileOperations/assemblyResolver'
+import { hasLocalContent, resolveAssociatedFiles } from '../../fileOperations/assemblyResolver'
 import { log } from '@/lib/logger'
 import { formatBytes } from '@/lib/utils'
 
@@ -62,6 +62,15 @@ export const packAndGoCommand: Command<PackAndGoParams> = {
     // Must be synced (have PDM data)
     if (!file.pdmData?.id) {
       return 'File must be synced to the vault before using Pack and Go'
+    }
+
+    // A 'moved_away' row is a stub at the server's recorded path for a file whose content now
+    // lives elsewhere on disk (see its 'moved' partner's relativePath, carried here directly as
+    // `movedToRelativePath`) - there is no local assembly at this row's own path to pack.
+    if (file.diffStatus === 'moved_away') {
+      return file.movedToRelativePath
+        ? `This file moved to "${file.movedToRelativePath}" - use Pack and Go from there`
+        : 'This file is not at this location anymore'
     }
 
     // Must have organization context (for resolver)
@@ -143,7 +152,7 @@ export const packAndGoCommand: Command<PackAndGoParams> = {
 
       // Add root file if it exists locally
       const rootLocalFile = resolveResult.allFiles.get(file.pdmData!.id)
-      if (rootLocalFile && rootLocalFile.diffStatus !== 'cloud') {
+      if (rootLocalFile && hasLocalContent(rootLocalFile)) {
         filesToZip.push({
           path: rootLocalFile.path,
           relativePath: rootLocalFile.relativePath,
@@ -153,7 +162,7 @@ export const packAndGoCommand: Command<PackAndGoParams> = {
       // Add all children that exist locally
       for (const child of resolveResult.children) {
         const childLocalFile = resolveResult.allFiles.get(child.id)
-        if (childLocalFile && childLocalFile.diffStatus !== 'cloud') {
+        if (childLocalFile && hasLocalContent(childLocalFile)) {
           filesToZip.push({
             path: childLocalFile.path,
             relativePath: childLocalFile.relativePath,
@@ -164,7 +173,7 @@ export const packAndGoCommand: Command<PackAndGoParams> = {
       // Add all drawings that exist locally
       for (const drawing of resolveResult.drawings) {
         const drawingLocalFile = resolveResult.allFiles.get(drawing.id)
-        if (drawingLocalFile && drawingLocalFile.diffStatus !== 'cloud') {
+        if (drawingLocalFile && hasLocalContent(drawingLocalFile)) {
           filesToZip.push({
             path: drawingLocalFile.path,
             relativePath: drawingLocalFile.relativePath,

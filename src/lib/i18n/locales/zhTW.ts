@@ -351,6 +351,7 @@ export const zhTW: TranslationDict = {
     serverPathUpdateFailed:
       '部分重新命名未同步到伺服器，伺服器仍記錄舊路徑。受影響的檔案顯示為已移動；請執行 reconcile-moved-paths 進行更新。',
     cloudRenameFailed: '無法在伺服器上重新命名',
+    movedAwayBlocked: '檔案已移動 - 請先解決待處理的移動',
     checkIn: '簽入',
     checkOut: '簽出',
     download: '下載',
@@ -409,7 +410,23 @@ export const zhTW: TranslationDict = {
     cloud: '雲端',
     cloudNew: '新增（雲端）',
     moved: '已移動',
+    movedAway: '已移出',
     ignored: '已忽略',
+  },
+
+  fileStatus: {
+    deletedFromServer: '已從伺服器刪除',
+    movedTooltip: '此檔案現在位於這裡，但庫仍記錄其舊路徑',
+    movedAwayTooltip: '庫仍將此檔案列在此處，但它已被移動',
+    movedAwayTooltipTo: '已移動到 {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} 個待處理的檔案移動 — 點擊查看',
+    pendingMovesBadgeTitle_other: '{{count}} 個待處理的檔案移動 — 點擊查看',
+    disconnectWarningMoved_one: '{{count}} 個檔案已移動，庫仍記錄其舊路徑',
+    disconnectWarningMoved_other: '{{count}} 個檔案已移動，庫仍記錄其舊路徑',
+    disconnectWarningMovedHint: '更新庫以匹配，或將檔案移回原處',
   },
 
   vaultSetup: {
@@ -488,6 +505,94 @@ export const zhTW: TranslationDict = {
     summaryNotAttempted: '{{count}} 個未嘗試',
     summaryBlocked: '{{count}} 個被他人簽出',
     summarySkipped: '{{count}} 個已略過',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: '請先登入',
+    noVault: '未連線任何庫',
+    nothingToAdopt: '沒有檔案等待重新命名回伺服器記錄的路徑',
+
+    reportHeading: '有 {{count}} 個檔案所在的本機路徑已與伺服器為其記錄的路徑不一致。',
+    reportEligible: '其中 {{count}} 個現在可以重新命名回伺服器路徑。',
+    reportBlocked: '有 {{count}} 個已被他人簽出，除非強制執行，否則將保持不變：',
+    reportHolder: '{{count}} 個由 {{user}} 持有',
+    unknownHolder: '其他使用者',
+    reportConflict: '略過 {{count}} 個 — 磁碟上的目的位置已被另一個檔案佔用：',
+    reportUnverified:
+      '略過 {{count}} 個 — 檔案內容與伺服器所記錄的不再一致，因此無法驗證此次移動：',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… 還有 {{count}} 個',
+
+    dryRunSummary: '僅預檢：{{total}} 個檔案中有 {{eligible}} 個可以重新命名回伺服器路徑。未寫入任何內容。',
+    dryRunNote: '僅產生報告。未加 --apply 不會寫入任何內容。',
+
+    refused:
+      '未重新命名任何檔案：其中 {{count}} 個檔案已被他人簽出（{{holders}}）。此重新命名只影響您自己的磁碟，無論如何都是安全的 — 請先詢問他們，或使用 --force 重新執行以同時重新命名這些檔案。',
+    nothingEligible: '無法重新命名任何檔案：{{skipped}} 個被略過。',
+    confirmUnavailable: '未重新命名任何檔案：此命令需要確認對話框，但目前無可用對話框。',
+
+    confirmTitle: '將 {{count}} 個檔案重新命名回伺服器路徑？',
+    confirmMessage:
+      '此電腦上的 {{count}} 個檔案將被重新命名為伺服器已為其記錄的路徑。這只會變更您的本機磁碟 — 不會向伺服器寫入任何內容。',
+    confirmRemainder: '另有 {{count}} 個保持不變（{{detail}}）。',
+    confirmText: '重新命名 {{count}} 個檔案',
+    declined: '已取消。未重新命名任何檔案。',
+
+    progress: '正在將 {{count}} 個檔案重新命名回伺服器路徑…',
+    failureItem: '{{path}}：{{error}}',
+    unknownError: '未知錯誤',
+    destinationAppeared: '預檢之後，另一個檔案出現在了「{{path}}」',
+    createFolderFailed: '無法建立目的資料夾 — {{error}}',
+
+    summaryComplete: '已將 {{count}} 個檔案重新命名回伺服器路徑。',
+    summaryPartial: '已重新命名 {{total}} 個檔案中的 {{succeeded}} 個 — {{leftovers}}。請再次執行以完成。',
+    summaryFailed: '{{count}} 個失敗',
+    summaryNotAttempted: '{{count}} 個未嘗試',
+    summaryBlocked: '{{count}} 個被他人簽出',
+    summarySkipped: '{{count}} 個已略過',
+  },
+
+  resolveMoves: {
+    title: '解決待處理的移動',
+    subtitle: '有些檔案所在的路徑與庫記錄的不同。請選擇應以哪一側為準。',
+    noPendingMoves: '沒有需要解決的內容 — 未找到待處理的移動。',
+
+    scopeLabel: '顯示',
+    scopeFile: '此檔案',
+    scopeFolder: '此資料夾',
+    scopeVault: '整個庫',
+    vaultWideNote: '解決操作始終會處理庫中所有待處理的移動，而不僅僅是上面顯示的這些。',
+
+    listHeading_one: '已顯示 {{count}} 個待處理的移動',
+    listHeading_other: '已顯示 {{count}} 個待處理的移動',
+    noMovesInScope: '此範圍內沒有待處理的移動。',
+    moreFiles: '… 還有 {{count}} 個',
+
+    reconcileOptionTitle: '保留新位置，並更新庫以符合',
+    reconcileOptionDescription: '將您磁碟上的路徑寫入伺服器。其他人會在下次同步時取得新位置。',
+    adoptOptionTitle: '將檔案放回庫所記錄的位置',
+    adoptOptionDescription: '將磁碟上的檔案重新命名回伺服器已記錄的路徑。不會向伺服器寫入任何內容。',
+
+    eligibleCount_one: '{{count}} 個檔案已就緒',
+    eligibleCount_other: '{{count}} 個檔案已就緒',
+    blockedCount_one: '{{count}} 個檔案被他人簽出',
+    blockedCount_other: '{{count}} 個檔案被他人簽出',
+    conflictCount_one: '略過 {{count}} 個 — 目的位置已被佔用',
+    conflictCount_other: '略過 {{count}} 個 — 目的位置已被佔用',
+    unverifiedCount_one: '略過 {{count}} 個 — 內容已不再相符',
+    unverifiedCount_other: '略過 {{count}} 個 — 內容已不再相符',
+    noEligible: '目前這裡還沒有可以解決的內容。',
+    unknownHolder: '其他使用者',
+
+    skipCheckedOutLabel_one: '略過被他人簽出的檔案，並更新其餘檔案',
+    skipCheckedOutLabel_other: '略過被他人簽出的 {{count}} 個檔案，並更新其餘檔案',
+    forceLabel_one: '同時重新命名被他人簽出的檔案',
+    forceLabel_other: '同時重新命名被他人簽出的 {{count}} 個檔案',
+
+    runReconcile: '更新庫',
+    runAdopt: '還原本機檔案',
+
+    contextMenuItem: '解決已移動的檔案…',
   },
 
   hiddenFolders: {

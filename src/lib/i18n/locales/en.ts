@@ -389,6 +389,7 @@ export const en: TranslationDict = {
     serverPathUpdateFailed:
       'Some renames did not reach the server, which still records the old paths. Affected files show as moved; run reconcile-moved-paths to update them.',
     cloudRenameFailed: 'Could not rename on the server',
+    movedAwayBlocked: 'File has moved - resolve the pending move first',
     checkIn: 'Check In',
     checkOut: 'Check Out',
     download: 'Download',
@@ -467,7 +468,28 @@ export const en: TranslationDict = {
     cloud: 'Cloud',
     cloudNew: 'New (Cloud)',
     moved: 'Moved',
+    movedAway: 'Moved Away',
     ignored: 'Ignored',
+  },
+
+  // File status tooltips - explorer/browser surfacing of a pending move (diffStatus.moved /
+  // diffStatus.movedAway carry the short label; these carry the explanation).
+  fileStatus: {
+    deletedFromServer: 'Deleted from server',
+    movedTooltip: 'This file lives here now, but the vault still records it at its old path',
+    movedAwayTooltip: 'The vault still lists this file here, but it has moved',
+    movedAwayTooltipTo: 'Moved to {{path}}',
+  },
+
+  // Explorer tree - pending-move folder badge and disconnect-vault warning
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} pending file move — click to review',
+    pendingMovesBadgeTitle_other: '{{count}} pending file moves — click to review',
+    disconnectWarningMoved_one:
+      '{{count}} file moved, and the vault still records its old path',
+    disconnectWarningMoved_other:
+      '{{count}} files moved, and the vault still records their old paths',
+    disconnectWarningMovedHint: 'Update the vault to match, or put the files back',
   },
 
   // Vault Setup Dialog
@@ -1531,6 +1553,108 @@ export const en: TranslationDict = {
     summaryNotAttempted: '{{count}} not attempted',
     summaryBlocked: '{{count}} checked out by others',
     summarySkipped: '{{count}} skipped',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: 'Please sign in first',
+    noVault: 'No vault is connected',
+    nothingToAdopt: 'No file is waiting to be renamed back to its server path',
+
+    reportHeading:
+      '{{count}} files sit at a local path that no longer matches what the server records for them.',
+    reportEligible: '{{count}} can be renamed back to their server path now.',
+    reportBlocked: '{{count}} are checked out by other people and will be left alone unless forced:',
+    reportHolder: '{{count}} held by {{user}}',
+    unknownHolder: 'another user',
+    reportConflict: '{{count}} skipped — another file already sits at the destination on disk:',
+    reportUnverified:
+      '{{count}} skipped — the file’s contents no longer match what the server recorded for it, so the move cannot be verified:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… and {{count}} more',
+
+    dryRunSummary:
+      'Pre-flight only: {{eligible}} of {{total}} files can be renamed back to their server path. Nothing was written.',
+    dryRunNote: 'Reporting only. Nothing is written without --apply.',
+
+    refused:
+      'Nothing was renamed: {{count}} of these files are checked out by other people ({{holders}}). The rename only touches your own disk and is safe either way — ask them first, or re-run with --force to rename them too.',
+    nothingEligible: 'Nothing can be renamed: {{skipped}} were skipped.',
+    confirmUnavailable:
+      'Nothing was renamed: this command needs a confirmation dialog and none was available.',
+
+    confirmTitle: 'Rename {{count}} files back to their server path?',
+    confirmMessage:
+      '{{count}} files on this computer will be renamed back to the path the server already records for them. This only changes your local disk — nothing is written to the server.',
+    confirmRemainder: '{{count}} more are left unchanged ({{detail}}).',
+    confirmText: 'Rename {{count}} Files',
+    declined: 'Cancelled. Nothing was renamed.',
+
+    progress: 'Renaming {{count}} files to their server paths…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Unknown error',
+    destinationAppeared: 'Another file appeared at "{{path}}" since the pre-flight ran',
+    createFolderFailed: 'Failed to create the destination folder — {{error}}',
+
+    summaryComplete: 'Renamed {{count}} files back to their server path.',
+    summaryPartial:
+      'Renamed {{succeeded}} of {{total}} files — {{leftovers}}. Run it again to finish.',
+    summaryFailed: '{{count}} failed',
+    summaryNotAttempted: '{{count}} not attempted',
+    summaryBlocked: '{{count}} checked out by others',
+    summarySkipped: '{{count}} skipped',
+  },
+
+  // The resolve-moves dialog — the discoverable, two-directional entry point to
+  // reconcile-moved-paths and adopt-server-paths. Each command still owns its own confirmation
+  // and result text (reconcileMovedPaths.* / adoptServerPaths.*); these keys are only the
+  // dialog's own framing: plain-language direction names, the scoped from/to preview, and the
+  // preflight counts shown before either command is asked to run.
+  resolveMoves: {
+    title: 'Resolve Pending Moves',
+    subtitle:
+      'Some files sit at a different path than the vault records. Choose which side should win.',
+    noPendingMoves: 'There is nothing to resolve — no pending moves were found.',
+
+    scopeLabel: 'Show',
+    scopeFile: 'This file',
+    scopeFolder: 'This folder',
+    scopeVault: 'Whole vault',
+    vaultWideNote:
+      'Resolving always processes every pending move in the vault, not just the ones shown above.',
+
+    listHeading_one: '{{count}} pending move shown',
+    listHeading_other: '{{count}} pending moves shown',
+    noMovesInScope: 'No pending moves in this scope.',
+    moreFiles: '…and {{count}} more',
+
+    reconcileOptionTitle: 'Keep the new location, and update the vault to match',
+    reconcileOptionDescription:
+      'Writes the path on your disk to the server. Everyone else picks up the new location on their next sync.',
+    adoptOptionTitle: 'Put the files back where the vault has them',
+    adoptOptionDescription:
+      'Renames the files on your disk back to the path the server already records. Nothing is written to the server.',
+
+    eligibleCount_one: '{{count}} file ready',
+    eligibleCount_other: '{{count}} files ready',
+    blockedCount_one: '{{count}} file checked out by someone else',
+    blockedCount_other: '{{count}} files checked out by others',
+    conflictCount_one: '{{count}} file skipped — destination already occupied',
+    conflictCount_other: '{{count}} files skipped — destination already occupied',
+    unverifiedCount_one: '{{count}} file skipped — contents no longer match',
+    unverifiedCount_other: '{{count}} files skipped — contents no longer match',
+    noEligible: 'Nothing here can be resolved yet.',
+    unknownHolder: 'another user',
+
+    skipCheckedOutLabel_one: 'Skip the file checked out by someone else, and update the rest',
+    skipCheckedOutLabel_other:
+      'Skip the {{count}} files checked out by others, and update the rest',
+    forceLabel_one: 'Also rename the file checked out by someone else',
+    forceLabel_other: 'Also rename the {{count}} files checked out by others',
+
+    runReconcile: 'Update the Vault',
+    runAdopt: 'Restore Local Files',
+
+    contextMenuItem: 'Resolve Moved Files…',
   },
 
   // Admin-only folder visibility (decluttering, not access control)

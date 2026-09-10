@@ -38,6 +38,7 @@ export interface DialogState {
   shareLink: boolean
   addToECO: boolean
   matchGhostFile: boolean
+  resolveMoves: boolean
 }
 
 export type DialogName = keyof DialogState

@@ -1655,6 +1655,19 @@ input::placeholder {
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.35);
 }
 
+/* moved_away is a stub, not a file: same hue as .diff-moved so the pair reads as one
+   situation, but lighter fill, a dashed rather than solid left border, and no hover-darken -
+   it is a signpost pointing at .diff-moved, never a peer status competing with it. */
+.diff-moved-away {
+  background: rgba(96, 165, 250, 0.06) !important;
+  border-left: 3px dashed rgba(96, 165, 250, 0.5) !important;
+}
+
+.diff-moved-away td {
+  color: var(--plm-fg-muted);
+  font-style: italic;
+}
+
 /* .diff-deleted styling removed - was confusing for moved files */
 
 .diff-outdated {
@@ -1707,6 +1720,18 @@ tr.selected.diff-cloud {
 
 .sidebar-diff-moved {
   background: rgba(96, 165, 250, 0.1);
+}
+
+/* moved_away is a stub, not a file - fainter fill than .sidebar-diff-moved and no icon
+   treatment, so an ancestor folder that legitimately shows both counts never reads as two
+   separate problems. */
+.sidebar-diff-moved-away {
+  background: rgba(96, 165, 250, 0.05);
+}
+
+.sidebar-diff-moved-away span:not(.tree-item-icon) {
+  font-style: italic;
+  color: var(--plm-fg-muted);
 }
 
 /* .sidebar-diff-deleted styling removed - was confusing for moved files */

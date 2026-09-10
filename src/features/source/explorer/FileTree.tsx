@@ -24,6 +24,7 @@ import {
   Filter,
   CloudOff,
   FolderMinus,
+  Move,
 } from 'lucide-react'
 // Shared file/folder components
 import { FileIcon, type CheckoutUser } from '@/components/shared/FileItem'
@@ -34,9 +35,11 @@ import {
 } from '@/lib/checkout/checkoutDisplay'
 // Use command system for PDM operations
 import { executeCommand } from '@/lib/commands'
+import { t } from '@/lib/i18n'
 import { usePDMStore, LocalFile, ConnectedVault } from '@/stores/pdmStore'
 // Context menu from feature module
 import { FileContextMenu } from '@/features/source/context-menu'
+import { ResolveMovedFilesDialog } from '@/features/source/context-menu/dialogs'
 // Selection box overlay from browser feature
 import { SelectionBoxOverlay } from '@/features/source/browser'
 // FileTree sub-components
@@ -264,6 +267,7 @@ export function FileTree({ onRefresh }: FileTreeProps) {
   const [disconnectingVault, setDisconnectingVault] = useState<ConnectedVault | null>(null)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [showVaultProperties, setShowVaultProperties] = useState<ConnectedVault | null>(null)
+  const [resolvingMovesFolder, setResolvingMovesFolder] = useState<LocalFile | null>(null)
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
   const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
   const [platform, setPlatform] = useState<string>('win32')
@@ -353,10 +357,13 @@ export function FileTree({ onRefresh }: FileTreeProps) {
       (f) => !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.diffStatus !== 'deleted',
     )
     const newFiles = files.filter((f) => !f.isDirectory && f.diffStatus === 'added')
-    const modifiedFiles = files.filter(
-      (f) => !f.isDirectory && (f.diffStatus === 'modified' || f.diffStatus === 'moved'),
-    )
-    return { checkedOutFiles, newFiles, modifiedFiles }
+    const modifiedFiles = files.filter((f) => !f.isDirectory && f.diffStatus === 'modified')
+    // Moved files are their own bucket, not modified files - a folder rename does not touch
+    // file content, and calling it "modified" is the single most misleading label this warning
+    // could apply. `moved_away` stubs are excluded: they carry no local file, so disconnecting
+    // the vault cannot lose anything at the stub's path.
+    const movedFiles = files.filter((f) => !f.isDirectory && f.diffStatus === 'moved')
+    return { checkedOutFiles, newFiles, modifiedFiles, movedFiles }
   }
 
   const handleVaultContextMenu = (e: React.MouseEvent, vault: ConnectedVault) => {
@@ -667,6 +674,14 @@ export function FileTree({ onRefresh }: FileTreeProps) {
       updateTabFolder,
     ],
   )
+
+  // Handle a click on a folder's pending-move badge: open the resolve-moves dialog scoped to
+  // this folder, offering "keep the new location" / "put the files back where the vault has
+  // them" (see `.cursor/plans/pending-move-visibility-agent2-report.md` for why this is the
+  // mount point, and `pending-move-visibility-agent4-report.md` for the dialog itself).
+  const handleResolveMoves = useCallback((file: LocalFile) => {
+    setResolvingMovesFolder(file)
+  }, [])
 
   // Handle double-click on tree items
   const handleTreeItemDoubleClick = useCallback(
@@ -1080,6 +1095,7 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                         file.isDirectory && isMarkedHidden(file.relativePath)
                       }
                       onRefresh={onRefresh}
+                      onResolveMoves={handleResolveMoves}
                       selectedFiles={selectedFiles}
                       selectedCloudOnlyFiles={categories.cloudOnly}
                       selectedUploadableFiles={categories.uploadable}
@@ -1428,9 +1444,13 @@ export function FileTree({ onRefresh }: FileTreeProps) {
 
               <div className="p-6 space-y-4">
                 {(() => {
-                  const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                  const { checkedOutFiles, newFiles, modifiedFiles, movedFiles } =
+                    getDisconnectWarnings()
                   const hasBlockingIssues =
-                    checkedOutFiles.length > 0 || newFiles.length > 0 || modifiedFiles.length > 0
+                    checkedOutFiles.length > 0 ||
+                    newFiles.length > 0 ||
+                    modifiedFiles.length > 0 ||
+                    movedFiles.length > 0
 
                   return (
                     <>
@@ -1478,6 +1498,21 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                               </p>
                             </div>
                           )}
+
+                          {movedFiles.length > 0 && (
+                            <div className="bg-plm-bg/50 p-2 rounded">
+                              <p className="text-sm text-plm-fg flex items-center gap-2">
+                                <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+                                {t(
+                                  `explorer.disconnectWarningMoved_${movedFiles.length === 1 ? 'one' : 'other'}`,
+                                  { count: movedFiles.length },
+                                )}
+                              </p>
+                              <p className="text-xs text-plm-fg-muted ml-4">
+                                {t('explorer.disconnectWarningMovedHint')}
+                              </p>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="p-4 bg-plm-success/10 border border-plm-success/30 rounded-lg">
@@ -1505,20 +1540,24 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                   disabled={isDisconnecting}
                 >
                   {(() => {
-                    const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                    const { checkedOutFiles, newFiles, modifiedFiles, movedFiles } =
+                      getDisconnectWarnings()
                     return checkedOutFiles.length > 0 ||
                       newFiles.length > 0 ||
-                      modifiedFiles.length > 0
+                      modifiedFiles.length > 0 ||
+                      movedFiles.length > 0
                       ? 'Close'
                       : 'Cancel'
                   })()}
                 </button>
                 {(() => {
-                  const { checkedOutFiles, newFiles, modifiedFiles } = getDisconnectWarnings()
+                  const { checkedOutFiles, newFiles, modifiedFiles, movedFiles } =
+                    getDisconnectWarnings()
                   const canDisconnect =
                     checkedOutFiles.length === 0 &&
                     newFiles.length === 0 &&
-                    modifiedFiles.length === 0
+                    modifiedFiles.length === 0 &&
+                    movedFiles.length === 0
 
                   return canDisconnect ? (
                     <button
@@ -1590,6 +1629,9 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                   const vaultFolders = files.filter((f) => f.isDirectory)
                   const syncedFiles = vaultFiles.filter((f) => !f.diffStatus)
                   const modifiedFiles = vaultFiles.filter((f) => f.diffStatus === 'modified')
+                  // 'moved_away' stubs are excluded - each is a shadow of the 'moved' row for
+                  // the same file at its new location, not a second file to report.
+                  const movedFiles = vaultFiles.filter((f) => f.diffStatus === 'moved')
                   const addedFiles = vaultFiles.filter((f) => f.diffStatus === 'added')
                   const cloudFiles = vaultFiles.filter((f) => f.diffStatus === 'cloud')
                   const conflictFiles = vaultFiles.filter((f) => f.diffStatus === 'outdated')
@@ -1657,6 +1699,19 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                               {modifiedFiles.length}
                             </span>
                           </div>
+                          {movedFiles.length > 0 && (
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Move size={14} className="text-blue-400" />
+                                <span className="text-sm text-plm-fg">
+                                  {t('diffStatus.moved')}
+                                </span>
+                              </div>
+                              <span className="text-sm font-medium text-plm-fg">
+                                {movedFiles.length}
+                              </span>
+                            </div>
+                          )}
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <Plus size={14} className="text-plm-accent" />
@@ -1798,6 +1853,13 @@ export function FileTree({ onRefresh }: FileTreeProps) {
             </div>
           </div>
         )}
+
+        <ResolveMovedFilesDialog
+          isOpen={resolvingMovesFolder !== null}
+          onClose={() => setResolvingMovesFolder(null)}
+          contextFile={resolvingMovesFolder}
+          onRefresh={onRefresh}
+        />
       </div>
     </TreeHoverProvider>
   )

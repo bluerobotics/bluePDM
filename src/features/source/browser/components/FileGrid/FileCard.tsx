@@ -2,7 +2,7 @@ import { memo, useState, useEffect, useRef } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
 import type { OperationType } from '@/stores/types'
 import { useFileCardStatus, useThumbnail } from './hooks'
-import { CheckoutBadge, CloudStatusBadge } from './badges'
+import { CheckoutBadge, CloudStatusBadge, DiffStatusBadge } from './badges'
 import { FileCardIcon } from './FileCardIcon'
 import { FileCardActions } from './FileCardActions'
 import { FileCardMetadata } from './FileCardMetadata'
@@ -133,8 +133,9 @@ export const FileCard = memo(
             isFolder={file.isDirectory}
           />
 
-          {/* Status indicators for folders only - files show status via action buttons */}
-          {file.isDirectory && (
+          {/* Status indicators for folders - files show most status via action buttons, but
+              a pending move has no action button of its own, so it gets a badge here too. */}
+          {file.isDirectory ? (
             <div className="flex items-center" style={{ gap: spacing }}>
               <CloudStatusBadge
                 cloudFilesCount={status.cloudFilesCount}
@@ -143,6 +144,13 @@ export const FileCard = memo(
                 spacing={spacing}
               />
             </div>
+          ) : (
+            <DiffStatusBadge
+              diffStatus={file.diffStatus}
+              statusIconSize={statusIconSize}
+              hasCheckoutUsers={status.checkoutUsers.length > 0}
+              movedToRelativePath={file.movedToRelativePath}
+            />
           )}
         </div>
 
@@ -224,6 +232,7 @@ export const FileCard = memo(
       if (prev.path !== next.path) return false
       if (prev.name !== next.name) return false
       if (prev.diffStatus !== next.diffStatus) return false
+      if (prev.movedToRelativePath !== next.movedToRelativePath) return false
       if (prev.pdmData?.checked_out_by !== next.pdmData?.checked_out_by) return false
       if (prev.pdmData?.version !== next.pdmData?.version) return false
       if (prev.pdmData?.workflow_state_id !== next.pdmData?.workflow_state_id) return false

@@ -75,12 +75,17 @@ export function DeleteActions({
   }
 
   const allFilesInSelection = getAllFilesFromSelection()
+  // Excludes 'moved_away' - the actual local-delete/server-delete targets are re-derived
+  // downstream via getLocalDeletionItems/getServerDeletionTargets (which already exclude the
+  // stub), but these counts drive the menu labels directly, so they must not count a stub
+  // that has no local file behind it and shares pdmData.id with its 'moved' partner.
   const syncedFilesInDelete = allFilesInSelection.filter(
     (f) =>
       f.pdmData &&
       f.diffStatus !== 'cloud' &&
       f.diffStatus !== 'added' &&
-      f.diffStatus !== 'deleted_remote',
+      f.diffStatus !== 'deleted_remote' &&
+      f.diffStatus !== 'moved_away',
   )
   const unsyncedFilesInDelete = allFilesInSelection.filter(
     (f) => !f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote',
@@ -89,7 +94,9 @@ export function DeleteActions({
   const hasLocalFiles = contextFiles.some((f) => f.diffStatus !== 'cloud')
   const hasSyncedFiles =
     syncedFilesInDelete.length > 0 ||
-    contextFiles.some((f) => f.pdmData && f.diffStatus !== 'cloud')
+    contextFiles.some(
+      (f) => f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'moved_away',
+    )
   const hasUnsyncedLocalFiles =
     unsyncedFilesInDelete.length > 0 ||
     contextFiles.some(

@@ -1,121 +1,17 @@
 /**
  * File status utilities for the file browser
+ *
+ * NOTE: A parallel `getDiffStatusClass` / `getDiffStatusCardClass` / `getDiffStatusLabel` /
+ * `getDiffStatusColor` set previously lived here. None of them were ever called from a
+ * component (verified before the 4.3.3 pending-move-visibility work), so they were removed
+ * rather than extended with a `'moved_away'` case. The live equivalents are:
+ * - List row CSS class: the `diffClass` computed in `FileList/buildVirtualRows.ts`
+ * - Tree row CSS class: `DIFF_STATUS_CLASS_PREFIX` + `diffStatus` in
+ *   `explorer/file-tree/constants.ts` / `VirtualizedTreeRow.tsx`
+ * - Grid card ring class: `getDiffClass` in `FileGrid/hooks/useFileCardStatus.ts`
+ * - Human labels: `t('diffStatus.<status>')` from `src/lib/i18n`
  */
 import type { LocalFile } from '@/stores/pdmStore'
-
-export type DiffStatus =
-  | 'added'
-  | 'modified'
-  | 'moved'
-  | 'deleted'
-  | 'deleted_remote'
-  | 'outdated'
-  | 'cloud'
-  | 'ignored'
-  | 'synced'
-  | undefined
-
-/**
- * Get the CSS class for a diff status (for row highlighting)
- */
-export function getDiffStatusClass(status: DiffStatus): string {
-  switch (status) {
-    case 'added':
-      return 'diff-added'
-    case 'modified':
-      return 'diff-modified'
-    case 'moved':
-      return 'diff-moved'
-    case 'deleted':
-      return 'diff-deleted'
-    case 'deleted_remote':
-      return 'diff-deleted-remote'
-    case 'outdated':
-      return 'diff-outdated'
-    case 'cloud':
-      return 'diff-cloud'
-    case 'ignored':
-      return 'diff-ignored'
-    default:
-      return ''
-  }
-}
-
-/**
- * Get the ring/background style for card view based on diff status
- */
-export function getDiffStatusCardClass(status: DiffStatus): string {
-  switch (status) {
-    case 'modified':
-      return 'ring-1 ring-yellow-500/50 bg-yellow-500/5'
-    case 'moved':
-      return 'ring-1 ring-blue-500/50 bg-blue-500/5'
-    case 'deleted':
-      return 'ring-1 ring-red-500/50 bg-red-500/5'
-    case 'outdated':
-      return 'ring-1 ring-purple-500/50 bg-purple-500/5'
-    case 'cloud':
-      return 'ring-1 ring-plm-fg-muted/30 bg-plm-fg-muted/5'
-    default:
-      return ''
-  }
-}
-
-/**
- * Get a human-readable label for a diff status
- */
-export function getDiffStatusLabel(status: DiffStatus): string {
-  switch (status) {
-    case 'added':
-      return 'Local only'
-    case 'modified':
-      return 'Modified'
-    case 'moved':
-      return 'Moved'
-    case 'deleted':
-      return 'Deleted'
-    case 'deleted_remote':
-      return 'Deleted from server'
-    case 'outdated':
-      return 'Outdated'
-    case 'cloud':
-      return 'Cloud only'
-    case 'ignored':
-      return 'Ignored'
-    case 'synced':
-      return 'Synced'
-    default:
-      return ''
-  }
-}
-
-/**
- * Get the color for a diff status
- */
-export function getDiffStatusColor(status: DiffStatus): string {
-  switch (status) {
-    case 'added':
-      return '#9ca3af' // gray
-    case 'modified':
-      return '#facc15' // yellow
-    case 'moved':
-      return '#3b82f6' // blue
-    case 'deleted':
-      return '#ef4444' // red
-    case 'deleted_remote':
-      return '#ef4444' // red
-    case 'outdated':
-      return '#a855f7' // purple
-    case 'cloud':
-      return '#6b7280' // gray
-    case 'ignored':
-      return '#6b7280' // gray
-    case 'synced':
-      return '#22c55e' // green
-    default:
-      return '#6b7280' // gray
-  }
-}
 
 /**
  * Check if a file is synced (exists on server and locally with no changes)

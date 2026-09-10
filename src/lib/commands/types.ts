@@ -563,6 +563,33 @@ export interface ReconcileMovedPathsParams {
   skipCheckedOut?: boolean
 }
 
+/**
+ * Parameters for the adopt-server-paths command.
+ *
+ * The inverse of `reconcile-moved-paths`: renames every `diffStatus === 'moved'` file on disk
+ * back to the path its server row already records. Writes only to the local disk and the local
+ * sync index - no RPC, no `files` or `folders` write. Like reconcile, the command takes no
+ * selection: the targets are whatever the vault holds.
+ */
+export interface AdoptServerPathsParams {
+  /**
+   * Write. Omitted or false performs the pre-flight and reports without touching disk.
+   *
+   * Named for the write rather than for the dry run so that no caller can write by forgetting a
+   * flag, matching `reconcile-moved-paths`.
+   */
+  apply?: boolean
+
+  /**
+   * Also rename targets held by another user's checkout.
+   *
+   * The rename only touches this user's own disk, so it is safe regardless of who holds the
+   * checkout - but a checkout is still evidence someone else's move may be in flight, so these
+   * targets are held back and reported by default. Opting in is the deliberate second choice.
+   */
+  force?: boolean
+}
+
 // ============================================
 // Command Definition
 // ============================================
@@ -597,6 +624,7 @@ export type CommandId =
   | 'pack-and-go'
   | 'match-ghost-file'
   | 'reconcile-moved-paths'
+  | 'adopt-server-paths'
 
 export interface Command<TParams = unknown> {
   // Identifier
@@ -650,6 +678,7 @@ export type CommandMap = {
   'pack-and-go': Command<PackAndGoParams>
   'match-ghost-file': Command<MatchGhostFileParams>
   'reconcile-moved-paths': Command<ReconcileMovedPathsParams>
+  'adopt-server-paths': Command<AdoptServerPathsParams>
 }
 
 // ============================================
@@ -681,15 +710,18 @@ export function getFilesInFolder(files: LocalFile[], folderPath: string): LocalF
 
 // Helper to get synced files from selection (handles folders)
 // "Synced" means files that exist BOTH locally AND on server
-// Excludes: cloud, deleted (these only exist on server, not locally)
+// Excludes: cloud, deleted, moved_away (these only exist on server, not locally)
 export function getSyncedFilesFromSelection(
   files: LocalFile[],
   selection: LocalFile[],
 ): LocalFile[] {
   const result: LocalFile[] = []
 
-  // Statuses that indicate file doesn't exist locally (server-only)
-  const serverOnlyStatuses = ['cloud', 'deleted']
+  // Statuses that indicate file doesn't exist locally (server-only). A `moved_away` row is a
+  // stub sharing `pdmData.id` (and thus checkout state) with its `moved` partner at a
+  // different path - without this it can be checked out or checked in through the stub by
+  // selecting the old-location folder rather than the file itself.
+  const serverOnlyStatuses = ['cloud', 'deleted', 'moved_away']
 
   for (const item of selection) {
     if (item.isDirectory) {
@@ -790,6 +822,13 @@ export function getOrphanedFilesFromSelection(
 // Includes BOTH:
 // 1. Synced files (exist locally) checked out by user - will download server version
 // 2. Deleted files (don't exist locally) checked out by user - will just release checkout
+//
+// Excludes 'moved_away' stubs: a stub shares `pdmData.id` (and checkout state) with its
+// 'moved' partner row at a different path, so without this a folder selection covering both
+// (the file moved to a sibling under the same selected ancestor) would enumerate one logical
+// checkout as two entries and hand the same file to `discard.ts`'s batch twice. The real
+// 'moved' row already carries everything discard needs; the stub adds nothing but the
+// duplicate.
 export function getDiscardableFilesFromSelection(
   files: LocalFile[],
   selection: LocalFile[],
@@ -802,7 +841,11 @@ export function getDiscardableFilesFromSelection(
       const filesInFolder = getFilesInFolder(files, item.relativePath)
       // Include synced files and 'deleted' files checked out by user
       const discardable = filesInFolder.filter(
-        (f) => f.pdmData?.id && f.pdmData.checked_out_by === userId && f.diffStatus !== 'cloud',
+        (f) =>
+          f.pdmData?.id &&
+          f.pdmData.checked_out_by === userId &&
+          f.diffStatus !== 'cloud' &&
+          f.diffStatus !== 'moved_away',
       )
       result.push(...discardable)
     } else if (item.pdmData?.id) {
@@ -812,7 +855,8 @@ export function getDiscardableFilesFromSelection(
       if (
         freshFile &&
         freshFile.pdmData?.checked_out_by === userId &&
-        freshFile.diffStatus !== 'cloud'
+        freshFile.diffStatus !== 'cloud' &&
+        freshFile.diffStatus !== 'moved_away'
       ) {
         result.push(freshFile)
       }
@@ -930,7 +974,11 @@ export function getServerDeletionTargets(
  * children. When these disagreed, a folder whose stored spelling differed in case from its
  * children's left the files on disk while the records and the rows were both gone.
  *
- * Cloud-only items are skipped: there is nothing local to delete.
+ * Cloud-only items are skipped: there is nothing local to delete. `moved_away` stubs are
+ * skipped for the same reason - the stub sits at the server's path for a file whose content
+ * actually lives elsewhere on disk, so there is nothing at the stub's own path to delete.
+ * Deleting through it would resolve to an ENOENT no-op today, but that would rely on the
+ * filesystem for correctness rather than excluding it here.
  *
  * @param files - All local rows, searched for the contents of selected folders
  * @param selection - The items the user acted on
@@ -938,14 +986,17 @@ export function getServerDeletionTargets(
 export function getLocalDeletionItems(files: LocalFile[], selection: LocalFile[]): LocalFile[] {
   const items: LocalFile[] = []
 
+  const hasNoLocalContent = (f: LocalFile): boolean =>
+    f.diffStatus === 'cloud' || f.diffStatus === 'moved_away'
+
   for (const item of selection) {
-    if (item.diffStatus === 'cloud') continue
+    if (hasNoLocalContent(item)) continue
     items.push(item)
     if (!item.isDirectory) continue
 
     for (const file of files) {
       if (file.isDirectory) continue
-      if (file.diffStatus === 'cloud') continue
+      if (hasNoLocalContent(file)) continue
       if (isPathWithinDirectory(file.relativePath, item.relativePath)) items.push(file)
     }
   }

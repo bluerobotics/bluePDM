@@ -597,13 +597,14 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
 
       logDragDrop('Started dragging files', { fileName: file.name, isDirectory: file.isDirectory })
       // Get files to drag - now supports both files and folders
+      // 'cloud': nothing downloaded yet to drag. 'moved_away': a stub with no local file at
+      // all behind this row's path - same reasoning, same exclusion.
+      const isDraggable = (f: LocalFile) => f.diffStatus !== 'cloud' && f.diffStatus !== 'moved_away'
       let filesToDrag: LocalFile[]
       if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
-        // Multiple selection - include both files and folders (can't drag cloud-only files)
-        filesToDrag = files.filter(
-          (f) => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud',
-        )
-      } else if (file.diffStatus !== 'cloud') {
+        // Multiple selection - include both files and folders (except non-draggable statuses)
+        filesToDrag = files.filter((f) => selectedFiles.includes(f.path) && isDraggable(f))
+      } else if (isDraggable(file)) {
         filesToDrag = [file]
       } else {
         e.preventDefault()

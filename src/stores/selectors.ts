@@ -39,7 +39,10 @@ export function usePendingFiles() {
 }
 
 /**
- * Get files that need to be synced (added, modified, or deleted)
+ * Get files that need to be synced (added, modified, or deleted).
+ *
+ * Deliberately excludes 'moved_away': it is a stub shadowing a file already
+ * counted here as 'moved' at its new location, not separate work of its own.
  */
 export function useFilesNeedingSync() {
   const files = usePDMStore((s) => s.files)
@@ -111,6 +114,9 @@ export function useDiffStatusCounts() {
     let cloud = 0
     let cloudNew = 0
     let moved = 0
+    // The stub side of the same moves - never overlaps `moved`, since each moved
+    // file contributes to exactly one of the two, at different paths.
+    let movedAway = 0
 
     for (const file of files) {
       if (file.isDirectory) continue
@@ -133,10 +139,13 @@ export function useDiffStatusCounts() {
         case 'moved':
           moved++
           break
+        case 'moved_away':
+          movedAway++
+          break
       }
     }
 
-    return { added, modified, deleted, outdated, cloud, cloudNew, moved }
+    return { added, modified, deleted, outdated, cloud, cloudNew, moved, movedAway }
   }, [files])
 }
 

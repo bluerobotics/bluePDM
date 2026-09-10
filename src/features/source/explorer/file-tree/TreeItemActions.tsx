@@ -1,5 +1,5 @@
 // Inline action buttons for tree items
-import { Loader2 } from 'lucide-react'
+import { Loader2, ArrowLeftRight } from 'lucide-react'
 import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import { t } from '@/lib/i18n'
 import type { LocalFile } from '@/stores/pdmStore'
@@ -426,6 +426,44 @@ interface FolderActionButtonsProps {
   isOfflineMode: boolean
   // NOTE: allFiles prop removed for O(N) performance optimization.
   // We now use diffCounts (pre-computed) instead of filtering allFiles.
+  /**
+   * Called when the pending-move badge is clicked. Until the resolve-moves dialog exists,
+   * the caller wires this to "select this folder" so the badge is never a dead end; it will be
+   * rewired to open that dialog once it ships.
+   */
+  onResolveMoves?: (file: LocalFile) => void
+}
+
+interface FolderMovedBadgeProps {
+  onClick: (e: React.MouseEvent) => void
+  /** moved + movedAway, combined. See the comment at the call site for why these are summed. */
+  totalCount: number
+  title: string
+}
+
+/**
+ * Pending-move badge for a folder row - one combined count for `diffCounts.moved` and
+ * `diffCounts.movedAway` together.
+ *
+ * These two counts are two views of the same underlying moves (the file's new location and the
+ * stub left at its old one), so a folder that is a common ancestor of both sides of a move
+ * legitimately has both counts positive for what is, from the user's perspective, a single
+ * pending decision. Showing one badge with one number - rather than two badges, or a "moved: 1,
+ * away: 1" pair - keeps that from reading as two separate problems.
+ */
+function FolderMovedBadge({ onClick, totalCount, title }: FolderMovedBadgeProps) {
+  return (
+    <button
+      className="group/moved flex items-center gap-0 px-1.5 py-0.5 rounded-md transition-all duration-200 bg-white/10 text-blue-400 hover:bg-blue-400/30 hover:gap-1"
+      onClick={onClick}
+      title={title}
+    >
+      <ArrowLeftRight size={12} className="transition-colors duration-200" />
+      <span className="text-[10px] font-medium text-blue-400 max-w-0 overflow-hidden transition-all duration-200 group-hover/moved:max-w-[2rem]">
+        {totalCount}
+      </span>
+    </button>
+  )
 }
 
 /**
@@ -446,14 +484,20 @@ export function FolderActionButtons({
   operationType,
   onRefresh,
   isOfflineMode,
+  onResolveMoves,
 }: FolderActionButtonsProps) {
   if (!file.isDirectory) return null
+
+  const movedCount = diffCounts?.moved ?? 0
+  const movedAwayCount = diffCounts?.movedAway ?? 0
+  const totalMovedCount = movedCount + movedAwayCount
 
   // Use computed diffCounts.cloud instead of stale folder diffStatus
   // diffCounts.cloud is derived from actual children, so it updates when files are downloaded
   const shouldShow =
     localOnlyCount > 0 ||
     (diffCounts && (diffCounts.cloud > 0 || diffCounts.outdated > 0)) ||
+    totalMovedCount > 0 ||
     checkoutUsers.length > 0 ||
     syncedCount > 0
 
@@ -494,6 +538,11 @@ export function FolderActionButtons({
     executeCommand('sync', { files: [file] }, { onRefresh })
   }
 
+  const handleMovedBadgeClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    onResolveMoves?.(file)
+  }
+
   // Show delete spinner when deleting
   if (operationType === 'delete') {
     return <Loader2 size={16} className="text-red-400 animate-spin ml-auto mr-0.5" />
@@ -512,6 +561,19 @@ export function FolderActionButtons({
           isProcessing={operationType === 'sync'}
         />
       )}
+      {/* 1b. Pending file moves - shown regardless of online/offline, since resolving one is a
+          local-disk or server-record decision either way, not a sync operation. */}
+      {totalMovedCount > 0 &&
+        (() => {
+          const suffix = totalMovedCount === 1 ? '_one' : '_other'
+          return (
+            <FolderMovedBadge
+              onClick={handleMovedBadgeClick}
+              totalCount={totalMovedCount}
+              title={t(`explorer.pendingMovesBadgeTitle${suffix}`, { count: totalMovedCount })}
+            />
+          )
+        })()}
       {/* 2. Cloud files to download - only when online */}
       {/* Use computed diffCounts.cloud from children, not stale folder diffStatus */}
       {!isOfflineMode && diffCounts && diffCounts.cloud > 0 && (

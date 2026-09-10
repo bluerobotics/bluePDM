@@ -117,6 +117,8 @@ export function useKeyboardNav({
 
         const selectedFile = selectableRows.find((row) => row.path === selectedFiles[0])?.file
         if (!selectedFile) return
+        // A 'moved_away' stub has no local file behind it at its own path - nothing to rename.
+        if (selectedFile.diffStatus === 'moved_away') return
 
         e.preventDefault()
         e.stopPropagation()

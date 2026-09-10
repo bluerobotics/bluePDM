@@ -45,7 +45,7 @@ vi.mock('../../supabase/files/move', () => ({
   moveFileOnServer: vi.fn(),
 }))
 
-import { renameCommand } from './fileOps'
+import { moveCommand, renameCommand } from './fileOps'
 import { listServerPathUpdateFailures } from './serverPathUpdates'
 import type { CommandContext, LocalFile } from '../types'
 
@@ -294,5 +294,178 @@ describe('renameCommand on a cloud-only file whose server update fails', () => {
     expect(result.success).toBe(true)
     expect(ctx.renameFileInStore).toHaveBeenCalled()
     expect(toasts).toEqual([['success', 'Renamed to Bracket-Rev2.sldprt']])
+  })
+})
+
+/**
+ * A `'moved_away'` stub carries its `'moved'` partner's `pdmData`/checkout state, but there is
+ * nothing on disk at the stub's own `relativePath`. `canRename`
+ * (src/features/source/context-menu/items/FileOperationItems.tsx) and the drag handler
+ * (src/features/source/explorer/file-tree/hooks/useTreeDragDrop.ts) already block a stub from
+ * reaching rename/move at the UI layer - these are the same two commands refusing independently,
+ * so a rename/move that reached this layer some other way still cannot attempt a filesystem
+ * operation on a path that does not exist.
+ */
+describe('renameCommand refuses a moved_away stub, independently of the UI gate', () => {
+  function movedAwayStub(relativePath: string, id: string): LocalFile {
+    return {
+      ...syncedFile(relativePath, id),
+      diffStatus: 'moved_away',
+      movedToRelativePath: `Elsewhere/${relativePath.split('/').pop()}`,
+    } as LocalFile
+  }
+
+  it('validate refuses renaming the stub directly', () => {
+    const { ctx } = context()
+    const error = renameCommand.validate(
+      { file: movedAwayStub('Parts/Bracket.SLDPRT', 'file-1'), newName: 'Renamed' },
+      ctx,
+    )
+    expect(error).toBe('File has moved - resolve the pending move first')
+  })
+
+  it('does not refuse an ordinary folder rename even when it contains a moved_away stub', () => {
+    const folder = { ...syncedFile('Parts', 'folder-1'), isDirectory: true, extension: '' } as LocalFile
+    const stub = movedAwayStub('Parts/Bracket.SLDPRT', 'file-1')
+    const { ctx } = context()
+    ctx.files = [folder, stub]
+
+    const error = renameCommand.validate({ file: folder, newName: 'Components' }, ctx)
+
+    expect(error).toBeNull()
+  })
+})
+
+describe('moveCommand refuses a moved_away stub directly, and folder moves skip stubs correctly', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { electronAPI: { renameItem } })
+    renameItem.mockReset().mockResolvedValue({ success: true, fileCount: 1 })
+    updateFilePath.mockReset().mockResolvedValue({ success: true })
+    updateFolderPath
+      .mockReset()
+      .mockResolvedValue({ success: true, updated: 0, total: 0, errors: [] })
+    updateFolderServerPath.mockReset().mockResolvedValue({ success: true })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function cloudFile(relativePath: string, id: string): LocalFile {
+    return { ...syncedFile(relativePath, id), diffStatus: 'cloud' } as LocalFile
+  }
+
+  function movedAwayStub(relativePath: string, id: string): LocalFile {
+    return {
+      ...syncedFile(relativePath, id),
+      diffStatus: 'moved_away',
+      movedToRelativePath: `Elsewhere/${relativePath.split('/').pop()}`,
+    } as LocalFile
+  }
+
+  it('validate refuses moving the stub directly', () => {
+    const stub = movedAwayStub('Parts/Bracket.SLDPRT', 'file-1')
+    const { ctx } = context()
+
+    const error = moveCommand.validate({ files: [stub], targetFolder: 'Archive' }, ctx)
+
+    expect(error).toBe('File has moved - resolve the pending move first')
+  })
+
+  it('does not refuse moving a folder that merely contains a moved_away stub', () => {
+    const folder = { ...syncedFile('Parts', 'folder-1'), isDirectory: true, extension: '' } as LocalFile
+    const stub = movedAwayStub('Parts/Bracket.SLDPRT', 'file-1')
+    const { ctx } = context()
+    ctx.files = [folder, stub]
+
+    const error = moveCommand.validate({ files: [folder], targetFolder: 'Archive' }, ctx)
+
+    expect(error).toBeNull()
+  })
+
+  it('takes the fast path - no local filesystem rename - for a folder whose only contents are a cloud-only file and an unrelated moved_away stub', async () => {
+    const folder = { ...syncedFile('Parts', 'folder-1'), isDirectory: true, extension: '' } as LocalFile
+    const cloud = cloudFile('Parts/Cloud.SLDPRT', 'file-2')
+    const stub = movedAwayStub('Parts/Moved.SLDPRT', 'file-3')
+    const { ctx } = context()
+    ctx.files = [folder, cloud, stub]
+
+    const result = await moveCommand.execute({ files: [folder], targetFolder: 'Archive' }, ctx)
+
+    expect(result.success).toBe(true)
+    // The whole point of the fast path: nothing here has real content to rename on disk, so
+    // the folder-level filesystem rename is never attempted.
+    expect(renameItem).not.toHaveBeenCalled()
+    expect(updateFolderServerPath).toHaveBeenCalledWith('folder-1', 'Archive/Parts')
+    expect(ctx.renameFileInStore).toHaveBeenCalledWith(
+      folder.path,
+      'C:\\vault\\Archive\\Parts',
+      'Archive/Parts',
+      true,
+    )
+  })
+
+  it('still performs the local filesystem rename once the folder has one real file, alongside the stub', async () => {
+    const folder = { ...syncedFile('Parts', 'folder-1'), isDirectory: true, extension: '' } as LocalFile
+    const cloud = cloudFile('Parts/Cloud.SLDPRT', 'file-2')
+    const stub = movedAwayStub('Parts/Moved.SLDPRT', 'file-3')
+    const real = syncedFile('Parts/Real.SLDPRT', 'file-4')
+    const { ctx } = context()
+    ctx.files = [folder, cloud, stub, real]
+
+    const result = await moveCommand.execute({ files: [folder], targetFolder: 'Archive' }, ctx)
+
+    expect(result.success).toBe(true)
+    expect(renameItem).toHaveBeenCalledWith(folder.path, 'C:\\vault\\Archive\\Parts')
+    // The nested pdmData.file_path patch (ctx.updateFilesInStore below) exists to keep a real
+    // nested file's server-mirrored path in sync after the folder move - it should never touch
+    // the stub, which has nothing on disk for that patch to protect.
+    const updates = (ctx.updateFilesInStore as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
+      | Array<{ path: string }>
+      | undefined
+    expect(updates?.some((u) => u.path.includes('Moved.SLDPRT'))).toBe(false)
+    expect(updates?.some((u) => u.path.includes('Real.SLDPRT'))).toBe(true)
+  })
+})
+
+/**
+ * A `'moved_away'` stub has `pdmData.file_path` too - it is not excluded by the `pdmData?.file_path`
+ * truthiness check the nested-synced-files patch used alone. Patching it to the stub's own newly
+ * renamed (still nonexistent) path writes a value into that field that protects nothing, since
+ * there was never a real file at the stub's path for `loadFiles()` to lose track of.
+ */
+describe('renameCommand does not patch a nested moved_away stub\u2019s pdmData.file_path on folder rename', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { electronAPI: { renameItem } })
+    renameItem.mockReset().mockResolvedValue({ success: true })
+    updateFolderPath
+      .mockReset()
+      .mockResolvedValue({ success: true, updated: 1, total: 1, errors: [] })
+    updateFolderServerPath.mockReset().mockResolvedValue({ success: true })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('patches only the real nested file, not the stub', async () => {
+    const folder = { ...syncedFile('Parts', 'folder-1'), isDirectory: true, extension: '' } as LocalFile
+    const stub = {
+      ...syncedFile('Parts/Stub.SLDPRT', 'file-2'),
+      diffStatus: 'moved_away',
+      movedToRelativePath: 'Elsewhere/Stub.SLDPRT',
+    } as LocalFile
+    const real = syncedFile('Parts/Real.SLDPRT', 'file-3')
+    const { ctx } = context()
+    ctx.files = [folder, stub, real]
+
+    await renameCommand.execute({ file: folder, newName: 'Components' }, ctx)
+
+    expect(ctx.updateFilesInStore).toHaveBeenCalledTimes(1)
+    const updates = (ctx.updateFilesInStore as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<{
+      path: string
+    }>
+    expect(updates).toHaveLength(1)
+    expect(updates[0].path).toBe('C:\\vault\\Components\\Real.SLDPRT')
   })
 })

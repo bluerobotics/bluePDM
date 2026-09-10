@@ -40,6 +40,7 @@ export * from './syncMetadata'
 export * from './packAndGo'
 export * from './matchGhostFile'
 export * from './reconcileMovedPaths'
+export * from './adoptServerPaths'
 
 // Re-export registry for external use
 export * from '../registry'

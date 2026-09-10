@@ -133,10 +133,6 @@ export {
   updateSelectionBox,
   getSelectionBoxStyles,
   // File Status
-  getDiffStatusClass,
-  getDiffStatusCardClass,
-  getDiffStatusLabel,
-  getDiffStatusColor,
   isFileSynced,
   isCloudOnly,
   isLocalOnly,
@@ -156,7 +152,7 @@ export {
   // Config Tree
   buildConfigTreeFlat,
 } from './utils'
-export type { FileFilter, DiffStatus, Keybinding, ConfigInput } from './utils'
+export type { FileFilter, Keybinding, ConfigInput } from './utils'
 
 // Types
 export type {

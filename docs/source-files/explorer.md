@@ -29,6 +29,8 @@ Files show different states based on their sync status:
 | Cloud Only | Exists on server, not downloaded locally |
 | Outdated | Server has a newer version |
 | Checked Out | Someone is actively editing |
+| Moved | The file sits here on your disk, but the vault still records it at its old path |
+| Moved Away | The vault still lists the file here, but on your disk it has moved elsewhere |
 
 ## Actions
 
@@ -40,6 +42,16 @@ files downloads just the ones you do not have.
 ### Get Latest
 Click the update button, or choose **Get Latest** from the right-click menu, to replace files
 you already have with a newer version from the server. It acts only on Outdated files.
+
+### Resolve Moved Files
+Moved and Moved Away are two views of the same file: one row where it actually is, one where the
+vault still expects it. Choose **Resolve Moved Files…** from the right-click menu to pick which
+side wins. **Update the Vault** writes the path on your disk to the server, and everyone else
+picks up the new location on their next sync. **Restore Local Files** renames the files on your
+disk back to the path the server already records, and writes nothing to the server.
+
+Either direction skips files checked out by someone else unless you explicitly include them, and
+skips any file whose destination is already occupied.
 
 ### Check Out
 Before editing a file, check it out to lock it:

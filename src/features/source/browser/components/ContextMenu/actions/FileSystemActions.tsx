@@ -5,6 +5,7 @@ import { Copy, FolderOpen, Pencil, Star } from 'lucide-react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { copyToClipboard } from '@/lib/clipboard'
+import { buildFullPath } from '@/lib/utils/path'
 import type { ActionComponentProps } from './types'
 
 interface FileSystemActionsProps extends ActionComponentProps {
@@ -22,11 +23,20 @@ export function FileSystemActions({
   startRenaming,
   userId,
 }: FileSystemActionsProps) {
-  const { files, activeVaultId, connectedVaults, pinnedFolders, pinFolder, unpinFolder, addToast } =
-    usePDMStore()
+  const {
+    files,
+    activeVaultId,
+    connectedVaults,
+    pinnedFolders,
+    pinFolder,
+    unpinFolder,
+    addToast,
+    vaultPath,
+  } = usePDMStore()
 
   const allCloudOnly = contextFiles.every((f) => f.diffStatus === 'cloud')
   const isFolder = firstFile.isDirectory
+  const isMovedAway = !isFolder && firstFile.diffStatus === 'moved_away'
 
   // Copy Name is always available regardless of file status
   const copyNameItem = (
@@ -67,6 +77,11 @@ export function FileSystemActions({
         (f) => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== userId,
       )
     }
+    // A 'moved_away' stub carries the real file's pdmData/checkout state, but there is
+    // nothing on disk at its own relativePath to rename - block it unconditionally rather
+    // than letting checked_out_by === userId (true of the real file, not this row) open a
+    // rename box on a path that does not exist.
+    if (isMovedAway) return false
     const isSyncedFile = !!firstFile.pdmData
     const isCheckedOutByMe = firstFile.pdmData?.checked_out_by === userId
     return !isSyncedFile || isCheckedOutByMe
@@ -80,11 +95,16 @@ export function FileSystemActions({
 
   return (
     <>
-      {/* Show in Explorer/Finder */}
+      {/* Show in Explorer/Finder - a moved_away stub has nothing on disk at its own path,
+          so reveal its real, current location instead. */}
       <div
         className="context-menu-item"
         onClick={() => {
-          window.electronAPI?.openInExplorer(firstFile.path)
+          const targetPath =
+            isMovedAway && firstFile.movedToRelativePath && vaultPath
+              ? buildFullPath(vaultPath, firstFile.movedToRelativePath)
+              : firstFile.path
+          window.electronAPI?.openInExplorer(targetPath)
           onClose()
         }}
       >
@@ -174,9 +194,11 @@ export function FileSystemActions({
           }}
           title={
             !canRename
-              ? isFolder
-                ? 'Another user has files checked out in this folder'
-                : 'Check out file first to rename'
+              ? isMovedAway
+                ? 'File has moved - resolve the pending move first'
+                : isFolder
+                  ? 'Another user has files checked out in this folder'
+                  : 'Check out file first to rename'
               : ''
           }
         >
@@ -184,7 +206,7 @@ export function FileSystemActions({
           Rename
           {!canRename && (
             <span className="text-xs text-plm-fg-muted ml-auto">
-              {isFolder ? '(has checkouts)' : '(checkout required)'}
+              {isMovedAway ? '(moved)' : isFolder ? '(has checkouts)' : '(checkout required)'}
             </span>
           )}
         </div>

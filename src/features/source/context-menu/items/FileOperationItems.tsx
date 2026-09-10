@@ -3,6 +3,7 @@ import { ExternalLink, FolderOpen, Edit, FolderPlus } from 'lucide-react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
+import { buildFullPath } from '@/lib/utils/path'
 
 interface FileOperationItemsProps {
   firstFile: LocalFile
@@ -27,16 +28,37 @@ export function FileOperationItems({
   onClose,
   onRefresh,
 }: FileOperationItemsProps) {
-  const { files } = usePDMStore()
+  const { files, vaultPath } = usePDMStore()
+
+  // A 'moved_away' stub has nothing on disk at its own relativePath - the content lives at
+  // movedToRelativePath now. Never true for folders (moves only produce file-level stubs).
+  const isMovedAway = !isFolder && firstFile.diffStatus === 'moved_away'
 
   const handleOpen = () => {
     onClose()
+    if (isMovedAway) {
+      // Open the file's real, current location instead of failing on a path that no longer
+      // exists. 'open' itself only special-cases 'cloud' in its validate(), so the redirect
+      // happens here rather than by teaching the command about a status it doesn't need to know.
+      if (firstFile.movedToRelativePath && vaultPath) {
+        executeCommand(
+          'open',
+          { file: { ...firstFile, path: buildFullPath(vaultPath, firstFile.movedToRelativePath) } },
+          { onRefresh },
+        )
+      }
+      return
+    }
     executeCommand('open', { file: firstFile }, { onRefresh })
   }
 
   const handleShowInExplorer = () => {
     onClose()
-    executeCommand('show-in-explorer', { path: firstFile.path }, { onRefresh })
+    const targetPath =
+      isMovedAway && firstFile.movedToRelativePath && vaultPath
+        ? buildFullPath(vaultPath, firstFile.movedToRelativePath)
+        : firstFile.path
+    executeCommand('show-in-explorer', { path: targetPath }, { onRefresh })
   }
 
   // Check rename permissions
@@ -52,6 +74,11 @@ export function FileOperationItems({
         (f) => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== userId,
       )
     }
+    // A 'moved_away' stub carries the real file's pdmData/checkout state, but there is
+    // nothing on disk at its own relativePath to rename - block unconditionally rather than
+    // letting checked_out_by === userId (true of the real file, not this row) open a rename
+    // box on a path that does not exist.
+    if (isMovedAway) return false
     const isSynced = !!firstFile.pdmData
     const isCheckedOutByMe = firstFile.pdmData?.checked_out_by === userId
     return !isSynced || isCheckedOutByMe
@@ -92,16 +119,24 @@ export function FileOperationItems({
           }}
           title={
             !canRename
-              ? isFolder
-                ? 'Another user has files checked out in this folder'
-                : 'Check out file first to rename'
+              ? isMovedAway
+                ? 'File has moved - resolve the pending move first'
+                : isFolder
+                  ? 'Another user has files checked out in this folder'
+                  : 'Check out file first to rename'
               : ''
           }
         >
           <Edit size={14} />
           Rename
           <span className="text-xs text-plm-fg-muted ml-auto">
-            {!canRename ? (isFolder ? '(has checkouts)' : '(checkout required)') : 'F2'}
+            {!canRename
+              ? isMovedAway
+                ? '(moved)'
+                : isFolder
+                  ? '(has checkouts)'
+                  : '(checkout required)'
+              : 'F2'}
           </span>
         </div>
       )}

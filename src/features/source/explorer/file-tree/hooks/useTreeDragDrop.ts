@@ -204,8 +204,9 @@ export function useTreeDragDrop(): DragDropHandlers {
   // Handle drag start
   const handleDragStart = useCallback(
     (e: React.DragEvent, file: LocalFile) => {
-      // Can't drag cloud-only files
-      if (file.diffStatus === 'cloud') {
+      // Can't drag cloud-only files, or a moved_away stub - neither has a local file at this
+      // row's path to drag.
+      if (file.diffStatus === 'cloud' || file.diffStatus === 'moved_away') {
         e.preventDefault()
         return
       }
@@ -216,9 +217,12 @@ export function useTreeDragDrop(): DragDropHandlers {
       // Determine files to drag based on current selection
       let filesToDrag: LocalFile[]
       if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
-        // Multi-select: drag all selected files (except cloud-only)
+        // Multi-select: drag all selected files (except cloud-only and moved-away stubs)
         filesToDrag = files.filter(
-          (f) => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud',
+          (f) =>
+            selectedFiles.includes(f.path) &&
+            f.diffStatus !== 'cloud' &&
+            f.diffStatus !== 'moved_away',
         )
       } else {
         // Single file drag

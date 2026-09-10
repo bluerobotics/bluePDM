@@ -77,6 +77,8 @@ interface VirtualizedTreeRowProps {
   isHiddenFromNonAdmins: boolean
   /** Refresh callback */
   onRefresh?: (silent?: boolean) => void
+  /** Called when a folder's pending-move badge is clicked. See `FolderActionButtonsProps`. */
+  onResolveMoves?: (file: LocalFile) => void
   // Multi-select props for FileActionButtons
   selectedFiles: string[]
   /** Cloud-only files in the multi-select - drives the download button's count/hover state. */
@@ -154,6 +156,8 @@ function arePropsEqual(
 
   // 2. File data changes that affect display
   if (prevProps.item.file.name !== nextProps.item.file.name) return false
+  if (prevProps.item.file.movedToRelativePath !== nextProps.item.file.movedToRelativePath)
+    return false
   if (prevProps.item.file.pdmData?.checked_out_by !== nextProps.item.file.pdmData?.checked_out_by)
     return false
   if (prevProps.checkoutSignature !== nextProps.checkoutSignature) return false
@@ -190,6 +194,8 @@ function arePropsEqual(
       if (prevDiff.modified !== nextDiff.modified) return false
       if (prevDiff.cloud !== nextDiff.cloud) return false
       if (prevDiff.outdated !== nextDiff.outdated) return false
+      if (prevDiff.moved !== nextDiff.moved) return false
+      if (prevDiff.movedAway !== nextDiff.movedAway) return false
     }
 
     // Compare folderMetrics (consolidated object from useVaultTree's O(N) pre-computation)
@@ -259,6 +265,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
   folderMetrics,
   isHiddenFromNonAdmins,
   onRefresh,
+  onResolveMoves,
   selectedFiles,
   selectedCloudOnlyFiles,
   selectedUploadableFiles,
@@ -307,8 +314,12 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
   const isCut = clipboard?.operation === 'cut' && clipboard.files.some((f) => f.path === file.path)
   // Don't apply diffClass to folders - folder visual state is derived from children (via folderMetrics)
   // Only files should use their own diffStatus for CSS styling (e.g., sidebar-diff-cloud makes text italic)
+  // CSS class names use hyphens (e.g. `sidebar-diff-moved-away`); diffStatus values use
+  // underscores (e.g. `moved_away`) to match the LocalFile type, so normalize here.
   const diffClass =
-    !file.isDirectory && file.diffStatus ? `${DIFF_STATUS_CLASS_PREFIX}${file.diffStatus}` : ''
+    !file.isDirectory && file.diffStatus
+      ? `${DIFF_STATUS_CLASS_PREFIX}${file.diffStatus.replace(/_/g, '-')}`
+      : ''
 
   // Use pre-computed iconColor from folderMetrics (priority-based: local-only > server-only > synced > mine > others)
   const folderIconColor = folderMetrics?.iconColor ?? 'text-plm-fg-muted'
@@ -362,7 +373,9 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
   // (Parent gets fresh selection from store to avoid stale closure issues)
   const handleDragStart = useCallback(
     (e: React.DragEvent) => {
-      if (file.diffStatus === 'cloud') {
+      // 'cloud': nothing downloaded yet to drag. 'moved_away': a stub with no local file at
+      // all behind this row's path - same reasoning, same exclusion.
+      if (file.diffStatus === 'cloud' || file.diffStatus === 'moved_away') {
         e.preventDefault()
         return
       }
@@ -410,7 +423,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
-      draggable={file.diffStatus !== 'cloud'}
+      draggable={file.diffStatus !== 'cloud' && file.diffStatus !== 'moved_away'}
       onDragStart={handleDragStart}
       onDragEnd={onDragEnd}
       onDragOver={handleDragOver}
@@ -489,6 +502,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
           operationType={operationType}
           onRefresh={onRefresh}
           isOfflineMode={isOfflineMode}
+          onResolveMoves={onResolveMoves}
         />
       )}
 

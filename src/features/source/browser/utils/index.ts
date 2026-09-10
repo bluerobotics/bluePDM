@@ -25,10 +25,6 @@ export {
 } from './selection'
 
 export {
-  getDiffStatusClass,
-  getDiffStatusCardClass,
-  getDiffStatusLabel,
-  getDiffStatusColor,
   isFileSynced,
   isCloudOnly,
   isLocalOnly,
@@ -40,7 +36,6 @@ export {
   getFolderCheckoutStatus,
   isFolderSynced,
 } from './fileStatus'
-export type { DiffStatus } from './fileStatus'
 
 export {
   getProcessingOperation,

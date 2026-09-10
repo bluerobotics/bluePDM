@@ -105,6 +105,13 @@ export type DiffStatus =
   | 'outdated'
   | 'cloud'
   | 'moved'
+  /**
+   * A stub row rendered at the *server's* recorded path for a file whose content
+   * has moved elsewhere locally (matched by NTFS inode). It has no local file
+   * behind it — see `LocalFile.movedToRelativePath` for where the content is.
+   * Never a check-in, checkout, or delete target; never counted as `cloud`.
+   */
+  | 'moved_away'
   | 'ignored'
   | 'deleted_remote'
 
@@ -253,6 +260,11 @@ export interface LocalFile {
   copiedVersion?: number
   // NTFS file index number - persistent across renames on the same volume
   ino?: number
+  // Vault-relative path where this file's content actually lives locally, set only
+  // on a `diffStatus: 'moved_away'` stub (the server's record of this file's old
+  // path). Lets the UI render "moved to X" without recomputing the destination from
+  // pdmData. Undefined on every other row, including the 'moved' row this points at.
+  movedToRelativePath?: string
 }
 
 // Server file info (for tracking deleted files)
@@ -1227,6 +1239,7 @@ export interface FilesSlice {
     added: number
     modified: number
     moved: number
+    movedAway: number
     deleted: number
     outdated: number
     cloud: number

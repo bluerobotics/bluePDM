@@ -389,7 +389,9 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
               user,
               file.pdmData?.id ? checkoutHydration[file.pdmData.id]?.state : undefined,
             )}
-            draggable={file.diffStatus !== 'cloud'}
+            // 'cloud': nothing downloaded yet to drag. 'moved_away': a stub with no local file
+            // at all behind this row's path - same reasoning, same exclusion.
+            draggable={file.diffStatus !== 'cloud' && file.diffStatus !== 'moved_away'}
             onClick={(e) => onRowClick(e, file, index)}
             onDoubleClick={() => onRowDoubleClick(file)}
             onContextMenu={(e) => onContextMenu(e, file)}

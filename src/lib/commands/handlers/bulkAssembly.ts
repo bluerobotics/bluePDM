@@ -13,7 +13,12 @@
 
 import type { Command, BulkAssemblyParams, CommandResult, LocalFile } from '../types'
 import { ProgressTracker } from '../executor'
-import { resolveAssociatedFiles } from '@/lib/fileOperations/assemblyResolver'
+import {
+  buildCanonicalFileMap,
+  findCanonicalFileById,
+  hasLocalContent,
+  resolveAssociatedFiles,
+} from '@/lib/fileOperations/assemblyResolver'
 import { downloadCommand } from './download'
 import { checkoutCommand } from './checkout'
 import { checkinCommand } from './checkin'
@@ -61,8 +66,16 @@ function validateBulkAssemblyCommand(
     return 'No root assembly specified'
   }
 
-  // Find the root file to verify it's an assembly
-  const rootFile = files.find((f) => f.pdmData?.id === rootFileId)
+  // Find the root file to verify it's an assembly. `findCanonicalFileById` matters here
+  // specifically when the selection carries both a `'moved_away'` stub and its `'moved'`
+  // partner for this id (a plain `.find()` would return whichever the array lists first) -
+  // see `pickCanonicalLocalFile` for why the winner cannot be left to array order. A root that
+  // resolves to nothing but an unpartnered stub is tolerated here, deliberately the same way a
+  // cloud-only root already is: the root is just the anchor `resolveAssociatedFiles` looks
+  // children up from, not something these three commands require local content for on its own
+  // account - `hasLocalContent` in each `execute()` already excludes it from whichever
+  // actionable set it would otherwise land in.
+  const rootFile = findCanonicalFileById(files, rootFileId)
   if (!rootFile) {
     return 'Root assembly not found in selection'
   }
@@ -89,13 +102,12 @@ async function resolveFilesForBulkOperation(
 }> {
   const orgId = ctx.organization!.id
 
-  // Build a Map from ctx.files for the resolver
-  const filesMap = new Map<string, LocalFile>()
-  for (const file of ctx.files) {
-    if (file.pdmData?.id) {
-      filesMap.set(file.pdmData.id, file)
-    }
-  }
+  // Build a Map from ctx.files for the resolver. `buildCanonicalFileMap` resolves an id shared
+  // between a `'moved_away'` stub and its `'moved'` partner to the partner - a plain
+  // `set(file.pdmData.id, file)` per row would let whichever one `ctx.files` lists last for
+  // that id silently win, which could park the whole resolution (root included) on a stub with
+  // nothing on disk while dropping the real file from the operation entirely.
+  const filesMap = buildCanonicalFileMap(ctx.files)
 
   const result = await resolveAssociatedFiles(rootFileId, orgId, filesMap, onProgress)
 
@@ -304,14 +316,19 @@ export const bulkCheckoutAssemblyCommand: Command<BulkAssemblyParams> = {
     // Finish resolution progress
     progress.finish()
 
-    // Filter to files that can be checked out (synced and not already checked out)
+    // Filter to files that can be checked out (synced, not already checked out, and actually
+    // present on disk - `hasLocalContent` excludes a `'moved_away'` stub the same way it
+    // excludes a cloud-only file, since checking one out would lock the server row for a path
+    // with nothing behind it while the file that actually claimed it sits elsewhere unaffected)
     const checkoutableFiles = resolvedFiles.filter(
-      (f) => f.pdmData?.id && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud', // Must exist locally
+      (f) => f.pdmData?.id && !f.pdmData.checked_out_by && hasLocalContent(f),
     )
 
     if (checkoutableFiles.length === 0) {
       // Check why no files can be checked out
-      const alreadyCheckedOut = resolvedFiles.filter((f) => f.pdmData?.checked_out_by)
+      const alreadyCheckedOut = resolvedFiles.filter(
+        (f) => hasLocalContent(f) && f.pdmData?.checked_out_by,
+      )
       const cloudOnly = resolvedFiles.filter((f) => f.diffStatus === 'cloud')
 
       let message = 'No files to check out'
@@ -424,9 +441,11 @@ export const bulkCheckinAssemblyCommand: Command<BulkAssemblyParams> = {
     // Finish resolution progress
     progress.finish()
 
-    // Filter to files checked out by the current user
+    // Filter to files checked out by the current user and actually present on disk -
+    // `hasLocalContent` excludes a `'moved_away'` stub, which has nothing at its own path to
+    // upload even when it shares the real file's checkout state
     const checkinableFiles = resolvedFiles.filter(
-      (f) => f.pdmData?.id && f.pdmData.checked_out_by === userId,
+      (f) => f.pdmData?.id && f.pdmData.checked_out_by === userId && hasLocalContent(f),
     )
 
     if (checkinableFiles.length === 0) {
@@ -488,8 +507,9 @@ export const bulkDeleteAssemblyCommand: Command<BulkAssemblyParams> = {
       return 'No root assembly specified'
     }
 
-    // Find the root file to verify it's an assembly
-    const rootFile = params.files.find((f) => f.pdmData?.id === params.rootFileId)
+    // Find the root file to verify it's an assembly - see the sibling lookup in
+    // `validateBulkAssemblyCommand` for why a plain `.find()` by id is not safe here.
+    const rootFile = findCanonicalFileById(params.files, params.rootFileId)
     if (!rootFile) {
       return 'Root assembly not found in selection'
     }
@@ -576,8 +596,11 @@ export const bulkDeleteAssemblyCommand: Command<BulkAssemblyParams> = {
     // Finish resolution progress
     progress.finish()
 
-    // Filter to files that exist locally (not cloud-only)
-    const localFiles = resolvedFiles.filter((f) => f.diffStatus !== 'cloud')
+    // Filter to files that exist locally (not cloud-only, and not a 'moved_away' stub with
+    // nothing at its own path to remove - `deleteLocalCommand` already excludes both via
+    // `getSyncedFilesFromSelection`/`getUnsyncedFilesFromSelection`, but filtering here too
+    // keeps this command's own counts and toasts accurate rather than relying on that)
+    const localFiles = resolvedFiles.filter((f) => hasLocalContent(f))
 
     if (localFiles.length === 0) {
       logBulkAssembly('info', 'No local files to delete', { operationId })

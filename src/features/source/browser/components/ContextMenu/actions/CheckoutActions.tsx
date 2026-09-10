@@ -450,7 +450,10 @@ function SyncMetadataItem({
   // Show for files that are:
   // 1. Local only (no pdmData - not synced to cloud yet), OR
   // 2. Checked out by current user
+  // Excludes 'moved_away' unconditionally - a stub shares the real file's pdmData/checkout
+  // state, but there is no SolidWorks file on disk at the stub's own path to sync metadata for.
   const eligibleFiles = swFiles.filter((f) => {
+    if (f.diffStatus === 'moved_away') return false
     const isLocalOnly = !f.pdmData?.id
     const isCheckedOutByMe = f.pdmData?.checked_out_by === user?.id
     return isLocalOnly || isCheckedOutByMe

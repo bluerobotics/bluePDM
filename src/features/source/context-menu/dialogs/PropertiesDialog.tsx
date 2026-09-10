@@ -2,6 +2,7 @@
 import { Info } from 'lucide-react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { formatFileSize as formatSize } from '@/lib/utils'
+import { t } from '@/lib/i18n'
 
 interface PropertiesDialogProps {
   isOpen: boolean
@@ -123,13 +124,21 @@ export function PropertiesDialog({
                       ? 'Modified locally'
                       : file.diffStatus === 'moved'
                         ? 'Moved (path changed)'
-                        : file.diffStatus === 'outdated'
-                          ? 'Outdated (newer version on server)'
-                          : file.diffStatus === 'deleted_remote'
-                            ? 'Deleted from server (orphaned)'
-                            : file.pdmData
-                              ? 'Synced'
-                              : 'Not synced'}
+                        : file.diffStatus === 'moved_away'
+                          ? // A stub: nothing lives at this path anymore, so it must not read as
+                            // "Synced" just because it still carries the real file's pdmData.
+                            file.movedToRelativePath
+                            ? t('fileStatus.movedAwayTooltipTo', {
+                                path: file.movedToRelativePath,
+                              })
+                            : t('fileStatus.movedAwayTooltip')
+                          : file.diffStatus === 'outdated'
+                            ? 'Outdated (newer version on server)'
+                            : file.diffStatus === 'deleted_remote'
+                              ? 'Deleted from server (orphaned)'
+                              : file.pdmData
+                                ? 'Synced'
+                                : 'Not synced'}
             </div>
           </div>
 

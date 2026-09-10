@@ -351,6 +351,7 @@ export const zhCN: TranslationDict = {
     serverPathUpdateFailed:
       '部分重命名未同步到服务器，服务器仍记录旧路径。受影响的文件显示为已移动；请运行 reconcile-moved-paths 进行更新。',
     cloudRenameFailed: '无法在服务器上重命名',
+    movedAwayBlocked: '文件已移动 - 请先解决待处理的移动',
     checkIn: '签入',
     checkOut: '签出',
     download: '下载',
@@ -409,7 +410,23 @@ export const zhCN: TranslationDict = {
     cloud: '云端',
     cloudNew: '新增（云端）',
     moved: '已移动',
+    movedAway: '已移出',
     ignored: '已忽略',
+  },
+
+  fileStatus: {
+    deletedFromServer: '已从服务器删除',
+    movedTooltip: '此文件现在位于这里，但库仍记录其旧路径',
+    movedAwayTooltip: '库仍将此文件列在此处，但它已被移动',
+    movedAwayTooltipTo: '已移动到 {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} 个待处理的文件移动 — 点击查看',
+    pendingMovesBadgeTitle_other: '{{count}} 个待处理的文件移动 — 点击查看',
+    disconnectWarningMoved_one: '{{count}} 个文件已移动，库仍记录其旧路径',
+    disconnectWarningMoved_other: '{{count}} 个文件已移动，库仍记录其旧路径',
+    disconnectWarningMovedHint: '更新库以匹配，或将文件移回原处',
   },
 
   vaultSetup: {
@@ -488,6 +505,94 @@ export const zhCN: TranslationDict = {
     summaryNotAttempted: '{{count}} 个未尝试',
     summaryBlocked: '{{count}} 个被他人签出',
     summarySkipped: '{{count}} 个已跳过',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: '请先登录',
+    noVault: '未连接任何库',
+    nothingToAdopt: '没有文件等待重命名回服务器记录的路径',
+
+    reportHeading: '有 {{count}} 个文件所在的本地路径已与服务器为其记录的路径不一致。',
+    reportEligible: '其中 {{count}} 个现在可以重命名回服务器路径。',
+    reportBlocked: '有 {{count}} 个已被他人签出，除非强制执行，否则将保持不变：',
+    reportHolder: '{{count}} 个由 {{user}} 持有',
+    unknownHolder: '其他用户',
+    reportConflict: '跳过 {{count}} 个 — 磁盘上的目标位置已被另一个文件占用：',
+    reportUnverified:
+      '跳过 {{count}} 个 — 文件内容与服务器所记录的不再一致，因此无法验证此次移动：',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… 还有 {{count}} 个',
+
+    dryRunSummary: '仅预检：{{total}} 个文件中有 {{eligible}} 个可以重命名回服务器路径。未写入任何内容。',
+    dryRunNote: '仅生成报告。未加 --apply 不会写入任何内容。',
+
+    refused:
+      '未重命名任何文件：其中 {{count}} 个文件已被他人签出（{{holders}}）。此重命名只影响您自己的磁盘，无论如何都是安全的 — 请先询问他们，或使用 --force 重新运行以同时重命名这些文件。',
+    nothingEligible: '无法重命名任何文件：{{skipped}} 个被跳过。',
+    confirmUnavailable: '未重命名任何文件：此命令需要确认对话框，但当前无可用对话框。',
+
+    confirmTitle: '将 {{count}} 个文件重命名回服务器路径？',
+    confirmMessage:
+      '此计算机上的 {{count}} 个文件将被重命名为服务器已为其记录的路径。这只会更改您的本地磁盘 — 不会向服务器写入任何内容。',
+    confirmRemainder: '另有 {{count}} 个保持不变（{{detail}}）。',
+    confirmText: '重命名 {{count}} 个文件',
+    declined: '已取消。未重命名任何文件。',
+
+    progress: '正在将 {{count}} 个文件重命名回服务器路径…',
+    failureItem: '{{path}}：{{error}}',
+    unknownError: '未知错误',
+    destinationAppeared: '预检之后，另一个文件出现在了 "{{path}}"',
+    createFolderFailed: '无法创建目标文件夹 — {{error}}',
+
+    summaryComplete: '已将 {{count}} 个文件重命名回服务器路径。',
+    summaryPartial: '已重命名 {{total}} 个文件中的 {{succeeded}} 个 — {{leftovers}}。请再次运行以完成。',
+    summaryFailed: '{{count}} 个失败',
+    summaryNotAttempted: '{{count}} 个未尝试',
+    summaryBlocked: '{{count}} 个被他人签出',
+    summarySkipped: '{{count}} 个已跳过',
+  },
+
+  resolveMoves: {
+    title: '解决待处理的移动',
+    subtitle: '有些文件所在的路径与库记录的不同。请选择应以哪一侧为准。',
+    noPendingMoves: '没有需要解决的内容 — 未找到待处理的移动。',
+
+    scopeLabel: '显示',
+    scopeFile: '此文件',
+    scopeFolder: '此文件夹',
+    scopeVault: '整个库',
+    vaultWideNote: '解决操作始终会处理库中所有待处理的移动，而不仅仅是上面显示的这些。',
+
+    listHeading_one: '已显示 {{count}} 个待处理的移动',
+    listHeading_other: '已显示 {{count}} 个待处理的移动',
+    noMovesInScope: '此范围内没有待处理的移动。',
+    moreFiles: '… 还有 {{count}} 个',
+
+    reconcileOptionTitle: '保留新位置，并更新库以匹配',
+    reconcileOptionDescription: '将您磁盘上的路径写入服务器。其他人会在下次同步时获得新位置。',
+    adoptOptionTitle: '将文件放回库所记录的位置',
+    adoptOptionDescription: '将磁盘上的文件重命名回服务器已记录的路径。不会向服务器写入任何内容。',
+
+    eligibleCount_one: '{{count}} 个文件已就绪',
+    eligibleCount_other: '{{count}} 个文件已就绪',
+    blockedCount_one: '{{count}} 个文件被他人签出',
+    blockedCount_other: '{{count}} 个文件被他人签出',
+    conflictCount_one: '跳过 {{count}} 个 — 目标位置已被占用',
+    conflictCount_other: '跳过 {{count}} 个 — 目标位置已被占用',
+    unverifiedCount_one: '跳过 {{count}} 个 — 内容已不再匹配',
+    unverifiedCount_other: '跳过 {{count}} 个 — 内容已不再匹配',
+    noEligible: '目前这里还没有可以解决的内容。',
+    unknownHolder: '其他用户',
+
+    skipCheckedOutLabel_one: '跳过被他人签出的文件，并更新其余文件',
+    skipCheckedOutLabel_other: '跳过被他人签出的 {{count}} 个文件，并更新其余文件',
+    forceLabel_one: '同时重命名被他人签出的文件',
+    forceLabel_other: '同时重命名被他人签出的 {{count}} 个文件',
+
+    runReconcile: '更新库',
+    runAdopt: '还原本地文件',
+
+    contextMenuItem: '解决已移动的文件…',
   },
 
   hiddenFolders: {

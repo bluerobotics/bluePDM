@@ -58,6 +58,7 @@ import {
   shouldSkipMerge,
 } from './loadFilesCoordination'
 import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
+import { reconcileCloudFiles } from './useLoadFiles/cloudFileReconciliation'
 
 const CHECKOUT_PROFILE_MAX_ATTEMPTS = 3
 const CHECKOUT_PROFILE_RETRY_BASE_MS = 200
@@ -1100,6 +1101,11 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             // modified-then-renamed files where hash matching fails.
             const inodeRenameMap = new Map<string, PDMFile>() // localPath(lower) -> pdmFile
             const inodeMatchedServerPaths = new Set<string>() // old server paths matched by inode
+            // Reverse of inodeMatchedServerPaths: old server path (lower) -> the local
+            // file's actual relativePath that claimed it. Lets the cloud-file
+            // reconciliation pass emit a 'moved_away' stub that names its destination
+            // instead of silently dropping the server's record of the old path.
+            const inodeMatchedServerPathToLocalPath = new Map<string, string>()
             let checkedOutRenameCount = 0
 
             if (savedInodeMap.size > 0) {
@@ -1132,6 +1138,10 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                   if (serverFile) {
                     inodeRenameMap.set(localFile.relativePath.toLowerCase(), serverFile)
                     inodeMatchedServerPaths.add(serverFile.file_path.toLowerCase())
+                    inodeMatchedServerPathToLocalPath.set(
+                      serverFile.file_path.toLowerCase(),
+                      localFile.relativePath,
+                    )
                     inodeToServerFile.delete(localFile.ino)
                     if (serverFile.checked_out_by) checkedOutRenameCount++
                   }
@@ -1508,134 +1518,23 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               unmatchedSamples,
             })
 
-            // TODO(decompose): Extract to hooks/useLoadFiles/cloudFileReconciliation.ts —
-            // cloud-only file injection + ghost-orphan cross-referencing (~120 lines).
-            // Pure function taking pdmFiles, localFiles, localPathSet, localContentHashes,
-            // inodeMatchedServerPaths, user, vaultPath and returning updated localFiles array.
-
-            // Add cloud-only files (exist on server but not locally) as "cloud" or "deleted" entries
-            // "cloud" = available for download (muted)
-            // "deleted" = was checked out by me but removed locally (red) - indicates moved/deleted file
-            // Note: if a file was MOVED (same content hash exists locally), don't show the deleted ghost
-            const cloudFolders = new Set<string>()
-
-            // Create a set of local content hashes to detect moved files
-            const localContentHashes = new Set(
-              localFiles.filter((f) => !f.isDirectory && f.localHash).map((f) => f.localHash),
-            )
-
-            let cloudScanIndex = 0
-            for (const pdmFile of pdmFiles) {
-              if (cloudScanIndex++ % YIELD_CHECK_STRIDE === YIELD_CHECK_STRIDE - 1) {
-                await yieldIfSlow()
-              }
-
-              if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
-                // Check if this file was MOVED (same content exists at a different location locally)
-                // or matched by inode-based rename detection
-                const isCheckedOutByMe = pdmFile.checked_out_by === user?.id
-                const wasMoved =
-                  pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
-                const wasInodeRenamed = inodeMatchedServerPaths.has(pdmFile.file_path.toLowerCase())
-
-                // If moved/renamed, don't show the ghost at the old location - the file is handled at the new location
-                if (wasMoved || wasInodeRenamed) {
-                  continue
-                }
-
-                // If checked out by me but not moved, it was truly deleted locally
-                const isDeletedByMe = isCheckedOutByMe
-
-                // Add cloud parent folders for this file
-                const pathParts = pdmFile.file_path.split('/')
-                let currentPath = ''
-                for (let i = 0; i < pathParts.length - 1; i++) {
-                  currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
-                  if (
-                    !localPathSet.has(currentPath.toLowerCase()) &&
-                    !cloudFolders.has(currentPath)
-                  ) {
-                    cloudFolders.add(currentPath)
-                  }
-                }
-
-                // Add the cloud-only file (not synced locally), retaining only
-                // owner-matching profile enrichment.
-                const preservedCloudUserInfo = existingCheckedOutUsers.get(pdmFile.id)
-                const cloudPdmFile = pdmFile as unknown as PDMFile
-                const cloudFilePdmData = reconcileCheckoutProfile(
-                  cloudPdmFile,
-                  isCheckoutProfileForOwner(preservedCloudUserInfo, cloudPdmFile.checked_out_by)
-                    ? preservedCloudUserInfo
-                    : cloudPdmFile.checked_out_user,
-                )
-
-                localFiles.push({
-                  name: pdmFile.file_name,
-                  path: buildFullPath(loadingForVaultPath, pdmFile.file_path),
-                  relativePath: pdmFile.file_path,
-                  isDirectory: false,
-                  extension: pdmFile.extension,
-                  size: pdmFile.file_size || 0,
-                  modifiedTime: pdmFile.updated_at || '',
-                  pdmData: cloudFilePdmData,
-                  isSynced: false, // Not synced locally
-                  diffStatus: isDeletedByMe ? 'deleted' : 'cloud', // Deleted if I moved/removed it, otherwise cloud
-                })
-              }
-            }
-
-            // --- Ghost-orphan cross-referencing (safety net) ---
-            // If inode detection missed a rename, we may have a ghost (server file, no local)
-            // AND an orphan (local file, no server match) in the same folder with the same extension.
-            // Auto-match them to prevent the ghost/orphan pair from persisting.
-            const ghostFiles = localFiles.filter(
-              (f) => f.diffStatus === 'deleted' && f.pdmData && !f.isDirectory,
-            )
-            const orphanFiles = localFiles.filter(
-              (f) => f.diffStatus === 'deleted_remote' && !f.isDirectory,
-            )
-
-            if (ghostFiles.length > 0 && orphanFiles.length > 0) {
-              const orphansByFolderExt = new Map<string, (typeof localFiles)[number][]>()
-              for (const orphan of orphanFiles) {
-                const folder = orphan.relativePath
-                  .substring(0, orphan.relativePath.lastIndexOf('/'))
-                  .toLowerCase()
-                const ext = (orphan.extension || '').toLowerCase()
-                const key = `${folder}|${ext}`
-                const list = orphansByFolderExt.get(key) || []
-                list.push(orphan)
-                orphansByFolderExt.set(key, list)
-              }
-
-              for (const ghost of ghostFiles) {
-                const folder = ghost.relativePath
-                  .substring(0, ghost.relativePath.lastIndexOf('/'))
-                  .toLowerCase()
-                const ext = (ghost.extension || '').toLowerCase()
-                const candidates = orphansByFolderExt.get(`${folder}|${ext}`)
-                if (candidates && candidates.length === 1) {
-                  const orphan = candidates[0]
-                  window.electronAPI?.log(
-                    'info',
-                    '[LoadFiles] Ghost-orphan cross-reference match',
-                    {
-                      ghostPath: ghost.relativePath,
-                      orphanPath: orphan.relativePath,
-                    },
-                  )
-                  orphan.pdmData = ghost.pdmData
-                  orphan.diffStatus = 'moved'
-                  orphan.isSynced = true
-                  ghost.diffStatus = 'cloud'
-                  ghost.pdmData = { ...ghost.pdmData, _suppressedByOrphanMatch: true } as any // TODO: type this
-                  candidates.length = 0
-                }
-              }
-
-              localFiles = localFiles.filter((f) => !(f.pdmData as any)?._suppressedByOrphanMatch) // TODO: type this
-            }
+            // Add cloud-only files (exist on server but not locally) as "cloud" or "deleted"
+            // entries, emit a 'moved_away' stub for an inode-matched rename (see
+            // .cursor/plans/pending-move-visibility-agent1-report.md), and cross-reference
+            // any remaining ghost/orphan pair the inode/hash passes missed.
+            const { localFiles: reconciledLocalFiles, cloudFolders } = await reconcileCloudFiles({
+              pdmFiles,
+              localFiles,
+              localPathSet,
+              inodeMatchedServerPaths,
+              inodeMatchedServerPathToLocalPath,
+              existingCheckedOutUsers,
+              userId: user?.id,
+              vaultPath: loadingForVaultPath,
+              yieldIfSlow,
+              yieldCheckStride: YIELD_CHECK_STRIDE,
+            })
+            localFiles = reconciledLocalFiles
 
             // Auto-create server folders locally (folders that exist on server but not locally)
             // Since folders sync immediately, we should also auto-create them on the receiving end
@@ -1729,6 +1628,12 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             const movedCount = localFiles.filter(
               (f) => !f.isDirectory && f.diffStatus === 'moved',
             ).length
+            // The stub side of the same moves: never double-counted with movedCount,
+            // since a file contributes exactly one of 'moved' (new location) or
+            // 'moved_away' (old location's stub), never both.
+            const movedAwayCount = localFiles.filter(
+              (f) => !f.isDirectory && f.diffStatus === 'moved_away',
+            ).length
             window.electronAPI?.log('info', '[LoadFiles] Merge summary', {
               serverFiles: pdmFiles.length,
               localFilesAfterMerge: localFiles.filter((f) => !f.isDirectory).length,
@@ -1747,6 +1652,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               // A count that stays high across loads means moves are being re-detected
               // rather than reconciled, which is what made cold loads expensive.
               moved: movedCount,
+              movedAway: movedAwayCount,
             })
 
             // Update the local sync index with all server file paths
@@ -1765,7 +1671,16 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                 localOnly?: boolean
               }> = []
               for (const f of localFiles) {
-                if (!f.isDirectory && f.ino && f.ino > 0 && f.pdmData) {
+                // A 'moved_away' stub has no disk presence and therefore no `ino` -
+                // this check excludes it on that basis alone, but the diffStatus
+                // guard is kept explicit rather than assumed, per the plan's D1 note.
+                if (
+                  !f.isDirectory &&
+                  f.ino &&
+                  f.ino > 0 &&
+                  f.pdmData &&
+                  f.diffStatus !== 'moved_away'
+                ) {
                   inodeEntries.push({
                     path: f.relativePath,
                     ino: f.ino,
@@ -2791,19 +2706,27 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
         // Server paths that a local entry somewhere else already accounts for.
         //
         // The full load resolves moves (by inode, then by content hash) and then
-        // suppresses the ghost at the old server path. That resolution lives in
-        // the store, as a local entry whose pdmData points at a different path -
-        // so it can be read back here rather than recomputed. Without this, step 6
-        // treats every unreconciled move as a cloud-only file and re-adds it at
-        // its old path: one vault with 466 moved files gained 810 phantom rows
-        // and 58 phantom folders per press of Refresh, and every later load then
-        // merged the larger store.
+        // emits a 'moved_away' stub at the old server path instead of a phantom
+        // cloud-only row there. That resolution lives in the store, as a local
+        // entry whose pdmData points at a different path - so it can be read back
+        // here rather than recomputed. Without this, step 6 treats every
+        // unreconciled move as a cloud-only file and re-adds it at its old path:
+        // one vault with 466 moved files gained 810 phantom rows and 58 phantom
+        // folders per press of Refresh, and every later load then merged the
+        // larger store.
+        //
+        // claimedServerPathToLocalPath is the destination for each claimed path,
+        // so step 6 below can rebuild the same 'moved_away' stub the full load
+        // would produce, rather than dropping the path outright (which would
+        // strand the folder's own view of it exactly as D1 describes).
         const claimedServerPaths = new Set<string>()
+        const claimedServerPathToLocalPath = new Map<string, string>()
         for (const f of existingFiles) {
           if (f.isDirectory || !f.pdmData?.file_path) continue
           const serverPath = f.pdmData.file_path.toLowerCase()
           if (serverPath !== f.relativePath.toLowerCase()) {
             claimedServerPaths.add(serverPath)
+            claimedServerPathToLocalPath.set(serverPath, f.relativePath)
           }
         }
 
@@ -2877,31 +2800,35 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           }
         })
 
-        // 6. Add cloud-only files in this folder (exist on server but not locally)
+        // 6. Add cloud-only files in this folder (exist on server but not locally),
+        // or a 'moved_away' stub when this path is claimed by a rename recorded
+        // elsewhere in the store (see the comment on claimedServerPathToLocalPath above).
         const localPathSet = new Set(
           localResult.files.map((f: any) => f.relativePath.toLowerCase()),
         )
         for (const sf of serverFiles) {
           const sfPath = sf.file_path.toLowerCase()
           const isInFolder = folderPath === '' || sfPath.startsWith(folderPrefix)
+          if (!isInFolder || localPathSet.has(sfPath)) continue
 
-          if (isInFolder && !localPathSet.has(sfPath) && !claimedServerPaths.has(sfPath)) {
-            // Use complete pdmData from existing files if available
-            const completePdmData = existingPdmMap.get(sfPath)
+          // Use complete pdmData from existing files if available
+          const completePdmData = existingPdmMap.get(sfPath)
+          const movedToRelativePath = claimedServerPathToLocalPath.get(sfPath)
 
-            refreshedFolderFiles.push({
-              name: sf.name,
-              path: buildFullPath(vaultPath, sf.file_path),
-              relativePath: sf.file_path,
-              isDirectory: false,
-              extension: sf.extension || '',
-              size: completePdmData?.file_size || 0,
-              modifiedTime: completePdmData?.updated_at || '',
-              pdmData: completePdmData || undefined,
-              isSynced: false,
-              diffStatus: 'cloud' as const,
-            })
-          }
+          refreshedFolderFiles.push({
+            name: sf.name,
+            path: buildFullPath(vaultPath, sf.file_path),
+            relativePath: sf.file_path,
+            isDirectory: false,
+            extension: sf.extension || '',
+            size: completePdmData?.file_size || 0,
+            modifiedTime: completePdmData?.updated_at || '',
+            pdmData: completePdmData || undefined,
+            isSynced: false,
+            ...(movedToRelativePath
+              ? { diffStatus: 'moved_away' as const, movedToRelativePath }
+              : { diffStatus: 'cloud' as const }),
+          })
         }
 
         // 7. Combine: files outside folder + refreshed folder files + current folder entry

@@ -512,9 +512,16 @@ export function NameCell({
       {/* Checkout/Checkin buttons for FILES - each shows independently */}
       {!file.isDirectory &&
         operationType !== 'delete' &&
+        file.diffStatus !== 'moved_away' &&
         (() => {
           // Calculate visibility conditions upfront to avoid rendering empty span
           // (empty span still causes gap-1 spacing which misaligns icons)
+          // Note: 'moved_away' is excluded above, not just here, because it also has to
+          // suppress the other-checkout-user avatar below - a moved_away stub's pdmData is
+          // the *real* file's row, so it carries that file's actual checked_out_by, but
+          // there's nothing at the stub's own path to check out/in, and an avatar shown here
+          // would misattribute someone else's checkout to a path that does not exist locally
+          // (same reasoning FileStatusCell uses to check 'moved_away' before checkout).
           const showCheckout =
             file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud'
           const showCheckin =

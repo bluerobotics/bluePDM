@@ -36,6 +36,7 @@ import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { t } from '@/lib/i18n'
 import { usePDMStore } from '@/stores/pdmStore'
+import { hasLocalContent } from '../../fileOperations/assemblyResolver'
 
 import { noteServerPathUpdateFailure, type ServerPathUpdateKind } from './serverPathUpdates'
 
@@ -162,6 +163,16 @@ export const renameCommand: Command<RenameParams> = {
     const invalidChars = /[<>:"/\\|?*]/
     if (invalidChars.test(newName)) {
       return 'Name contains invalid characters'
+    }
+
+    // A 'moved_away' stub carries the real file's pdmData/checkout state, but there is
+    // nothing on disk at its own relativePath to rename. The context menu's own `canRename`
+    // (src/features/source/context-menu/items/FileOperationItems.tsx) already blocks this for
+    // the ordinary UI path with the same wording - this is the command layer refusing the same
+    // way independently, since a filesystem rename should not rely on a UI gate alone to be the
+    // only thing standing between it and a path that does not exist.
+    if (!file.isDirectory && file.diffStatus === 'moved_away') {
+      return t('fileOps.movedAwayBlocked', 'File has moved - resolve the pending move first')
     }
 
     // Block renaming if checked out by others
@@ -365,8 +376,12 @@ export const renameCommand: Command<RenameParams> = {
       }> = []
       if (file.isDirectory) {
         const nestedFiles = getFilesInFolder(ctx.files, file.relativePath)
+        // `hasLocalContent`: a 'moved_away' stub has `pdmData.file_path` too, but patching it to
+        // the stub's own (still nonexistent) renamed path writes a meaningless value into a
+        // record that already means "look at movedToRelativePath instead" - it protects nothing,
+        // since there was never a real file at the stub's path for loadFiles() to lose track of.
         nestedSyncedFiles = nestedFiles
-          .filter((f) => f.pdmData?.file_path)
+          .filter((f) => f.pdmData?.file_path && hasLocalContent(f))
           .map((f) => ({
             oldRelPath: f.relativePath,
             newRelPath: newRelPath + f.relativePath.substring(oldRelPath.length),
@@ -525,6 +540,19 @@ export const moveCommand: Command<MoveParams> = {
       if (dest === src || dest.startsWith(src + '/')) {
         return `Cannot move "${file.name}" into itself or a subfolder`
       }
+    }
+
+    // A 'moved_away' stub has nothing on disk at its own relativePath to move - block it the
+    // same way the drag handler already does before a drag can even start
+    // (src/features/source/explorer/file-tree/hooks/useTreeDragDrop.ts), rather than relying on
+    // that UI gate alone to keep a stub out of a command that performs a filesystem rename.
+    // A 'moved_away' stub has nothing on disk at its own relativePath to move - block it the
+    // same way the drag handler already does before a drag can even start
+    // (src/features/source/explorer/file-tree/hooks/useTreeDragDrop.ts), rather than relying on
+    // that UI gate alone to keep a stub out of a command that performs a filesystem rename.
+    const movedAwayStub = files.find((f) => !f.isDirectory && f.diffStatus === 'moved_away')
+    if (movedAwayStub) {
+      return t('fileOps.movedAwayBlocked', 'File has moved - resolve the pending move first')
     }
 
     // Block moving files checked out by others
@@ -782,7 +810,14 @@ export const moveCommand: Command<MoveParams> = {
         if (file.isDirectory) {
           const cloudOnlyFiles = getCloudOnlyFilesFromSelection(ctx.files, [file])
           const nestedFiles = getFilesInFolder(ctx.files, file.relativePath)
-          const localFilesCount = nestedFiles.filter((f) => f.diffStatus !== 'cloud').length
+          // `hasLocalContent`, not a bare `diffStatus !== 'cloud'`: a `'moved_away'` stub is not
+          // cloud-only, but it is not local either - its content now lives at
+          // `movedToRelativePath`, possibly outside this folder entirely, so it has nothing at
+          // its own path within the folder being moved. Counting it as local content here
+          // skipped the "nothing to move" fast path below and sent this folder into the real
+          // filesystem rename, which - if the stub was the only thing that used to be here and
+          // the now-empty folder was since recycled - fails on a path that no longer exists.
+          const localFilesCount = nestedFiles.filter((f) => hasLocalContent(f)).length
 
           if (cloudOnlyFiles.length > 0) {
             log.debug('[Move]', 'Folder contains cloud-only files, updating DB paths first', {
@@ -968,8 +1003,11 @@ export const moveCommand: Command<MoveParams> = {
         }> = []
         if (file.isDirectory) {
           const nestedFiles = getFilesInFolder(ctx.files, file.relativePath)
+          // Only synced files with pdmData that actually have content on disk - a 'moved_away'
+          // stub has `pdmData.file_path` too, but patching it to the stub's own (still
+          // nonexistent) moved path protects nothing there was never anything at.
           nestedSyncedFiles = nestedFiles
-            .filter((f) => f.pdmData?.file_path) // Only synced files with pdmData
+            .filter((f) => f.pdmData?.file_path && hasLocalContent(f))
             .map((f) => ({
               oldRelPath: f.relativePath,
               newRelPath: newRelPath + f.relativePath.substring(file.relativePath.length),

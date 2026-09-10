@@ -24,6 +24,7 @@ import { CollaborationItems } from './items/CollaborationItems'
 import { NavigationItems } from './items/NavigationItems'
 import { AdminItems } from './items/AdminItems'
 import { DeleteItems } from './items/DeleteItems'
+import { MovedFileItems } from './items/MovedFileItems'
 
 // Dialog components
 import { DeleteConfirmDialog } from './dialogs'
@@ -36,6 +37,7 @@ import { MentionDialog } from './dialogs'
 import { ShareLinkDialog } from './dialogs'
 import { AddToECODialog } from './dialogs'
 import { MatchGhostFileDialog } from './dialogs'
+import { ResolveMovedFilesDialog } from './dialogs'
 
 import type { FileContextMenuProps } from './types'
 import type { LocalFile } from '@/stores/pdmStore'
@@ -396,6 +398,13 @@ export function FileContextMenu({
           onClose={onClose}
         />
 
+        {/* Resolve Moved Files - for a single file that is 'moved' or 'moved_away' */}
+        <MovedFileItems
+          firstFile={firstFile}
+          multiSelect={multiSelect}
+          openDialog={state.openDialog}
+        />
+
         {/* Admin Items */}
         <AdminItems
           contextFiles={contextFiles}
@@ -554,6 +563,16 @@ export function FileContextMenu({
         ghostFile={state.matchGhostFile}
         candidates={state.matchGhostCandidates}
         onConfirm={handleMatchGhostConfirm}
+      />
+
+      <ResolveMovedFilesDialog
+        isOpen={state.dialogs.resolveMoves}
+        onClose={() => {
+          state.closeDialog('resolveMoves')
+          onClose()
+        }}
+        contextFile={firstFile}
+        onRefresh={onRefresh}
       />
     </>
   )

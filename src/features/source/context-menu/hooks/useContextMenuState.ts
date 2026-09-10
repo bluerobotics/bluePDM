@@ -92,6 +92,7 @@ const initialDialogState: DialogState = {
   shareLink: false,
   addToECO: false,
   matchGhostFile: false,
+  resolveMoves: false,
 }
 
 export function useContextMenuState({

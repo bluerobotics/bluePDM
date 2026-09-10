@@ -36,6 +36,7 @@ import { ProgressTracker } from '../executor'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import type { PendingMetadata } from '@/stores/types'
+import { buildCanonicalFileMap, hasLocalContent } from '../../fileOperations/assemblyResolver'
 
 import {
   DRAWING_EXTENSIONS,
@@ -59,6 +60,21 @@ export type { SyncMetadataParams }
 
 /**
  * Get SolidWorks files from selection (handles folders)
+ *
+ * This module has its own path/extension-based matching here rather than going through
+ * `getSyncedFilesFromSelection`, so nothing about `diffStatus` was ever considered - a
+ * `'moved_away'` stub matches this function's own criteria (an `.sldprt`/`.sldasm`/`.slddrw`
+ * extension inside a selected folder, or selected directly) exactly as readily as a real file.
+ * Left uncorrected, `pushPartAssemblyMetadata` would be handed the stub's `relativePath` -
+ * the server's recorded path for a file whose content now lives elsewhere - and would drive the
+ * SolidWorks Document Manager API to write custom properties at a path with nothing on disk.
+ *
+ * Every matched row that carries a `pdmData.id` is resolved through `buildCanonicalFileMap`
+ * (built from `allFiles`, not just the matches, so the partner can be found even when it did not
+ * itself match the selection) before this function returns - the file to sync is the one with
+ * real content, never the stub, so a moved file is corrected rather than silently skipped from a
+ * metadata push the user explicitly asked for. Local-only rows (no `pdmData.id` at all, e.g. a
+ * brand new file never yet synced) have no id to resolve and pass through untouched.
  */
 function getSwFilesFromSelection(allFiles: LocalFile[], selectedFiles: LocalFile[]): LocalFile[] {
   const result: LocalFile[] = []
@@ -80,8 +96,33 @@ function getSwFilesFromSelection(allFiles: LocalFile[], selectedFiles: LocalFile
     }
   }
 
-  // Deduplicate by path
-  return [...new Map(result.map((f) => [f.path, f])).values()]
+  const canonicalById = buildCanonicalFileMap(allFiles)
+  const resolved = result.map((file) => {
+    const id = file.pdmData?.id
+    return id ? canonicalById.get(id) ?? file : file
+  })
+
+  // Deduplicate by path. A stub and its partner both matching independently (e.g. both inside
+  // the same selected folder) resolve to the same canonical row above and collapse to one entry
+  // here, rather than sync-metadata processing the same logical file twice.
+  return [...new Map(resolved.map((f) => [f.path, f])).values()]
+}
+
+/**
+ * Whether `file` is a candidate for metadata sync: local-only (never synced yet) or checked out
+ * by the current user, and in either case actually present on disk. `hasLocalContent` matters
+ * for the same reason it does everywhere else it is used - a `'moved_away'` stub carries its
+ * partner's `checked_out_by`, so `isCheckedOutByMe` alone would let it through even though
+ * `getSwFilesFromSelection` already resolves it away in the ordinary case; this is the backstop
+ * for the one it cannot (an orphaned stub with no partner anywhere in `allFiles`). It also fixes
+ * a second, unrelated gap the same shape exposed: a `'cloud'` row (never downloaded to *this*
+ * machine) can carry a checkout taken from another machine or session, and `pdmData.id` alone
+ * does not distinguish it from a real local file either.
+ */
+function isEligibleForMetadataSync(file: LocalFile, userId: string | undefined): boolean {
+  const isLocalOnly = !file.pdmData?.id
+  const isCheckedOutByMe = file.pdmData?.checked_out_by === userId
+  return (isLocalOnly || isCheckedOutByMe) && hasLocalContent(file)
 }
 
 export const syncMetadataCommand: Command<SyncMetadataParams> = {
@@ -108,11 +149,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
     // - Local only (not synced yet), OR
     // - Checked out by the current user
     const userId = ctx.user?.id
-    const eligibleFiles = swFiles.filter((f) => {
-      const isLocalOnly = !f.pdmData?.id
-      const isCheckedOutByMe = f.pdmData?.checked_out_by === userId
-      return isLocalOnly || isCheckedOutByMe
-    })
+    const eligibleFiles = swFiles.filter((f) => isEligibleForMetadataSync(f, userId))
 
     if (eligibleFiles.length === 0) {
       return 'No eligible files. Files must be local-only or checked out for editing.'
@@ -131,11 +168,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
     // Filter to eligible files:
     // - Local only (not synced yet), OR
     // - Checked out by current user
-    const filesToProcess = allSwFiles.filter((f) => {
-      const isLocalOnly = !f.pdmData?.id
-      const isCheckedOutByMe = f.pdmData?.checked_out_by === userId
-      return isLocalOnly || isCheckedOutByMe
-    })
+    const filesToProcess = allSwFiles.filter((f) => isEligibleForMetadataSync(f, userId))
 
     // Parts/assemblies must be processed first. They are pushed BluePLM -> file, while a
     // drawing inherits from its parent model's file. Selection order alone would let a

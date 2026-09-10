@@ -33,6 +33,7 @@ function areFileRowPropsEqual(prevProps: FileRowProps, nextProps: FileRowProps):
   if (prevProps.file.path !== nextProps.file.path) return false
   if (prevProps.file.name !== nextProps.file.name) return false
   if (prevProps.file.diffStatus !== nextProps.file.diffStatus) return false
+  if (prevProps.file.movedToRelativePath !== nextProps.file.movedToRelativePath) return false
   if (prevProps.file.isDirectory !== nextProps.file.isDirectory) return false
   if (prevProps.file.size !== nextProps.file.size) return false
   if (prevProps.file.modifiedTime !== nextProps.file.modifiedTime) return false

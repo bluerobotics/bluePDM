@@ -117,7 +117,10 @@ export function useFileOperations({
   )
 
   // Calculate selected files that can be checked in (for multi-select check-in feature)
-  // Exclude 'deleted' files - can't check in files that don't exist locally
+  // Exclude 'deleted' files - can't check in files that don't exist locally.
+  // Exclude 'moved_away' - the stub shares pdmData.checked_out_by with the real file at
+  // movedToRelativePath, but the stub's own path/relativePath point to nothing on disk, so
+  // checking in "this row" would check in the wrong local path.
   const selectedCheckinableFiles = useMemo(() => {
     if (selectedFiles.length <= 1) return []
     return files.filter(
@@ -125,7 +128,8 @@ export function useFileOperations({
         selectedFiles.includes(f.path) &&
         !f.isDirectory &&
         f.pdmData?.checked_out_by === userId &&
-        f.diffStatus !== 'deleted',
+        f.diffStatus !== 'deleted' &&
+        f.diffStatus !== 'moved_away',
     )
   }, [files, selectedFiles, userId])
 
@@ -173,7 +177,9 @@ export function useFileOperations({
   }, [files, selectedFiles])
 
   // Calculate selected files that can be checked out (for multi-select checkout feature)
-  // Exclude 'deleted' - files that were deleted locally while checked out
+  // Exclude 'deleted' - files that were deleted locally while checked out.
+  // Exclude 'moved_away' - the stub carries the real file's pdmData (so it can look
+  // checkoutable), but there's no local file at the stub's own path to check out.
   const selectedCheckoutableFiles = useMemo(() => {
     if (selectedFiles.length <= 1) return []
     return files.filter(
@@ -183,7 +189,8 @@ export function useFileOperations({
         f.pdmData &&
         !f.pdmData.checked_out_by &&
         f.diffStatus !== 'cloud' &&
-        f.diffStatus !== 'deleted',
+        f.diffStatus !== 'deleted' &&
+        f.diffStatus !== 'moved_away',
     )
   }, [files, selectedFiles])
 

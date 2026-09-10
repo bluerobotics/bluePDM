@@ -51,13 +51,27 @@ export function getSelectionCategories(
       result.updatable.push(file)
     }
 
-    // Checkoutable: synced, not checked out, not cloud-only, not deleted
-    if (pdmData && !pdmData.checked_out_by && diffStatus !== 'cloud' && diffStatus !== 'deleted') {
+    // Checkoutable: synced, not checked out, not cloud-only, not deleted.
+    // A 'moved_away' stub has no local file behind it, so it is excluded the
+    // same way 'cloud' is - checking it out would lock the server row from
+    // under the file that actually claimed it at its new location.
+    if (
+      pdmData &&
+      !pdmData.checked_out_by &&
+      diffStatus !== 'cloud' &&
+      diffStatus !== 'deleted' &&
+      diffStatus !== 'moved_away'
+    ) {
       result.checkoutable.push(file)
     }
 
-    // Checkinable: checked out by current user
-    if (pdmData?.checked_out_by === userId && diffStatus !== 'deleted') {
+    // Checkinable: checked out by current user. Excludes 'moved_away' for the
+    // same reason as checkoutable - the stub is not the file's real location.
+    if (
+      pdmData?.checked_out_by === userId &&
+      diffStatus !== 'deleted' &&
+      diffStatus !== 'moved_away'
+    ) {
       result.checkinable.push(file)
     }
 

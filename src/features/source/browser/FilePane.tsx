@@ -1024,6 +1024,9 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
           (f) => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id,
         )
       }
+      // A 'moved_away' stub carries the real file's pdmData/checkout state, but there is
+      // nothing on disk at its own relativePath to rename.
+      if (file.diffStatus === 'moved_away') return false
       const isSynced = !!file.pdmData
       const isCheckedOutByMe = file.pdmData?.checked_out_by === user?.id
       return !isSynced || isCheckedOutByMe
@@ -1463,6 +1466,13 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
       )
       if (result.success && window.electronAPI) {
         window.electronAPI.openFile(file.path)
+      }
+    } else if (file.diffStatus === 'moved_away') {
+      // Stub at the vault's recorded path - there is nothing on disk at file.path anymore,
+      // the content lives at movedToRelativePath now. Open that instead of failing on a
+      // path that no longer exists.
+      if (file.movedToRelativePath && vaultPath && window.electronAPI) {
+        window.electronAPI.openFile(buildFullPath(vaultPath, file.movedToRelativePath))
       }
     } else if (window.electronAPI) {
       // Open file

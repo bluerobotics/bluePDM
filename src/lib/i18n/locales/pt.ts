@@ -359,6 +359,7 @@ export const pt: TranslationDict = {
     serverPathUpdateFailed:
       'Algumas mudanças de nome não chegaram ao servidor, que continua a registar os caminhos antigos. Os ficheiros afetados aparecem como movidos; execute reconcile-moved-paths para os atualizar.',
     cloudRenameFailed: 'Não foi possível mudar o nome no servidor',
+    movedAwayBlocked: 'O ficheiro foi movido - resolva primeiro a mudança pendente',
     checkIn: 'Check-In',
     checkOut: 'Check-Out',
     download: 'Transferir',
@@ -417,7 +418,26 @@ export const pt: TranslationDict = {
     cloud: 'Nuvem',
     cloudNew: 'Novo (Nuvem)',
     moved: 'Movido',
+    movedAway: 'Movido (anterior)',
     ignored: 'Ignorado',
+  },
+
+  fileStatus: {
+    deletedFromServer: 'Eliminado do servidor',
+    movedTooltip: 'Este ficheiro está aqui agora, mas o cofre ainda regista o caminho anterior',
+    movedAwayTooltip: 'O cofre ainda lista este ficheiro aqui, mas ele foi movido',
+    movedAwayTooltipTo: 'Movido para {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} movimentação de ficheiro pendente — clique para rever',
+    pendingMovesBadgeTitle_other:
+      '{{count}} movimentações de ficheiros pendentes — clique para rever',
+    disconnectWarningMoved_one:
+      '{{count}} ficheiro foi movido, e o cofre ainda regista o caminho anterior',
+    disconnectWarningMoved_other:
+      '{{count}} ficheiros foram movidos, e o cofre ainda regista os caminhos anteriores',
+    disconnectWarningMovedHint: 'Atualize o cofre para corresponder, ou devolva os ficheiros',
   },
 
   vaultSetup: {
@@ -503,6 +523,105 @@ export const pt: TranslationDict = {
     summaryNotAttempted: '{{count}} não tentados',
     summaryBlocked: '{{count}} com check-out de outros',
     summarySkipped: '{{count}} ignorados',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: 'Faça login primeiro',
+    noVault: 'Nenhum cofre conectado',
+    nothingToAdopt: 'Nenhum arquivo está aguardando ser renomeado para o caminho do servidor',
+
+    reportHeading:
+      '{{count}} arquivos estão num caminho local que já não corresponde ao que o servidor registra para eles.',
+    reportEligible: '{{count}} já podem ser renomeados para o caminho do servidor.',
+    reportBlocked:
+      '{{count}} estão com check-out feito por outras pessoas e serão deixados intactos, a menos que forçado:',
+    reportHolder: '{{count}} em posse de {{user}}',
+    unknownHolder: 'outro usuário',
+    reportConflict: '{{count}} ignorados — já existe outro arquivo no destino, no disco:',
+    reportUnverified:
+      '{{count}} ignorados — o conteúdo do arquivo já não corresponde ao que o servidor registrou para ele, portanto a movimentação não pode ser verificada:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… e mais {{count}}',
+
+    dryRunSummary:
+      'Apenas verificação prévia: {{eligible}} de {{total}} arquivos podem ser renomeados para o caminho do servidor. Nada foi gravado.',
+    dryRunNote: 'Apenas relatório. Nada é gravado sem --apply.',
+
+    refused:
+      'Nada foi renomeado: {{count}} desses arquivos estão com check-out feito por outras pessoas ({{holders}}). A renomeação afeta apenas o seu próprio disco e é segura de qualquer forma — peça a eles primeiro, ou execute novamente com --force para renomeá-los também.',
+    nothingEligible: 'Nada pode ser renomeado: {{skipped}} foram ignorados.',
+    confirmUnavailable:
+      'Nada foi renomeado: este comando precisa de uma caixa de diálogo de confirmação e nenhuma estava disponível.',
+
+    confirmTitle: 'Renomear {{count}} arquivos para o caminho do servidor?',
+    confirmMessage:
+      '{{count}} arquivos neste computador serão renomeados para o caminho que o servidor já registra para eles. Isto altera apenas o seu disco local — nada é gravado no servidor.',
+    confirmRemainder: '{{count}} outros permanecem inalterados ({{detail}}).',
+    confirmText: 'Renomear {{count}} arquivos',
+    declined: 'Cancelado. Nada foi renomeado.',
+
+    progress: 'Renomeando {{count}} arquivos para o caminho do servidor…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Erro desconhecido',
+    destinationAppeared: 'Outro arquivo apareceu em "{{path}}" desde a verificação prévia',
+    createFolderFailed: 'Não foi possível criar a pasta de destino — {{error}}',
+
+    summaryComplete: '{{count}} arquivos renomeados para o caminho do servidor.',
+    summaryPartial:
+      '{{succeeded}} de {{total}} arquivos renomeados — {{leftovers}}. Execute novamente para concluir.',
+    summaryFailed: '{{count}} com falha',
+    summaryNotAttempted: '{{count}} não tentados',
+    summaryBlocked: '{{count}} com check-out de outros',
+    summarySkipped: '{{count}} ignorados',
+  },
+
+  resolveMoves: {
+    title: 'Resolver movimentações pendentes',
+    subtitle:
+      'Alguns arquivos estão num caminho diferente do que o cofre registra. Escolha qual lado deve prevalecer.',
+    noPendingMoves: 'Não há nada para resolver — nenhuma movimentação pendente encontrada.',
+
+    scopeLabel: 'Mostrar',
+    scopeFile: 'Este arquivo',
+    scopeFolder: 'Esta pasta',
+    scopeVault: 'Todo o cofre',
+    vaultWideNote:
+      'Resolver sempre processa todas as movimentações pendentes do cofre, não apenas as mostradas acima.',
+
+    listHeading_one: '{{count}} movimentação pendente exibida',
+    listHeading_other: '{{count}} movimentações pendentes exibidas',
+    noMovesInScope: 'Nenhuma movimentação pendente neste âmbito.',
+    moreFiles: '… e mais {{count}}',
+
+    reconcileOptionTitle: 'Manter o novo local e atualizar o cofre para corresponder',
+    reconcileOptionDescription:
+      'Grava o caminho do seu disco no servidor. Todos os outros recebem o novo local na próxima sincronização.',
+    adoptOptionTitle: 'Colocar os arquivos de volta onde o cofre os tem',
+    adoptOptionDescription:
+      'Renomeia os arquivos do seu disco de volta ao caminho que o servidor já registra. Nada é gravado no servidor.',
+
+    eligibleCount_one: '{{count}} arquivo pronto',
+    eligibleCount_other: '{{count}} arquivos prontos',
+    blockedCount_one: '{{count}} arquivo com check-out de outra pessoa',
+    blockedCount_other: '{{count}} arquivos com check-out de outros',
+    conflictCount_one: '{{count}} arquivo ignorado — destino já ocupado',
+    conflictCount_other: '{{count}} arquivos ignorados — destino já ocupado',
+    unverifiedCount_one: '{{count}} arquivo ignorado — o conteúdo já não corresponde',
+    unverifiedCount_other: '{{count}} arquivos ignorados — o conteúdo já não corresponde',
+    noEligible: 'Ainda não há nada aqui que possa ser resolvido.',
+    unknownHolder: 'outro usuário',
+
+    skipCheckedOutLabel_one:
+      'Ignorar o arquivo com check-out de outra pessoa e atualizar o restante',
+    skipCheckedOutLabel_other:
+      'Ignorar os {{count}} arquivos com check-out de outros e atualizar o restante',
+    forceLabel_one: 'Renomear também o arquivo com check-out de outra pessoa',
+    forceLabel_other: 'Renomear também os {{count}} arquivos com check-out de outros',
+
+    runReconcile: 'Atualizar o cofre',
+    runAdopt: 'Restaurar arquivos locais',
+
+    contextMenuItem: 'Resolver arquivos movidos…',
   },
 
   hiddenFolders: {

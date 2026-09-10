@@ -365,6 +365,7 @@ export const de: TranslationDict = {
     serverPathUpdateFailed:
       'Einige Umbenennungen haben den Server nicht erreicht, der weiterhin die alten Pfade speichert. Betroffene Dateien werden als verschoben angezeigt; führen Sie reconcile-moved-paths aus, um sie zu aktualisieren.',
     cloudRenameFailed: 'Umbenennen auf dem Server nicht möglich',
+    movedAwayBlocked: 'Datei wurde verschoben - zuerst die ausstehende Verschiebung auflösen',
     checkIn: 'Einchecken',
     checkOut: 'Auschecken',
     download: 'Herunterladen',
@@ -423,7 +424,27 @@ export const de: TranslationDict = {
     cloud: 'Cloud',
     cloudNew: 'Neu (Cloud)',
     moved: 'Verschoben',
+    movedAway: 'Verschoben (alt)',
     ignored: 'Ignoriert',
+  },
+
+  fileStatus: {
+    deletedFromServer: 'Vom Server gelöscht',
+    movedTooltip:
+      'Diese Datei befindet sich jetzt hier, aber der Tresor verzeichnet noch den alten Pfad',
+    movedAwayTooltip: 'Der Tresor listet diese Datei noch hier, aber sie wurde verschoben',
+    movedAwayTooltipTo: 'Verschoben nach {{path}}',
+  },
+
+  explorer: {
+    pendingMovesBadgeTitle_one: '{{count}} ausstehende Dateiverschiebung — zum Überprüfen klicken',
+    pendingMovesBadgeTitle_other:
+      '{{count}} ausstehende Dateiverschiebungen — zum Überprüfen klicken',
+    disconnectWarningMoved_one:
+      '{{count}} Datei wurde verschoben, der Tresor verzeichnet noch den alten Pfad',
+    disconnectWarningMoved_other:
+      '{{count}} Dateien wurden verschoben, der Tresor verzeichnet noch die alten Pfade',
+    disconnectWarningMovedHint: 'Tresor aktualisieren oder Dateien zurückverschieben',
   },
 
   vaultSetup: {
@@ -509,6 +530,105 @@ export const de: TranslationDict = {
     summaryNotAttempted: '{{count}} nicht versucht',
     summaryBlocked: '{{count}} von anderen ausgecheckt',
     summarySkipped: '{{count}} übersprungen',
+  },
+
+  adoptServerPaths: {
+    notSignedIn: 'Bitte zuerst anmelden',
+    noVault: 'Kein Tresor verbunden',
+    nothingToAdopt: 'Keine Datei wartet darauf, auf den vom Server erfassten Pfad zurückbenannt zu werden',
+
+    reportHeading:
+      '{{count}} Dateien befinden sich an einem lokalen Pfad, der nicht mehr dem entspricht, was der Server für sie erfasst.',
+    reportEligible: '{{count}} können jetzt auf ihren Serverpfad zurückbenannt werden.',
+    reportBlocked:
+      '{{count}} sind von anderen Personen ausgecheckt und werden unverändert gelassen, sofern nicht erzwungen:',
+    reportHolder: '{{count}} gehalten von {{user}}',
+    unknownHolder: 'einem anderen Benutzer',
+    reportConflict: '{{count}} übersprungen — am Zielort liegt bereits eine andere Datei auf der Festplatte:',
+    reportUnverified:
+      '{{count}} übersprungen — der Inhalt der Datei stimmt nicht mehr mit dem überein, was der Server für sie aufgezeichnet hat; das Verschieben kann nicht überprüft werden:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… und {{count}} weitere',
+
+    dryRunSummary:
+      'Nur Vorprüfung: {{eligible}} von {{total}} Dateien können auf ihren Serverpfad zurückbenannt werden. Es wurde nichts geschrieben.',
+    dryRunNote: 'Nur Bericht. Ohne --apply wird nichts geschrieben.',
+
+    refused:
+      'Es wurde nichts umbenannt: {{count}} dieser Dateien sind von anderen Personen ausgecheckt ({{holders}}). Die Umbenennung betrifft nur Ihre eigene Festplatte und ist ohnehin sicher — fragen Sie sie zuerst, oder starten Sie erneut mit --force, um auch diese umzubenennen.',
+    nothingEligible: 'Es kann nichts umbenannt werden: {{skipped}} wurden übersprungen.',
+    confirmUnavailable:
+      'Es wurde nichts umbenannt: dieser Befehl benötigt einen Bestätigungsdialog, und es war keiner verfügbar.',
+
+    confirmTitle: '{{count}} Dateien auf ihren Serverpfad zurückbenennen?',
+    confirmMessage:
+      '{{count}} Dateien auf diesem Computer werden auf den Pfad zurückbenannt, den der Server bereits für sie erfasst. Dies ändert nur Ihre lokale Festplatte — es wird nichts auf den Server geschrieben.',
+    confirmRemainder: '{{count}} weitere bleiben unverändert ({{detail}}).',
+    confirmText: '{{count}} Dateien umbenennen',
+    declined: 'Abgebrochen. Es wurde nichts umbenannt.',
+
+    progress: '{{count}} Dateien werden auf ihren Serverpfad zurückbenannt…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Unbekannter Fehler',
+    destinationAppeared: 'Seit der Vorprüfung ist eine andere Datei unter „{{path}}“ erschienen',
+    createFolderFailed: 'Zielordner konnte nicht erstellt werden — {{error}}',
+
+    summaryComplete: '{{count}} Dateien auf ihren Serverpfad zurückbenannt.',
+    summaryPartial:
+      '{{succeeded}} von {{total}} Dateien umbenannt — {{leftovers}}. Führen Sie den Befehl erneut aus, um ihn abzuschließen.',
+    summaryFailed: '{{count}} fehlgeschlagen',
+    summaryNotAttempted: '{{count}} nicht versucht',
+    summaryBlocked: '{{count}} von anderen ausgecheckt',
+    summarySkipped: '{{count}} übersprungen',
+  },
+
+  resolveMoves: {
+    title: 'Ausstehende Verschiebungen lösen',
+    subtitle:
+      'Einige Dateien liegen an einem anderen Pfad, als der Tresor erfasst. Wählen Sie, welche Seite gewinnen soll.',
+    noPendingMoves: 'Es gibt nichts zu lösen — keine ausstehenden Verschiebungen gefunden.',
+
+    scopeLabel: 'Anzeigen',
+    scopeFile: 'Diese Datei',
+    scopeFolder: 'Dieser Ordner',
+    scopeVault: 'Gesamter Tresor',
+    vaultWideNote:
+      'Das Lösen verarbeitet immer alle ausstehenden Verschiebungen im Tresor, nicht nur die oben angezeigten.',
+
+    listHeading_one: '{{count}} ausstehende Verschiebung angezeigt',
+    listHeading_other: '{{count}} ausstehende Verschiebungen angezeigt',
+    noMovesInScope: 'Keine ausstehenden Verschiebungen in diesem Bereich.',
+    moreFiles: '… und {{count}} weitere',
+
+    reconcileOptionTitle: 'Neuen Ort beibehalten und den Tresor entsprechend aktualisieren',
+    reconcileOptionDescription:
+      'Schreibt den Pfad auf Ihrer Festplatte auf den Server. Alle anderen übernehmen den neuen Ort bei der nächsten Synchronisierung.',
+    adoptOptionTitle: 'Dateien dorthin zurücklegen, wo der Tresor sie erfasst',
+    adoptOptionDescription:
+      'Benennt die Dateien auf Ihrer Festplatte auf den Pfad zurück, den der Server bereits erfasst. Es wird nichts auf den Server geschrieben.',
+
+    eligibleCount_one: '{{count}} Datei bereit',
+    eligibleCount_other: '{{count}} Dateien bereit',
+    blockedCount_one: '{{count}} Datei von jemand anderem ausgecheckt',
+    blockedCount_other: '{{count}} Dateien von anderen ausgecheckt',
+    conflictCount_one: '{{count}} Datei übersprungen — Ziel bereits belegt',
+    conflictCount_other: '{{count}} Dateien übersprungen — Ziel bereits belegt',
+    unverifiedCount_one: '{{count}} Datei übersprungen — Inhalt stimmt nicht mehr überein',
+    unverifiedCount_other: '{{count}} Dateien übersprungen — Inhalt stimmt nicht mehr überein',
+    noEligible: 'Hier kann noch nichts gelöst werden.',
+    unknownHolder: 'einem anderen Benutzer',
+
+    skipCheckedOutLabel_one:
+      'Die von jemand anderem ausgecheckte Datei überspringen und den Rest aktualisieren',
+    skipCheckedOutLabel_other:
+      'Die {{count}} von anderen ausgecheckten Dateien überspringen und den Rest aktualisieren',
+    forceLabel_one: 'Auch die von jemand anderem ausgecheckte Datei umbenennen',
+    forceLabel_other: 'Auch die {{count}} von anderen ausgecheckten Dateien umbenennen',
+
+    runReconcile: 'Tresor aktualisieren',
+    runAdopt: 'Lokale Dateien wiederherstellen',
+
+    contextMenuItem: 'Verschobene Dateien lösen…',
   },
 
   hiddenFolders: {

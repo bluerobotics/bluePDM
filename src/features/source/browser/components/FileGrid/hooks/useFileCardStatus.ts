@@ -72,6 +72,9 @@ function getProcessingOperation(
 function getDiffClass(diffStatus: string | undefined): string {
   if (diffStatus === 'modified') return 'ring-1 ring-yellow-500/50 bg-yellow-500/5'
   if (diffStatus === 'moved') return 'ring-1 ring-blue-500/50 bg-blue-500/5'
+  // moved_away is a stub, not a file - subordinate ring, no fill, so it never reads as a peer
+  // status to the other rings above.
+  if (diffStatus === 'moved_away') return 'ring-1 ring-blue-500/25'
   if (diffStatus === 'deleted') return 'ring-1 ring-red-500/50 bg-red-500/5'
   if (diffStatus === 'outdated') return 'ring-1 ring-purple-500/50 bg-purple-500/5'
   if (diffStatus === 'cloud') return 'ring-1 ring-plm-fg-muted/30 bg-plm-fg-muted/5'
