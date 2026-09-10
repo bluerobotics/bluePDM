@@ -7,12 +7,21 @@ API. The renderer lives in `src/`, the Electron main process in `electron/`, the
 
 ## Active plan
 
-Nothing in flight. The discard-rename, download-button, and configuration-edit work shipped in
-4.3.0 alongside schema 99.
+Nothing in flight. 4.3.1 (schema 100) shipped: `getFileByPath` and, only on `syncFile`'s `23505`
+collision fallback, `syncFile` itself now call `get_active_file_by_path` for a case-insensitive
+path match; the folders case-collision remediation from v99 gained the residue-check clause it
+was missing; `get_user_module_defaults` is one function instead of two competing overloads;
+realtime now propagates a same-machine-invisible delete promptly instead of waiting for the next
+full load; automatic discard no longer asks before a batch above ten and never falls back to a
+permanent delete when it cannot recycle a file.
 
-Deferred to 4.3.1, with reasoning, in `.cursor/plans/`: the byte-exact primary lookup in
-`syncFile` (needs an RPC to stay index-backed), `getFileByPath` carrying the same defect, and
-cleaning up the orphaned `files` rows left by the pre-4.3.0 move handling.
+`syncFile`'s primary existence check stays byte-exact and off `get_active_file_by_path` on
+purpose — that was a deliberate scope decision for 4.3.1, not an oversight, and paying for a
+case-insensitive lookup on every file during a bulk first check-in would slow down the path that
+never collides. Still deferred: cleaning up the orphaned `files` rows left by the pre-4.3.0 move
+handling, which is diagnosis-only so far (`.cursor/plans/orphaned-file-rows-report.md`) — the
+superseded-row bucket has a server-verifiable remediation candidate, the genuinely-orphaned
+bucket does not, and neither has shipped.
 
 Plans and agent reports live in `.cursor/plans/`. Never create a plan outside the repository.
 

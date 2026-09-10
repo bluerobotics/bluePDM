@@ -2570,6 +2570,53 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION get_user_vault_access(UUID) TO authenticated;
 
+-- The active file at a path, matched the way idx_files_vault_path_unique_active
+-- matches it: (vault_id, LOWER(file_path)) WHERE deleted_at IS NULL. syncFile's
+-- own primary lookup stays byte-exact for speed and only reaches this, from
+-- the 23505 it catches, once a differently-cased row has already proven a
+-- collision exists - which works, but only after paying for the failed
+-- insert first. getFileByPath had no case-insensitive path at all: two rows
+-- differing only in case were simply invisible to it, with no error to
+-- notice. getFileByPath calls this on every lookup now.
+--
+-- deleted_at IS NULL is a literal here, not a p_include_deleted toggle a
+-- caller could flip - a parameterized boolean inside an OR is not something
+-- the planner can prove matches a partial index, and every current caller
+-- only ever wants the active row anyway. vault_id and LOWER(file_path) are
+-- both plain equality predicates for the same reason: provably index-backed,
+-- not just usually fast.
+--
+-- Takes a vault id and derives the organization from the vault itself via
+-- require_vault_access, rather than accepting a second p_org_id argument from
+-- the caller and trusting it to match - the same reasoning create_file_share_link
+-- was rewritten for above.
+DROP FUNCTION IF EXISTS get_active_file_by_path(UUID, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION get_active_file_by_path(
+  p_vault_id UUID,
+  p_file_path TEXT
+)
+RETURNS SETOF files AS $$
+BEGIN
+  PERFORM require_vault_access(p_vault_id);
+
+  -- At most one row can match while idx_files_vault_path_unique_active holds,
+  -- but this function is only ever reached after a 23505 has already proven
+  -- the index isn't - dropped and rebuilt without UNIQUE, say. ORDER BY makes
+  -- two concurrent callers racing that same window agree on which row they
+  -- mean instead of each taking whichever the planner happened to scan first.
+  RETURN QUERY
+    SELECT *
+      FROM files
+     WHERE vault_id = p_vault_id
+       AND LOWER(file_path) = LOWER(p_file_path)
+       AND deleted_at IS NULL
+     ORDER BY created_at, id
+     LIMIT 1;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_active_file_by_path(UUID, TEXT) TO authenticated;
+
 -- ===========================================
 -- ATOMIC FILE OPERATIONS
 -- ===========================================

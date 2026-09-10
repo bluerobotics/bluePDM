@@ -344,11 +344,15 @@ export const fr: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: 'Supprimer les fichiers retirés du coffre ?',
-      message:
-        "Ces fichiers locaux ne sont plus dans le coffre sur le serveur ; BluePLM les supprimerait donc normalement de façon automatique. Ils sont plus nombreux que d'habitude, aucun n'a donc encore été supprimé. Les supprimer envoie les copies locales à la Corbeille. Annulez pour les conserver et les examiner dans l'explorateur de fichiers.",
-      confirm: 'Supprimer les fichiers',
+    removed: {
+      generic_one: '{{count}} fichier supprimé du coffre',
+      generic_other: '{{count}} fichiers supprimés du coffre',
+      fromFolder_one: '{{count}} fichier supprimé de {{folder}} (retiré du coffre)',
+      fromFolder_other: '{{count}} fichiers supprimés de {{folder}} (retirés du coffre)',
+    },
+    failed: {
+      generic_one: 'Impossible de supprimer automatiquement {{count}} fichier orphelin',
+      generic_other: 'Impossible de supprimer automatiquement {{count}} fichiers orphelins',
     },
   },
 

@@ -7,6 +7,9 @@ import { withRetry } from '../../network'
 /** Postgres unique-constraint violation (SQLSTATE 23505). */
 const UNIQUE_VIOLATION = '23505'
 
+/** PostgREST: the RPC's target function does not exist in this schema. */
+const RPC_FUNCTION_NOT_FOUND = 'PGRST202'
+
 // ============================================
 // Private Helper Functions
 // ============================================
@@ -178,24 +181,65 @@ interface ActiveFileRow {
  * Find the active file row whose path matches `filePath` case-insensitively.
  *
  * This is the slow way there and is used only after a byte-exact lookup has
- * already missed: `idx_files_file_path` is a plain btree on `file_path`, so
- * `.ilike()` cannot use it and the query is a scan. syncFile's own lookup stays
- * byte-exact for that reason - it runs once per file at CONCURRENT_OPERATIONS
- * concurrency during a first check-in of a whole vault - and pays for this only
- * on a collision.
+ * already missed. It used to be a client-side `.ilike()` scan - `.ilike()`
+ * cannot use `idx_files_file_path`, a plain btree on `file_path` - and now
+ * calls `get_active_file_by_path`, which matches the way
+ * `idx_files_vault_path_unique_active` matches: `(vault_id, LOWER(file_path))
+ * WHERE deleted_at IS NULL`, all three predicates provably index-backed
+ * rather than merely usually fast. syncFile's own lookup stays byte-exact for
+ * speed - it runs once per file at CONCURRENT_OPERATIONS concurrency during a
+ * first check-in of a whole vault - and pays for this only on a collision.
+ *
+ * A 4.3.1 client can reach a database still on schema 99, where this function
+ * does not exist. PostgREST answers that with `PGRST202`, not a Postgres
+ * error code the RPC itself could raise, so it has to be matched on `code`
+ * rather than inferred from the message. Falling through to `error` in that
+ * case would turn a same-case-collision that 4.3.0 recovered from into a
+ * failed check-in, so it degrades to `findActiveFileByPathLegacy` instead.
+ *
+ * `// TODO: type this` - `get_active_file_by_path` is not yet in the
+ * generated `src/types/supabase.ts`; it will be once schema 100 is applied
+ * and types are regenerated, matching the existing precedent for
+ * `getFilesLightweight`/`getFilesDelta`/`getVaultFilesCount` in `queries.ts`.
+ */
+async function findActiveFileByPath(
+  client: ReturnType<typeof getSupabaseClient>,
+  vaultId: string,
+  orgId: string,
+  filePath: string,
+) {
+  const { data, error } = await (client.rpc as any)('get_active_file_by_path', {
+    // TODO: type this
+    p_vault_id: vaultId,
+    p_file_path: filePath,
+  })
+
+  if (error?.code === RPC_FUNCTION_NOT_FOUND) {
+    return findActiveFileByPathLegacy(client, vaultId, orgId, filePath)
+  }
+
+  return { file: (data?.[0] as ActiveFileRow | undefined) ?? null, error }
+}
+
+/**
+ * The schema-99 recovery path `findActiveFileByPath` used before this release,
+ * kept only for the window before `get_active_file_by_path` exists on the
+ * server. `.ilike()` cannot use `idx_files_file_path`, a plain btree on
+ * `file_path`, so this is a scan - the same cost every collision paid before
+ * schema 100.
  *
  * The pattern carries no wildcards of its own, so `Part_Files.sldprt` cannot
  * match `PartXFiles.sldprt`.
  *
  * Deliberately neither `.single()` nor `.maybeSingle()`, for the same reason
  * `findActiveFolderByPath` in `folders.ts` avoids them: postgrest-js reports
- * "more than one row" with the same `PGRST116` code it uses for no rows at all,
- * so a caller reading `PGRST116` as "absent" would take two rows for zero.
- * Ordering plus a limit answers with one row whatever the table holds, and the
- * order is stable so two machines looking at one collision agree on which row
- * they mean.
+ * "more than one row" with the same `PGRST116` code it uses for no rows at
+ * all, so a caller reading `PGRST116` as "absent" would take two rows for
+ * zero. Ordering plus a limit answers with one row whatever the table holds,
+ * and the order is stable so two machines looking at one collision agree on
+ * which row they mean.
  */
-async function findActiveFileByPath(
+async function findActiveFileByPathLegacy(
   client: ReturnType<typeof getSupabaseClient>,
   vaultId: string,
   orgId: string,
@@ -533,6 +577,13 @@ export async function syncFile(
       // above could not see. The row is there; this is the update it always
       // was. Without this, the same miss/insert/reject repeats on every retry
       // and the file never syncs at all.
+      //
+      // Belt-and-braces: get_active_file_by_path (schema 100) already makes
+      // this lookup case-insensitive and index-backed, so a byte-exact primary
+      // check "shouldn't" ever miss a row this fallback then finds - but it
+      // stays, because the 23505 itself is the proof a collision exists, and
+      // catching it here costs nothing on the vastly more common non-colliding
+      // path.
       if (error?.code === UNIQUE_VIOLATION) {
         const { file: collidingFile, error: refetchError } = await findActiveFileByPath(
           client,

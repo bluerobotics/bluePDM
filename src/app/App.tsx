@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { log } from '@/lib/logger'
 import { recordMetric } from '@/lib/performanceMetrics'
@@ -183,8 +183,21 @@ export function App() {
 
   const realtimeSessionKey = `${user?.id ?? ''}:${sessionGeneration}`
 
+  // A file just marked 'deleted_remote' by realtime has no orphan tombstone yet - that
+  // is only stamped by a full merge pass against the server. This silent pass is what
+  // lets auto-discard actually remove the file within seconds instead of waiting for
+  // the next loud load (see ORPHAN_DISCARD_REFRESH_DEBOUNCE_MS in useRealtimeSubscriptions).
+  const requestSilentRefreshAfterDeletion = useCallback(() => {
+    void loadFiles(true)
+  }, [loadFiles])
+
   // Existing extracted hooks
-  useRealtimeSubscriptions(organization, isOfflineMode, realtimeSessionKey)
+  useRealtimeSubscriptions(
+    organization,
+    isOfflineMode,
+    realtimeSessionKey,
+    requestSilentRefreshAfterDeletion,
+  )
 
   const previousSessionBoundaryRef = useRef<{
     authenticatedUserId: string | null

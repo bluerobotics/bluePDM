@@ -328,11 +328,17 @@ export const zhTW: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: '是否移除已從保險庫刪除的檔案？',
-      message:
-        '這些本機檔案已不在伺服器的保險庫中，BluePLM 通常會自動移除它們。本次數量多於平常，因此尚未移除任何檔案。移除會將本機副本放入資源回收筒。取消則保留這些檔案，可在檔案瀏覽器中查看。',
-      confirm: '移除檔案',
+    removed: {
+      // Chinese has no plural inflection - the `_one`/`_other` forms are identical text,
+      // selected by the same caller logic as every other locale for consistency.
+      generic_one: '已移除 {{count}} 個已從保險庫刪除的檔案',
+      generic_other: '已移除 {{count}} 個已從保險庫刪除的檔案',
+      fromFolder_one: '已從 {{folder}} 移除 {{count}} 個檔案（已從保險庫刪除）',
+      fromFolder_other: '已從 {{folder}} 移除 {{count}} 個檔案（已從保險庫刪除）',
+    },
+    failed: {
+      generic_one: '無法自動捨棄 {{count}} 個孤立檔案',
+      generic_other: '無法自動捨棄 {{count}} 個孤立檔案',
     },
   },
 

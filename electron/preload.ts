@@ -337,11 +337,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('hash-progress', handler)
   },
   createFolder: (path: string) => ipcRenderer.invoke('fs:create-folder', path),
-  deleteItem: (path: string) => ipcRenderer.invoke('fs:delete', path),
+  // `isAutomatic` marks a delete nobody is watching (e.g. auto-discard of orphaned
+  // files): the main process will never permanently delete on that path, even if
+  // shell.trashItem cannot recycle the file - it leaves the file on disk and
+  // reports it as `skipped` instead. Defaults to false (explicit user delete),
+  // which keeps the existing trash-then-permanent-delete fallback behavior.
+  deleteItem: (path: string, isAutomatic?: boolean) =>
+    ipcRenderer.invoke('fs:delete', path, isAutomatic ?? false),
   // Batch delete operations - much faster than individual deleteItem calls
   // Stops file watcher ONCE, deletes all files, restarts watcher ONCE
-  deleteBatch: (paths: string[], useTrash?: boolean) =>
-    ipcRenderer.invoke('fs:delete-batch', paths, useTrash ?? true),
+  deleteBatch: (paths: string[], useTrash?: boolean, isAutomatic?: boolean) =>
+    ipcRenderer.invoke('fs:delete-batch', paths, useTrash ?? true, isAutomatic ?? false),
   trashBatch: (paths: string[]) => ipcRenderer.invoke('fs:trash-batch', paths),
   isDirEmpty: (path: string) => ipcRenderer.invoke('fs:is-dir-empty', path),
   isDirectory: (path: string) => ipcRenderer.invoke('fs:is-directory', path),
@@ -1242,20 +1248,36 @@ declare global {
         callback: (progress: { processed: number; total: number; percent: number }) => void,
       ) => () => void
       createFolder: (path: string) => Promise<OperationResult>
-      deleteItem: (path: string) => Promise<OperationResult>
+      deleteItem: (
+        path: string,
+        isAutomatic?: boolean,
+      ) => Promise<OperationResult & { skipped?: boolean }>
       // Batch delete operations - much faster than individual deleteItem calls
       deleteBatch: (
         paths: string[],
         useTrash?: boolean,
+        isAutomatic?: boolean,
       ) => Promise<{
         success: boolean
-        results: Array<{ path: string; success: boolean; error?: string }>
-        summary: { total: number; succeeded: number; failed: number; duration: number }
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          skipped: number
+          duration: number
+        }
       }>
       trashBatch: (paths: string[]) => Promise<{
         success: boolean
-        results: Array<{ path: string; success: boolean; error?: string }>
-        summary: { total: number; succeeded: number; failed: number; duration: number }
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          skipped: number
+          duration: number
+        }
       }>
       renameItem: (oldPath: string, newPath: string) => Promise<FileOperationResult>
       copyFile: (sourcePath: string, destPath: string) => Promise<FileOperationResult>

@@ -4,6 +4,33 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [4.3.1] - 2026-09-10
+
+**This release requires a database update to schema release 100.** See **Schema** at the end of
+this entry. Apply the schema _before_ installing 4.3.1 — a 4.3.1 client against schema 99
+degrades gracefully on the one path this release specifically hardened for it (syncFile's
+same-case collision recovery falls back to the pre-4.3.1 scan instead of failing the check-in),
+but `getFileByPath` has no such fallback and fails outright, and the folders residue check and
+the `get_user_module_defaults` consolidation are simply absent until the schema is applied. The
+reverse order is safe: a 4.3.0 client against schema 100 shows one dismissible "App update
+available" notice and otherwise works normally.
+
+### Changed
+
+- **Automatic discard no longer asks before removing more than ten files.** A batch above ten used to stop and put the list to you, on the theory that a batch that large might mean a misclassification rather than a real deletion. That dialog contradicted the setting that turns auto-discard on in the first place — one named "automatically discard orphaned files" — and the outcome it was gating is the same either way: the files go to the Recycle Bin, not straight to deletion. Auto-discard now acts on a batch of any size without asking. A sanity check takes over the one failure mode the dialog actually protected against: if a load's server response looks like it lost track of most of a previously-synced vault rather than the vault having genuinely emptied, auto-discard skips that pass entirely — the files stay in the browser, marked as deleted from the vault, for a person to look at or for the next healthy load to clear.
+
+### Fixed
+
+- **A file deleted on another machine now disappears from yours within moments, not on the next full load.** Trash is a soft delete — it sets `deleted_at` rather than removing the row — so it arrives over realtime as an ordinary UPDATE, and nothing recognized what a newly-set `deleted_at` inside that event meant: the local view kept the file until a full reload happened to notice it was gone from the server's list, which on a vault nobody was actively refreshing could be most of a session. Realtime now classifies that UPDATE correctly. A file with no local copy is removed from the view outright, the same way a hard delete already behaved. A file that does have a local copy is marked orphaned and a debounced refresh follows, so auto-discard can act on it — under its own guards for unsaved edits and for a disk write that arrived after the deletion — within moments rather than waiting for whatever load a person happens to trigger next.
+- **An automatic discard that cannot move a file to the Recycle Bin no longer permanently deletes it instead.** `shell.trashItem` throws, rather than silently falling back to a permanent delete, whenever Windows decides an item genuinely cannot be recycled — a UNC path, a mapped network drive, the Recycle Bin turned off for that volume. Every delete path used to treat that throw as "fall back to a hard delete," which is the right response when a person just asked for the delete and is there to see the result, and the wrong one for a discard running unattended: a vault on a share that cannot recycle to would have every orphaned file permanently removed with nobody watching. The automatic path no longer falls back to a permanent delete under any circumstance — a file it cannot recycle is left on disk and reported as skipped, exactly as if auto-discard had never touched it. A batch where every file hits this now backs off for ten minutes rather than retrying the whole batch, watcher stop and all, on every refresh with no chance of succeeding. A skip or a genuine failure on the automatic path is now reported once per distinct set of affected files, rather than either staying silent or repeating on every silent refresh for as long as the condition lasts.
+
+### Schema
+
+- Bumped to schema version **100** (`EXPECTED_SCHEMA_VERSION`). Apply the latest `supabase/core.sql` together with `modules/10-source-files.sql`.
+- **A new `get_active_file_by_path(vault_id, file_path)` RPC matches a path the same way `idx_files_vault_path_unique_active` does: `(vault_id, LOWER(file_path))` where `deleted_at IS NULL`, both predicates provably index-backed rather than merely usually fast.** `getFileByPath` had no case-insensitive path at all and simply could not see two rows differing only in case; it now calls this RPC on every lookup. `syncFile`'s own existence check stays byte-exact and off this RPC on purpose — it runs once per file at high concurrency during a first check-in of a whole vault, and a case-insensitive lookup on every file would slow down the path that never collides — so it reaches the same RPC only from the `23505` it catches on insert, once that exception has already proven a same-case collision exists.
+- **`check_release_residue()` now also proves the folders case-collision fix from v99 stays fixed.** v93 paired every remediation with a clause proving its work stays done, but v99's `remediate_case_colliding_folders()` went in without one — so a folders index dropped and rebuilt without `UNIQUE` after v99 applied would carry the exact defect v99 closed while verification kept reading clean. The clause is now there, reporting the same group shape the remediation clears.
+- **`get_user_module_defaults` is one function again, not two silently competing overloads.** Production carried both a no-argument version and a `p_user_id` one from before the `schema.sql`-to-`core.sql` split, and no `DROP` by exact signature had ever reached the second — so it outlived every release since with neither overload checking that the caller was allowed to ask about somebody else's module configuration. They are now one function, the argument optional and defaulting to `auth.uid()`, gated with `require_same_org_user` the same way `get_user_vault_access` and `get_user_permissions` already gate exactly this shape of question. The surviving signature takes `p_user_id`; a reset that still drops only the no-argument overload leaves this one behind (see `supabase/tools/reset.sql`).
+
 ## [4.3.0] - 2026-09-09
 
 **This release requires a database update to schema release 99.** See **Schema** at the end of

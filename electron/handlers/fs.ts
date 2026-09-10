@@ -1825,13 +1825,32 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     }
   })
 
-  ipcMain.handle('fs:delete', async (_, targetPath: string) => {
+  // ════════════════════════════════════════════════════════════════════════════
+  // AUTOMATIC vs USER-INITIATED DELETES
+  //
+  // `isAutomatic` distinguishes a delete nobody is watching (e.g. auto-discarding
+  // orphaned files) from one a person just asked for and is present to be told
+  // about. shell.trashItem throws rather than silently permanently deleting
+  // whenever Windows determines an item genuinely cannot be recycled - UNC path,
+  // mapped network drive, Recycle Bin disabled for the volume, file too large for
+  // the bin - because Electron's Windows implementation aborts the underlying
+  // IFileOperation whenever TSF_DELETE_RECYCLE_IF_POSSIBLE is unset (see
+  // .cursor/plans/recycle-bin-reliability-report.md for the source-level and
+  // empirical evidence). That makes "trashItem threw" a reliable signal.
+  //
+  // On the automatic path, that signal is final: the file is left on disk and
+  // reported back as `skipped` rather than permanently deleted, because nobody is
+  // present to be told a fallback happened. On a user-initiated delete the
+  // existing fallback to fs.unlinkSync/rmSync is unchanged - the user asked, and
+  // is present to see the result.
+  // ════════════════════════════════════════════════════════════════════════════
+  ipcMain.handle('fs:delete', async (_, targetPath: string, isAutomatic: boolean = false) => {
     const deleteStartTime = Date.now()
     const fileName = path.basename(targetPath)
     const deleteOpId = ++deleteOperationCounter
 
     try {
-      log(`[Delete #${deleteOpId}] START: ${fileName}`)
+      log(`[Delete #${deleteOpId}] START: ${fileName}${isAutomatic ? ' (automatic)' : ''}`)
       log(`[Delete #${deleteOpId}] Full path: ${targetPath}`)
 
       if (!fs.existsSync(targetPath)) {
@@ -1906,7 +1925,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         filePath: string,
         isFile: boolean,
         retries = 3,
-      ): Promise<{ success: boolean; error?: string }> => {
+      ): Promise<{ success: boolean; error?: string; skipped?: boolean }> => {
         for (let attempt = 1; attempt <= retries; attempt++) {
           log(`[Delete #${deleteOpId}] Attempt ${attempt}/${retries} for: ${fileName}`)
 
@@ -1917,6 +1936,35 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
             return { success: true }
           } catch (trashErr) {
             log(`[Delete #${deleteOpId}] shell.trashItem failed: ${trashErr}`)
+
+            const trashErrStr = String(trashErr)
+            const trashErrLooksLocked =
+              trashErrStr.includes('EBUSY') || trashErrStr.includes('resource busy')
+
+            if (isAutomatic) {
+              // Never hard-delete on the automatic path - see the invariant note above
+              // this handler. A transient lock is worth a retry (the file may become
+              // recyclable once whatever holds it lets go); any other trash failure
+              // means recycling this file is impossible here, so it is left on disk
+              // and reported rather than guessed to be safe to remove.
+              if (trashErrLooksLocked && attempt < retries) {
+                const delay = attempt * DELETE_RETRY_BASE_MS
+                log(
+                  `[Delete #${deleteOpId}] Trash target locked, waiting ${delay}ms before retry...`,
+                )
+                await new Promise((resolve) => setTimeout(resolve, delay))
+                continue
+              }
+
+              log(
+                `[Delete #${deleteOpId}] AUTOMATIC delete could not recycle - leaving on disk: ${fileName}`,
+              )
+              return {
+                success: false,
+                skipped: true,
+                error: `Could not move to Recycle Bin, left on disk: ${trashErrStr}`,
+              }
+            }
 
             try {
               log(`[Delete #${deleteOpId}] Trying fs.${isFile ? 'unlinkSync' : 'rmSync'}...`)
@@ -2022,165 +2070,215 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
    *
    * @param paths - Array of absolute file paths to delete
    * @param useTrash - Whether to move files to trash (default: true) or permanently delete
+   * @param isAutomatic - Set by an unattended caller (e.g. auto-discard of orphaned files).
+   *   When true, a file that cannot be recycled is left on disk and reported with
+   *   `skipped: true` instead of being permanently deleted - see the invariant note
+   *   above `fs:delete`. Defaults to false, which preserves the existing
+   *   trash-then-hard-delete-fallback behavior for explicit user deletes.
    * @returns Object with overall success status and per-file results
    */
-  ipcMain.handle('fs:delete-batch', async (_, paths: string[], useTrash: boolean = true) => {
-    const batchId = ++deleteOperationCounter
-    const startTime = Date.now()
+  ipcMain.handle(
+    'fs:delete-batch',
+    async (_, paths: string[], useTrash: boolean = true, isAutomatic: boolean = false) => {
+      const batchId = ++deleteOperationCounter
+      const startTime = Date.now()
 
-    log(`[DeleteBatch #${batchId}] START: ${paths.length} files, useTrash=${useTrash}`)
-
-    if (!paths || paths.length === 0) {
-      return { success: true, results: [] }
-    }
-
-    const results: Array<{ path: string; success: boolean; error?: string }> = []
-
-    // Check if any path is within working directory
-    const watchedRoot = workingDirectory
-    const needsWatcherPause =
-      !!watchedRoot &&
-      paths.some(
-        (targetPath) =>
-          targetPath === watchedRoot ||
-          watchedRoot.startsWith(targetPath) ||
-          targetPath.startsWith(watchedRoot),
+      log(
+        `[DeleteBatch #${batchId}] START: ${paths.length} files, useTrash=${useTrash}, isAutomatic=${isAutomatic}`,
       )
 
-    // Stop watcher ONCE for the entire batch
-    if (needsWatcherPause && fileWatcher) {
-      log(`[DeleteBatch #${batchId}] Stopping file watcher for batch operation`)
-      await stopFileWatcher()
-      // Brief wait for any pending file system events to settle
-      await new Promise((resolve) => setTimeout(resolve, FS_EVENT_SETTLE_MS))
-    }
-
-    try {
-      // Wait for any thumbnailing to complete
-      if (thumbnailsInProgress.size > 0) {
-        log(
-          `[DeleteBatch #${batchId}] Waiting for ${thumbnailsInProgress.size} thumbnails to complete`,
-        )
-        await new Promise((resolve) => setTimeout(resolve, THUMBNAIL_WAIT_MS))
+      if (!paths || paths.length === 0) {
+        return { success: true, results: [] }
       }
 
-      // Process all files
-      for (const targetPath of paths) {
-        const fileName = path.basename(targetPath)
+      const results: Array<{
+        path: string
+        success: boolean
+        error?: string
+        skipped?: boolean
+      }> = []
 
-        try {
-          // Skip if file doesn't exist
-          if (!fs.existsSync(targetPath)) {
-            forgetScanCacheEntry(targetPath)
-            results.push({ path: targetPath, success: true }) // Already deleted, consider success
-            continue
-          }
+      // Check if any path is within working directory
+      const watchedRoot = workingDirectory
+      const needsWatcherPause =
+        !!watchedRoot &&
+        paths.some(
+          (targetPath) =>
+            targetPath === watchedRoot ||
+            watchedRoot.startsWith(targetPath) ||
+            targetPath.startsWith(watchedRoot),
+        )
 
-          // Check if file is being thumbnailed
-          if (isFileBeingThumbnailed(targetPath)) {
-            await new Promise((resolve) => setTimeout(resolve, THUMBNAIL_CHECK_WAIT_MS))
-          }
+      // Stop watcher ONCE for the entire batch
+      if (needsWatcherPause && fileWatcher) {
+        log(`[DeleteBatch #${batchId}] Stopping file watcher for batch operation`)
+        await stopFileWatcher()
+        // Brief wait for any pending file system events to settle
+        await new Promise((resolve) => setTimeout(resolve, FS_EVENT_SETTLE_MS))
+      }
 
-          const stats = fs.statSync(targetPath)
-          const isFile = !stats.isDirectory()
+      try {
+        // Wait for any thumbnailing to complete
+        if (thumbnailsInProgress.size > 0) {
+          log(
+            `[DeleteBatch #${batchId}] Waiting for ${thumbnailsInProgress.size} thumbnails to complete`,
+          )
+          await new Promise((resolve) => setTimeout(resolve, THUMBNAIL_WAIT_MS))
+        }
 
-          // Clear read-only if needed
-          if (isFile && (stats.mode & 0o200) === 0) {
-            try {
-              fs.chmodSync(targetPath, stats.mode | 0o200)
-            } catch {
-              // Ignore chmod errors, try to delete anyway
+        // Process all files
+        for (const targetPath of paths) {
+          const fileName = path.basename(targetPath)
+
+          try {
+            // Skip if file doesn't exist
+            if (!fs.existsSync(targetPath)) {
+              forgetScanCacheEntry(targetPath)
+              results.push({ path: targetPath, success: true }) // Already deleted, consider success
+              continue
             }
-          }
 
-          // Try to delete with retries for locked files
-          let deleted = false
-          let lastError: string | undefined
+            // Check if file is being thumbnailed
+            if (isFileBeingThumbnailed(targetPath)) {
+              await new Promise((resolve) => setTimeout(resolve, THUMBNAIL_CHECK_WAIT_MS))
+            }
 
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              if (useTrash) {
-                await shell.trashItem(targetPath)
-              } else {
-                if (isFile) {
+            const stats = fs.statSync(targetPath)
+            const isFile = !stats.isDirectory()
+
+            // Clear read-only if needed
+            if (isFile && (stats.mode & 0o200) === 0) {
+              try {
+                fs.chmodSync(targetPath, stats.mode | 0o200)
+              } catch {
+                // Ignore chmod errors, try to delete anyway
+              }
+            }
+
+            // Try to delete with retries for locked files
+            let deleted = false
+            let skipped = false
+            let lastError: string | undefined
+
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                if (useTrash) {
+                  await shell.trashItem(targetPath)
+                } else if (isAutomatic) {
+                  // An automatic caller does not get a permanent delete even if it
+                  // explicitly asked for one - see the invariant note above fs:delete.
+                  throw new Error(
+                    'Refusing permanent delete on the automatic path (useTrash=false)',
+                  )
+                } else if (isFile) {
                   fs.unlinkSync(targetPath)
                 } else {
                   fs.rmSync(targetPath, { recursive: true, force: true })
                 }
-              }
-              deleted = true
-              break
-            } catch (error) {
-              lastError = String(error)
-              const isLocked = lastError.includes('EBUSY') || lastError.includes('resource busy')
+                deleted = true
+                break
+              } catch (error) {
+                lastError = String(error)
+                const isLocked =
+                  lastError.includes('EBUSY') || lastError.includes('resource busy')
 
-              if (isLocked && attempt < 3) {
-                await new Promise((resolve) => setTimeout(resolve, attempt * DELETE_RETRY_BASE_MS))
-                continue
-              }
+                if (isLocked && attempt < 3) {
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, attempt * DELETE_RETRY_BASE_MS),
+                  )
+                  continue
+                }
 
-              // If trash failed, try direct delete
-              if (useTrash && attempt === 1) {
-                try {
-                  if (isFile) {
-                    fs.unlinkSync(targetPath)
-                  } else {
-                    fs.rmSync(targetPath, { recursive: true, force: true })
-                  }
-                  deleted = true
+                if (isAutomatic) {
+                  // Never hard-delete on the automatic path. Recycling failed and
+                  // nobody is present to be told a fallback happened, so the file is
+                  // left on disk and reported instead of guessed to be safe to remove.
+                  skipped = true
                   break
-                } catch (fallbackErr) {
-                  lastError = String(fallbackErr)
+                }
+
+                // User-initiated delete: the user asked and is present to be told,
+                // so falling back to a permanent delete when recycling fails is
+                // acceptable here.
+                if (useTrash && attempt === 1) {
+                  try {
+                    if (isFile) {
+                      fs.unlinkSync(targetPath)
+                    } else {
+                      fs.rmSync(targetPath, { recursive: true, force: true })
+                    }
+                    deleted = true
+                    break
+                  } catch (fallbackErr) {
+                    lastError = String(fallbackErr)
+                  }
                 }
               }
             }
-          }
 
-          if (deleted) {
-            forgetScanCacheEntry(targetPath)
-            results.push({ path: targetPath, success: true })
-          } else {
-            let errorMsg = lastError || 'Unknown error'
-            if (errorMsg.includes('EBUSY') || errorMsg.includes('resource busy')) {
-              errorMsg = `${fileName} is locked (close it in the other application)`
-            } else if (errorMsg.includes('EPERM') || errorMsg.includes('permission denied')) {
-              errorMsg = `Permission denied - ${fileName} may be read-only or in use`
+            if (deleted) {
+              forgetScanCacheEntry(targetPath)
+              results.push({ path: targetPath, success: true })
+            } else {
+              let errorMsg = lastError || 'Unknown error'
+              if (skipped) {
+                errorMsg = `Could not move to Recycle Bin, left on disk: ${errorMsg}`
+              } else if (errorMsg.includes('EBUSY') || errorMsg.includes('resource busy')) {
+                errorMsg = `${fileName} is locked (close it in the other application)`
+              } else if (errorMsg.includes('EPERM') || errorMsg.includes('permission denied')) {
+                errorMsg = `Permission denied - ${fileName} may be read-only or in use`
+              }
+              results.push({
+                path: targetPath,
+                success: false,
+                error: errorMsg,
+                ...(skipped ? { skipped: true } : {}),
+              })
+              log(
+                `[DeleteBatch #${batchId}] ${skipped ? 'Skipped (kept on disk)' : 'Failed to delete'}: ${fileName} - ${errorMsg}`,
+              )
             }
+          } catch (error) {
+            const errorMsg = String(error)
             results.push({ path: targetPath, success: false, error: errorMsg })
-            log(`[DeleteBatch #${batchId}] Failed to delete: ${fileName} - ${errorMsg}`)
+            log(`[DeleteBatch #${batchId}] Exception deleting: ${fileName} - ${errorMsg}`)
           }
-        } catch (error) {
-          const errorMsg = String(error)
-          results.push({ path: targetPath, success: false, error: errorMsg })
-          log(`[DeleteBatch #${batchId}] Exception deleting: ${fileName} - ${errorMsg}`)
+        }
+      } finally {
+        // Restart watcher ONCE after all deletions complete
+        if (needsWatcherPause && workingDirectory && fs.existsSync(workingDirectory)) {
+          log(`[DeleteBatch #${batchId}] Restarting file watcher after batch operation`)
+          await startFileWatcher(workingDirectory)
         }
       }
-    } finally {
-      // Restart watcher ONCE after all deletions complete
-      if (needsWatcherPause && workingDirectory && fs.existsSync(workingDirectory)) {
-        log(`[DeleteBatch #${batchId}] Restarting file watcher after batch operation`)
-        await startFileWatcher(workingDirectory)
+
+      const succeeded = results.filter((r) => r.success).length
+      const failed = results.filter((r) => !r.success).length
+      const skippedCount = results.filter((r) => r.skipped).length
+      const duration = Date.now() - startTime
+
+      log(
+        `[DeleteBatch #${batchId}] END: ${succeeded}/${paths.length} succeeded, ${failed} failed (${skippedCount} skipped), ${duration}ms`,
+      )
+
+      return {
+        success: failed === 0,
+        results,
+        summary: { total: paths.length, succeeded, failed, skipped: skippedCount, duration },
       }
-    }
-
-    const succeeded = results.filter((r) => r.success).length
-    const failed = results.filter((r) => !r.success).length
-    const duration = Date.now() - startTime
-
-    log(
-      `[DeleteBatch #${batchId}] END: ${succeeded}/${paths.length} succeeded, ${failed} failed, ${duration}ms`,
-    )
-
-    return {
-      success: failed === 0,
-      results,
-      summary: { total: paths.length, succeeded, failed, duration },
-    }
-  })
+    },
+  )
 
   /**
    * Batch trash files - optimized for moving multiple files to recycle bin.
    * Similar to delete-batch but always uses shell.trashItem.
+   *
+   * No `isAutomatic` parameter here: this handler never had a permanent-delete
+   * fallback, so the "an automatic discard can always be undone" invariant already
+   * holds unconditionally - a failure here always means the file was left on disk
+   * untouched. Reported below as `skipped: true` for the same reason it is on the
+   * other delete handlers, so callers get one consistent shape regardless of which
+   * handler they used.
    *
    * @param paths - Array of absolute file paths to trash
    * @returns Object with overall success status and per-file results
@@ -2195,7 +2293,8 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
       return { success: true, results: [] }
     }
 
-    const results: Array<{ path: string; success: boolean; error?: string }> = []
+    const results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }> =
+      []
 
     // Check if any path is within working directory
     const watchedRoot = workingDirectory
@@ -2232,8 +2331,8 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
           results.push({ path: targetPath, success: true })
         } catch (error) {
           const errorMsg = String(error)
-          results.push({ path: targetPath, success: false, error: errorMsg })
-          log(`[TrashBatch #${batchId}] Failed to trash: ${fileName} - ${errorMsg}`)
+          results.push({ path: targetPath, success: false, error: errorMsg, skipped: true })
+          log(`[TrashBatch #${batchId}] Failed to trash (left on disk): ${fileName} - ${errorMsg}`)
         }
       }
     } finally {
@@ -2246,6 +2345,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
 
     const succeeded = results.filter((r) => r.success).length
     const failed = results.filter((r) => !r.success).length
+    const skipped = results.filter((r) => r.skipped).length
     const duration = Date.now() - startTime
 
     log(
@@ -2255,7 +2355,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     return {
       success: failed === 0,
       results,
-      summary: { total: paths.length, succeeded, failed, duration },
+      summary: { total: paths.length, succeeded, failed, skipped, duration },
     }
   })
 

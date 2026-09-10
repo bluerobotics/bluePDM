@@ -168,6 +168,18 @@ export interface CommandResult {
   succeeded: number
   failed: number
 
+  /**
+   * Count of files that were deliberately left untouched rather than
+   * permanently deleted - currently only set by an automatic discard-orphaned
+   * run when `shell.trashItem` could not recycle a file. Included in `failed`
+   * (the file was not successfully discarded) but broken out here so a caller
+   * can tell "kept on disk for safety" apart from a genuine failure like a
+   * locked file. See `.cursor/plans/recycle-bin-reliability-report.md`.
+   */
+  skipped?: number
+  /** Relative paths of the files counted in `skipped`, for surfacing to the user. */
+  skippedPaths?: string[]
+
   // Optional details
   details?: string[]
   errors?: string[]
@@ -272,7 +284,17 @@ export interface DiscardParams extends BaseCommandParams {}
  * Deletes local files that no longer exist on the server (orphaned files).
  * These are files that were previously synced but deleted by another user.
  */
-export interface DiscardOrphanedParams extends BaseCommandParams {}
+export interface DiscardOrphanedParams extends BaseCommandParams {
+  /**
+   * True when this discard runs unattended (e.g. the auto-discard-on-load path in
+   * `useLoadFiles.ts`), as opposed to a user explicitly invoking "Discard orphaned
+   * files" from a context menu or settings. On the automatic path a file that
+   * cannot be moved to the Recycle Bin is left on disk and reported via
+   * `CommandResult.skipped`/`skippedPaths` rather than being permanently deleted.
+   * Defaults to false.
+   */
+  isAutomatic?: boolean
+}
 
 /**
  * Parameters for the get-latest command.

@@ -14,6 +14,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { getFilesLightweight, getCheckedOutUsers, getVaultFolders } from '@/lib/supabase'
 import { executeCommand } from '@/lib/commands'
 import { buildFullPath } from '@/lib/commands/types'
+import { isAutomaticDiscardCoolingDown } from '@/lib/commands/handlers/discardOrphaned'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
@@ -31,7 +32,6 @@ import {
   updateInodes,
   type SyncIndexPathInfo,
 } from '@/lib/cache/localSyncIndex'
-import { showCommandConfirm } from '@/lib/commands/executor'
 import { t } from '@/lib/i18n'
 import { logExplorer } from '@/lib/userActionLogger'
 import type { LocalFile } from '@/stores/types'
@@ -63,28 +63,24 @@ const CHECKOUT_PROFILE_RETRY_BASE_MS = 200
 /** Enough resolved renames to recognise the pattern without logging all of them. */
 const RENAME_LOG_SAMPLE_LIMIT = 5
 
-/**
- * Orphan batches larger than this wait for the user instead of being discarded.
- *
- * Steady-state cleanup is one file or a few - a colleague deleted a part, or replaced
- * a drawing - and going through a dialog for that would train people to click past it.
- * A batch in double figures is not that: it means a folder was deleted on the server,
- * or that classification has gone wrong for a whole group of files at once. Both are
- * worth a person looking, because auto-discard is on by default and the files are
- * multi-megabyte CAD documents that may hold work never checked in.
- */
-const AUTO_DISCARD_CONFIRM_THRESHOLD = 10
-
 /** Enough orphan paths to see what a batch is without logging thousands. */
 const ORPHAN_LOG_SAMPLE_LIMIT = 10
 
 /**
- * Vaults whose large orphan batch has already been put to the user this session.
+ * How much of the previously-synced file set is allowed to look orphaned in one pass
+ * before the auto-discard gate refuses to act on it.
  *
- * Session-scoped on purpose: a declined batch must not re-prompt on the next refresh,
- * and must not be remembered so long that a genuinely new batch goes unmentioned.
+ * A silent refresh trusts the server's file list at face value, which is safe when the
+ * list is complete but not when it isn't: a revoked `vault_access` row, an RLS
+ * predicate that stops matching, or a SECURITY DEFINER function called with mismatched
+ * arguments can all return a successful, error-free response holding far fewer rows
+ * than the vault actually has. From this file's position that is indistinguishable
+ * from "most of the vault was deleted by another user since the last load" - the two
+ * can only be told apart by how implausible the count is. A real bulk deletion large
+ * enough to matter (a few thousand files pruned from a 25k-file vault) still passes
+ * through at 90%; a broken query landing on empty or near-empty does not reach disk.
  */
-const largeOrphanBatchPromptedVaults = new Set<string>()
+const AUTO_DISCARD_MAX_ORPHAN_FRACTION = 0.9
 
 /**
  * Merge phases hand the thread back after this long. The merge runs as one
@@ -147,50 +143,150 @@ function waitForCheckoutRetry(attempt: number): Promise<void> {
 }
 
 /**
- * Put a large orphan batch to the user, and discard only what they agree to.
+ * Vaults with an automatic discard currently running.
  *
- * Deliberately not awaited by the load that found the batch. The confirmation is a
- * modal, and awaiting it inside runExclusiveLoad would hold the load lock for as long
- * as the dialog stayed open, so an unanswered dialog would stall every refresh. The
- * cost of detaching is that the discard runs outside the lock and may supersede a
- * merge, which the loader already reruns.
+ * `beginWatcherSuppression` (used internally by the discard-orphaned command) already
+ * keeps the deletions a discard performs from being read back by the file watcher as
+ * external changes and re-triggering another silent refresh - that is the loop the
+ * pre-existing `committedMerge && !silent` gate this replaces was guarding against.
+ * This set is the second, independent line of defense: it stops *this* code from
+ * starting a second discard for the same vault while one it started is still running,
+ * so a gap in that suppression (a slow network-drive trash operation, a future caller)
+ * degrades into "the next pass finds nothing left to do" rather than into two
+ * concurrent batches touching the same files.
+ *
+ * A time-based debounce was deliberately not used here: a fixed delay would either be
+ * too short to matter or long enough to make a real, one-off deletion feel slow to
+ * disappear, whereas this only ever blocks the one case that matters - a second pass
+ * trying to touch files the first pass has not finished with.
  */
-async function confirmAndDiscardOrphanBatch(
+const vaultsWithActiveAutoDiscard = new Set<string>()
+
+/**
+ * Run `discard` for a vault's orphan batch, refusing to start a second one for the
+ * same vault while the first is still in flight.
+ *
+ * Exported standalone (no store or React access) so the re-entrancy guard can be
+ * proven with a test that never mounts the hook: two overlapping calls for the same
+ * vault, around a `discard` that has not resolved yet, must produce exactly one call
+ * to it rather than two.
+ */
+export async function runAutoDiscardForOrphans(
   vaultId: string,
-  candidates: LocalFile[],
-): Promise<void> {
-  const candidatePaths = new Set(candidates.map((f) => f.path))
+  discardableOrphans: LocalFile[],
+  discard: (files: LocalFile[]) => Promise<void>,
+): Promise<'skipped-empty' | 'skipped-in-flight' | 'ran'> {
+  if (discardableOrphans.length === 0) return 'skipped-empty'
 
-  const confirmed = await showCommandConfirm({
-    title: t('autoDiscard.largeBatch.title', 'Remove files deleted from the vault?'),
-    message: t(
-      'autoDiscard.largeBatch.message',
-      'These local files are no longer in the vault on the server, so BluePLM would normally remove them automatically. There are more than usual, so nothing has been removed yet. Removing them sends the local copies to the Recycle Bin. Cancel to keep them and review them in the file browser.',
-    ),
-    items: candidates.map((f) => f.relativePath),
-    confirmText: t('autoDiscard.largeBatch.confirm', 'Remove files'),
-  })
-
-  if (!confirmed) {
-    window.electronAPI?.log('info', '[AutoDiscard] Large orphan batch declined', {
-      vaultId,
-      count: candidates.length,
-    })
-    return
+  if (vaultsWithActiveAutoDiscard.has(vaultId)) {
+    return 'skipped-in-flight'
   }
 
-  // Re-derived from the store rather than trusting the list the dialog was built
-  // from: a refresh or a download may have resolved some of it while the dialog was
-  // open, and only files that are still orphaned should be deleted.
-  const stillOrphaned = usePDMStore
-    .getState()
-    .files.filter(
-      (f) => !f.isDirectory && f.diffStatus === 'deleted_remote' && candidatePaths.has(f.path),
-    )
+  vaultsWithActiveAutoDiscard.add(vaultId)
+  try {
+    await discard(discardableOrphans)
+    return 'ran'
+  } finally {
+    vaultsWithActiveAutoDiscard.delete(vaultId)
+  }
+}
 
-  if (stillOrphaned.length === 0) return
+/**
+ * Orphans that are safe to remove automatically.
+ *
+ * Two guards apply, and both exist because the local copy may hold work that exists
+ * nowhere else - but they do not cover the same ground. The pending-metadata check
+ * catches unsaved metadata edits that were never checked in, on any pass.
+ * `orphansEditedSinceServerRowLost` is narrower than its name suggests: it compares
+ * disk mtime against `syncedPath.orphanedAt`, a tombstone that `updateSyncIndexFromServer`
+ * writes only *after* this same pass's classification runs, from an index read at the
+ * start of the pass. So on the pass where a file first becomes orphaned, `orphanedAt`
+ * is always undefined and this guard cannot fire - it only protects a file that was
+ * already orphaned on some earlier pass and has since been edited. A file orphaned and
+ * edited in that same first pass is caught only if the edit also left pending metadata
+ * behind. An mtime that can't be read counts as "possibly edited" rather than as
+ * proof of no edit. Extracted as a pure function so both guards can be tested directly
+ * against fixtures instead of through a full load pass.
+ */
+export function selectDiscardableOrphans(
+  orphanedFiles: LocalFile[],
+  orphansEditedSinceServerRowLost: ReadonlySet<string>,
+): LocalFile[] {
+  return orphanedFiles.filter(
+    (f) =>
+      !orphansEditedSinceServerRowLost.has(f.relativePath.toLowerCase()) &&
+      !(f.pendingMetadata && Object.keys(f.pendingMetadata).length > 0),
+  )
+}
 
-  await executeCommand('discard-orphaned', { files: stillOrphaned })
+/** What the auto-discard sanity check needs from a completed merge pass. */
+export interface AutoDiscardSanityCheckInput {
+  /** `pdmFiles.length` from the merge's server-fetch branch; `undefined` when that
+   * branch never ran (offline, no org, or a server error - all already safe on their
+   * own, since none of them can classify a file as `deleted_remote`). */
+  serverRowCount: number | undefined
+  /** `localSyncIndex.size` at the top of the same pass: every path ever known to be
+   * synced, whether or not it is still present on disk. */
+  previouslySyncedCount: number
+  /** Files classified `deleted_remote` this pass, before the edited/pending guards. */
+  orphanCount: number
+}
+
+/**
+ * True when the server response this pass merged against looks like a partial or
+ * empty view of the vault rather than a genuine mass deletion - see
+ * `AUTO_DISCARD_MAX_ORPHAN_FRACTION` for why zero rows is treated as suspicious
+ * unconditionally, while a non-zero but truncated response is judged by how much of
+ * the previously-synced set it would orphan.
+ */
+export function shouldSkipAutoDiscardForOrphans({
+  serverRowCount,
+  previouslySyncedCount,
+  orphanCount,
+}: AutoDiscardSanityCheckInput): boolean {
+  // Nothing to protect (no orphans) or nothing to compare against (a vault that was
+  // never synced before can't have a "previously synced" set to have lost sight of).
+  if (orphanCount === 0 || previouslySyncedCount === 0) return false
+
+  // `orphanCount` only counts files still present on disk, so a vault where most of
+  // the previously-synced set was already cleaned up locally can show zero server
+  // rows yet a reassuringly low fraction below. Zero rows therefore trips the guard
+  // outright rather than trusting the fraction to catch it.
+  if (serverRowCount === 0) return true
+
+  if (serverRowCount === undefined) return false
+
+  return orphanCount / previouslySyncedCount > AUTO_DISCARD_MAX_ORPHAN_FRACTION
+}
+
+/**
+ * The folder name to put in the discard toast, if every discarded file shares one.
+ *
+ * Naming a folder is only unambiguous when there is exactly one candidate - a mixed
+ * batch, or one that includes a root-level file, falls back to a plain count instead.
+ */
+export function commonOrphanFolderName(files: LocalFile[]): string | null {
+  const topFolders = new Set(
+    files.map((f) => {
+      const separatorIndex = f.relativePath.indexOf('/')
+      return separatorIndex === -1 ? null : f.relativePath.slice(0, separatorIndex)
+    }),
+  )
+  if (topFolders.size !== 1) return null
+  const [folder] = topFolders
+  return folder
+}
+
+/** The non-blocking toast shown after an automatic discard actually removes files. */
+export function buildAutoDiscardToastMessage(count: number, folderName: string | null): string {
+  // Number morphology (plural noun endings, verb/adjective agreement) is
+  // language-specific, so the caller only picks which pre-written form to use -
+  // it never assembles one language's grammar for another (see `_one`/`_other`
+  // pairs in `src/lib/i18n/locales/*.ts`).
+  const suffix = count === 1 ? '_one' : '_other'
+  return folderName
+    ? t(`autoDiscard.removed.fromFolder${suffix}`, { count, folder: folderName })
+    : t(`autoDiscard.removed.generic${suffix}`, { count })
 }
 
 interface CheckoutProfileFetchResult {
@@ -428,6 +524,13 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
       // the local copy holds work that exists nowhere else. Collected during the merge,
       // where the tombstone timestamps are in scope, and read by the auto-discard.
       const orphansEditedSinceServerRowLost = new Set<string>()
+
+      // Populated only inside the merge branch that actually built `pdmMap` (server
+      // fetch attempted, no error). Declared here, rather than where they're set, so
+      // the auto-discard sanity check below can read them after the try block that
+      // computed them has closed its scope.
+      let serverRowCountAtMerge: number | undefined
+      let previouslySyncedCountAtMerge = 0
 
       try {
         // Run local file scan and server fetch in PARALLEL for faster boot
@@ -688,6 +791,9 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               error: pdmError,
             })
           } else if (pdmFiles && Array.isArray(pdmFiles)) {
+            serverRowCountAtMerge = pdmFiles.length
+            previouslySyncedCountAtMerge = localSyncIndex.size
+
             if (!silent) {
               setStatusMessage(`Merging ${pdmFiles.length} files...`)
             }
@@ -1170,11 +1276,17 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                     if (syncedPath) {
                       // File was synced before but no longer on server = orphaned (deleted_remote)
                       diffStatus = 'deleted_remote'
-                      if (
-                        syncedPath.orphanedAt !== undefined &&
-                        new Date(localFile.modifiedTime).getTime() > syncedPath.orphanedAt
-                      ) {
-                        orphansEditedSinceServerRowLost.add(localFile.relativePath.toLowerCase())
+                      if (syncedPath.orphanedAt !== undefined) {
+                        const modifiedTimeMs = new Date(localFile.modifiedTime).getTime()
+                        // An unreadable mtime can't prove the file is untouched, so it is
+                        // treated the same as a provably-later one: possibly edited, kept.
+                        const possiblyEditedSinceOrphaned =
+                          Number.isNaN(modifiedTimeMs) || modifiedTimeMs > syncedPath.orphanedAt
+                        if (possiblyEditedSinceOrphaned) {
+                          orphansEditedSinceServerRowLost.add(
+                            localFile.relativePath.toLowerCase(),
+                          )
+                        }
                       }
                     } else {
                       // File was never synced = genuinely new (added)
@@ -2388,28 +2500,54 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
       // scanning until the deletion is done.
       //
       // Every abort path above returns out of the try, so only a committed merge
-      // reaches this. Silent refreshes never discard, which stops a watcher-driven
-      // refresh from chaining into another one.
+      // reaches this. Unlike the rest of this pass, this step also runs on silent,
+      // watcher-driven refreshes: propagating a deletion the moment it is knowable -
+      // not only on the next loud load - is the whole point of this release. What
+      // used to stop a silent refresh from discarding at all (and so from chaining
+      // into another one) was a blanket `!silent` check; that is now
+      // `runAutoDiscardForOrphans`'s re-entrancy guard, which blocks only a second
+      // concurrent discard for this vault rather than every silent pass. See its doc
+      // comment for why a debounce was not used instead.
       //
-      // Batches above AUTO_DISCARD_CONFIRM_THRESHOLD go to the user first. Orphan
-      // classification is durable now, so a backlog that built up while it was not can
-      // surface all at once, and a bulk unannounced delete is worse than the stray rows.
-      if (committedMerge && !silent && user && window.electronAPI && !isVaultStale()) {
+      // There is no confirmation and no batch-size threshold: the app never asks, per
+      // the 4.3.1 decision that a dialog contradicts a setting named "automatically
+      // discard orphaned files" when the outcome already goes to the Recycle Bin.
+      if (committedMerge && user && window.electronAPI && !isVaultStale()) {
         const { autoDiscardOrphanedFiles, addToast, files: latestFiles } = usePDMStore.getState()
 
         const orphanedFiles = autoDiscardOrphanedFiles
           ? latestFiles.filter((f) => !f.isDirectory && f.diffStatus === 'deleted_remote')
           : []
 
+        // A silent refresh must not act on a server response that only looks like a
+        // mass deletion. See AUTO_DISCARD_MAX_ORPHAN_FRACTION for the reasoning; the
+        // files stay on disk with diffStatus 'deleted_remote' either way, so the file
+        // browser still shows them and manual discard still works.
+        if (
+          shouldSkipAutoDiscardForOrphans({
+            serverRowCount: serverRowCountAtMerge,
+            previouslySyncedCount: previouslySyncedCountAtMerge,
+            orphanCount: orphanedFiles.length,
+          })
+        ) {
+          window.electronAPI.log(
+            'warn',
+            '[AutoDiscard] Skipped - server view looks lost rather than the vault having emptied',
+            {
+              orphanCount: orphanedFiles.length,
+              serverRowCount: serverRowCountAtMerge,
+              previouslySyncedCount: previouslySyncedCountAtMerge,
+            },
+          )
+          return
+        }
+
         // An orphan that holds work of the user's own is never discarded automatically.
         // Keeping it costs them a stray row in the browser and the manual discard is
-        // still there; discarding it costs them the work. Neither signal is complete -
-        // a file edited before its server row disappeared looks untouched from here -
-        // so the batch size check below is what actually bounds the damage.
-        const discardableOrphans = orphanedFiles.filter(
-          (f) =>
-            !orphansEditedSinceServerRowLost.has(f.relativePath.toLowerCase()) &&
-            !(f.pendingMetadata && Object.keys(f.pendingMetadata).length > 0),
+        // still there; discarding it costs them the work.
+        const discardableOrphans = selectDiscardableOrphans(
+          orphanedFiles,
+          orphansEditedSinceServerRowLost,
         )
 
         if (orphanedFiles.length > discardableOrphans.length) {
@@ -2418,58 +2556,59 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           })
         }
 
-        // The size check comes first and on its own: every path out of it other than
-        // the confirmation leaves the files where they are.
-        if (discardableOrphans.length > AUTO_DISCARD_CONFIRM_THRESHOLD) {
-          // Once per vault per session: a declined batch must not reappear on the next
-          // refresh, and a second large batch in the same session is left in the browser
-          // rather than discarded on the strength of an answer about a different one.
-          //
-          // The confirm dialog has one slot and one resolver, so opening ours over a
-          // command's would leave that command waiting forever. Leaving the batch for
-          // the next load costs nothing; nothing has been deleted.
-          const dialogIsFree = usePDMStore.getState().pendingCommandConfirm === null
-          if (
-            currentVaultId &&
-            dialogIsFree &&
-            !largeOrphanBatchPromptedVaults.has(currentVaultId)
-          ) {
-            largeOrphanBatchPromptedVaults.add(currentVaultId)
-            window.electronAPI.log('info', '[AutoDiscard] Large orphan batch needs confirmation', {
-              count: discardableOrphans.length,
-              threshold: AUTO_DISCARD_CONFIRM_THRESHOLD,
-              samples: discardableOrphans
-                .slice(0, ORPHAN_LOG_SAMPLE_LIMIT)
-                .map((f) => f.relativePath),
-            })
-            void confirmAndDiscardOrphanBatch(currentVaultId, discardableOrphans).catch((error) => {
-              window.electronAPI?.log('error', '[AutoDiscard] Confirmed discard failed', {
-                error: String(error),
-              })
-            })
+        if (discardableOrphans.length > 0 && currentVaultId) {
+          if (isAutomaticDiscardCoolingDown(currentVaultId)) {
+            window.electronAPI.log(
+              'info',
+              '[AutoDiscard] Skipped - cooling down after an all-skipped batch for this vault',
+              { count: discardableOrphans.length },
+            )
+            return
           }
-        } else if (discardableOrphans.length > 0) {
+
           window.electronAPI.log('info', '[AutoDiscard] Discarding orphaned files', {
             count: discardableOrphans.length,
-            files: discardableOrphans.map((f) => ({
-              name: f.name,
-              relativePath: f.relativePath,
-            })),
+            files: discardableOrphans
+              .slice(0, ORPHAN_LOG_SAMPLE_LIMIT)
+              .map((f) => ({ name: f.name, relativePath: f.relativePath })),
           })
 
           try {
-            const result = await executeCommand('discard-orphaned', { files: discardableOrphans })
-            if (result.succeeded > 0) {
-              addToast(
+            const runResult = await runAutoDiscardForOrphans(
+              currentVaultId,
+              discardableOrphans,
+              async (files) => {
+                const result = await executeCommand('discard-orphaned', {
+                  files,
+                  isAutomatic: true,
+                })
+                if (result.succeeded > 0) {
+                  addToast(
+                    'info',
+                    buildAutoDiscardToastMessage(result.succeeded, commonOrphanFolderName(files)),
+                  )
+                }
+                if (result.skipped) {
+                  window.electronAPI?.log('warn', '[AutoDiscard] Kept files that could not recycle', {
+                    skipped: result.skipped,
+                    paths: result.skippedPaths?.slice(0, ORPHAN_LOG_SAMPLE_LIMIT),
+                  })
+                }
+                if (result.failed > 0) {
+                  window.electronAPI?.log('warn', '[AutoDiscard] Some files failed to discard', {
+                    failed: result.failed,
+                    errors: result.errors,
+                  })
+                }
+              },
+            )
+
+            if (runResult === 'skipped-in-flight') {
+              window.electronAPI.log(
                 'info',
-                `Auto-discarded ${result.succeeded} orphaned file${result.succeeded > 1 ? 's' : ''}`,
+                '[AutoDiscard] Skipped - a discard for this vault is already running',
+                { count: discardableOrphans.length },
               )
-            }
-            if (result.failed > 0) {
-              window.electronAPI?.log('warn', '[AutoDiscard] Some files failed to discard', {
-                failed: result.failed,
-                errors: result.errors,
-              })
             }
           } catch (error) {
             // Swallowed: a failed discard must not reject the load promise, which

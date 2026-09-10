@@ -339,11 +339,15 @@ export const pt: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: 'Remover os ficheiros eliminados do cofre?',
-      message:
-        'Estes ficheiros locais já não estão no cofre no servidor, pelo que o BluePLM normalmente os removeria automaticamente. São mais do que o habitual, por isso ainda não foi removido nada. Removê-los envia as cópias locais para a Reciclagem. Cancele para os manter e analisá-los no explorador de ficheiros.',
-      confirm: 'Remover ficheiros',
+    removed: {
+      generic_one: '{{count}} ficheiro eliminado do cofre',
+      generic_other: '{{count}} ficheiros eliminados do cofre',
+      fromFolder_one: '{{count}} ficheiro eliminado de {{folder}} (eliminado do cofre)',
+      fromFolder_other: '{{count}} ficheiros eliminados de {{folder}} (eliminados do cofre)',
+    },
+    failed: {
+      generic_one: 'Não foi possível descartar automaticamente {{count}} ficheiro órfão',
+      generic_other: 'Não foi possível descartar automaticamente {{count}} ficheiros órfãos',
     },
   },
 

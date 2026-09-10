@@ -328,11 +328,17 @@ export const zhCN: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: '是否移除已从保险库删除的文件？',
-      message:
-        '这些本地文件已不在服务器的保险库中，BluePLM 通常会自动移除它们。本次数量多于平常，因此尚未移除任何文件。移除会将本地副本放入回收站。取消则保留这些文件，可在文件浏览器中查看。',
-      confirm: '移除文件',
+    removed: {
+      // Chinese has no plural inflection - the `_one`/`_other` forms are identical text,
+      // selected by the same caller logic as every other locale for consistency.
+      generic_one: '已移除 {{count}} 个已从保险库删除的文件',
+      generic_other: '已移除 {{count}} 个已从保险库删除的文件',
+      fromFolder_one: '已从 {{folder}} 移除 {{count}} 个文件（已从保险库删除）',
+      fromFolder_other: '已从 {{folder}} 移除 {{count}} 个文件（已从保险库删除）',
+    },
+    failed: {
+      generic_one: '无法自动丢弃 {{count}} 个孤立文件',
+      generic_other: '无法自动丢弃 {{count}} 个孤立文件',
     },
   },
 

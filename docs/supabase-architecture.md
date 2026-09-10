@@ -1153,7 +1153,7 @@ const config = loadConfig() // { url, anonKey, orgSlug }
 | `getFilesLightweight(orgId, vaultId)` | Fast bulk fetch via RPC |
 | `getFilesDelta(orgId, vaultId, since)` | Incremental sync since timestamp |
 | `getFile(fileId)` | Single file with full metadata |
-| `getFileByPath(orgId, filePath)` | Lookup by path |
+| `getFileByPath(vaultId, filePath)` | Lookup by path |
 | `getFileVersions(fileId)` | Version history |
 | `getWhereUsed(fileId)` | Parent references (where-used) |
 | `getContains(fileId)` | Child references (BOM) |
@@ -1615,10 +1615,10 @@ Database and app versions must match to prevent compatibility issues.
 
 ```sql
 -- Database version
-SELECT version FROM schema_version;  -- e.g., 99
+SELECT version FROM schema_version;  -- e.g., 100
 
 -- App expected version
-EXPECTED_SCHEMA_VERSION = 99  -- src/lib/schemaVersion.ts
+EXPECTED_SCHEMA_VERSION = 100  -- src/lib/schemaVersion.ts
 ```
 
 ### Version Mismatch Handling

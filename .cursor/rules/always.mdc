@@ -37,6 +37,22 @@ Why: Recreating files risks losing content, comments, or subtle details. Native 
 
 Terminal is also for: `git`, `npm`, `npx`, build scripts.
 
+## Never Discard Uncommitted Work (CRITICAL)
+
+**NEVER** run `git stash`, `git checkout -- .`, `git reset --hard`, or `git clean`.
+
+Agents in a multi-agent plan share one working tree, so these commands operate on
+*every* agent's uncommitted work, not just your own. `git stash pop` has reported
+success while leaving files reverted on disk, so a clean exit code is not proof the
+work came back.
+
+To see a file as it exists at a commit, read it without touching the tree:
+
+```powershell
+git show HEAD:path/to/file.ts
+git diff HEAD -- path/to/file.ts
+```
+
 ## Schema Versioning (BOTH files, every time)
 
 1. `supabase/core.sql` → bump `schema_release_version()`, and add any new object to

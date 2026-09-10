@@ -345,11 +345,15 @@ export const de: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: 'Aus dem Tresor gelöschte Dateien entfernen?',
-      message:
-        'Diese lokalen Dateien befinden sich nicht mehr im Tresor auf dem Server, daher würde BluePLM sie normalerweise automatisch entfernen. Es sind mehr als üblich, daher wurde noch nichts entfernt. Beim Entfernen werden die lokalen Kopien in den Papierkorb verschoben. Brechen Sie ab, um sie zu behalten und im Dateibrowser zu prüfen.',
-      confirm: 'Dateien entfernen',
+    removed: {
+      generic_one: '{{count}} Datei entfernt (aus dem Tresor gelöscht)',
+      generic_other: '{{count}} Dateien entfernt (aus dem Tresor gelöscht)',
+      fromFolder_one: '{{count}} Datei aus {{folder}} entfernt (aus dem Tresor gelöscht)',
+      fromFolder_other: '{{count}} Dateien aus {{folder}} entfernt (aus dem Tresor gelöscht)',
+    },
+    failed: {
+      generic_one: 'Automatisches Verwerfen für {{count}} verwaiste Datei fehlgeschlagen',
+      generic_other: 'Automatisches Verwerfen für {{count}} verwaiste Dateien fehlgeschlagen',
     },
   },
 

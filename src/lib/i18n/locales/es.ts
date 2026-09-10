@@ -342,11 +342,15 @@ export const es: TranslationDict = {
   },
 
   autoDiscard: {
-    largeBatch: {
-      title: '¿Eliminar los archivos borrados de la bóveda?',
-      message:
-        'Estos archivos locales ya no están en la bóveda del servidor, por lo que BluePLM normalmente los eliminaría de forma automática. Hay más de lo habitual, así que todavía no se ha eliminado nada. Al eliminarlos, las copias locales se envían a la Papelera de reciclaje. Cancele para conservarlos y revisarlos en el explorador de archivos.',
-      confirm: 'Eliminar archivos',
+    removed: {
+      generic_one: 'Se eliminó {{count}} archivo borrado de la bóveda',
+      generic_other: 'Se eliminaron {{count}} archivos borrados de la bóveda',
+      fromFolder_one: 'Se eliminó {{count}} archivo de {{folder}} (borrado de la bóveda)',
+      fromFolder_other: 'Se eliminaron {{count}} archivos de {{folder}} (borrados de la bóveda)',
+    },
+    failed: {
+      generic_one: 'No fue posible descartar automáticamente {{count}} archivo huérfano',
+      generic_other: 'No fue posible descartar automáticamente {{count}} archivos huérfanos',
     },
   },
 

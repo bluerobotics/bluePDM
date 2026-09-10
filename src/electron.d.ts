@@ -389,21 +389,50 @@ declare global {
         callback: (progress: { processed: number; total: number; percent: number }) => void,
       ) => () => void
       createFolder: (path: string) => Promise<OperationResult>
-      deleteItem: (path: string) => Promise<OperationResult>
+      /**
+       * Delete a single file or directory.
+       *
+       * `isAutomatic` marks a delete nobody is watching (e.g. auto-discard of
+       * orphaned files). On that path, if the file cannot be moved to the Recycle
+       * Bin, it is left on disk and the result comes back with `skipped: true`
+       * instead of being permanently deleted - see
+       * `.cursor/plans/recycle-bin-reliability-report.md` for why `shell.trashItem`
+       * throwing is a reliable signal that recycling genuinely failed. Defaults to
+       * false (explicit user delete), which keeps the existing
+       * trash-then-permanent-delete fallback.
+       */
+      deleteItem: (
+        path: string,
+        isAutomatic?: boolean,
+      ) => Promise<OperationResult & { skipped?: boolean }>
       // Batch delete operations - much faster than individual deleteItem calls
       // Stops file watcher ONCE, deletes all files, restarts watcher ONCE
       deleteBatch: (
         paths: string[],
         useTrash?: boolean,
+        isAutomatic?: boolean,
       ) => Promise<{
         success: boolean
-        results: Array<{ path: string; success: boolean; error?: string }>
-        summary: { total: number; succeeded: number; failed: number; duration: number }
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          /** Count of `results` entries with `skipped: true` - left on disk, not deleted. */
+          skipped: number
+          duration: number
+        }
       }>
       trashBatch: (paths: string[]) => Promise<{
         success: boolean
-        results: Array<{ path: string; success: boolean; error?: string }>
-        summary: { total: number; succeeded: number; failed: number; duration: number }
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          skipped: number
+          duration: number
+        }
       }>
       isDirEmpty: (path: string) => Promise<{ success: boolean; empty?: boolean; error?: string }>
       isDirectory: (

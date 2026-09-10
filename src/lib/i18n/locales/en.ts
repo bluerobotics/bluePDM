@@ -369,11 +369,15 @@ export const en: TranslationDict = {
 
   // File operations
   autoDiscard: {
-    largeBatch: {
-      title: 'Remove files deleted from the vault?',
-      message:
-        'These local files are no longer in the vault on the server, so BluePLM would normally remove them automatically. There are more than usual, so nothing has been removed yet. Removing them sends the local copies to the Recycle Bin. Cancel to keep them and review them in the file browser.',
-      confirm: 'Remove files',
+    removed: {
+      generic_one: 'Removed {{count}} file deleted from the vault',
+      generic_other: 'Removed {{count}} files deleted from the vault',
+      fromFolder_one: 'Removed {{count}} file from {{folder}} (deleted from the vault)',
+      fromFolder_other: 'Removed {{count}} files from {{folder}} (deleted from the vault)',
+    },
+    failed: {
+      generic_one: 'Could not automatically discard {{count}} orphaned file',
+      generic_other: 'Could not automatically discard {{count}} orphaned files',
     },
   },
 

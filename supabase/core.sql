@@ -113,40 +113,42 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 99 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 100 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'Two disagreements about how many rows a vault has. The first is between the client''s '
-  'file cache and the server: restoring a file from trash clears deleted_at without bumping '
-  'updated_at, so a client whose watermark already passed the delete never sees the restore '
-  'in its delta query and stays short until the cache''s 7-day TTL, with nothing to notice '
-  'the shortfall by. get_vault_files_count(p_org_id, p_vault_id) gives the renderer a cheap '
-  'true row count to compare its merged cache against, mirroring get_vault_files_fast''s '
-  'SECURITY DEFINER authorization and predicate exactly so the two never disagree for '
-  'reasons unrelated to an actual missed delta; on mismatch the renderer forces one full '
-  'refetch, capped by a per-vault cooldown, to rebuild the cache from the authoritative row '
-  'set. The second is inside the folders table. idx_folders_unique_active was byte-exact on '
-  '(vault_id, folder_path) while every consumer of that table keys on '
-  'folder_path.toLowerCase(), so on Windows - this product''s only target - RADCAM and '
-  'Radcam were two active rows describing one folder; one production vault carried twenty '
-  'such pairs, and a single load reported 2015 folders and then built a map of 1995 from '
-  'them. The index is now on (vault_id, LOWER(folder_path)), which is what files has had '
-  'since v54. A unique index cannot be built while the duplicates it forbids are still '
-  'present, so remediate_case_colliding_folders() runs immediately above the CREATE in the '
-  'same file rather than at the module tail beside the other two remediations: in the other '
-  'order the statement raises 23505 and the Supabase editor rolls back the whole module. '
-  'Per colliding group it keeps the spelling the most active files already use, then the '
-  'oldest row, then the lowest id, and soft-deletes the rest with deleted_by NULL after '
-  'copying every row verbatim into schema_remediation_log; a folder with no case twin is '
-  'never touched and a second run writes nothing. The three client functions that walk a '
-  'folder''s descendants - deleteFolderByPath, deleteFolderOnServer and '
-  'updateFolderServerPath - matched them with a case-sensitive LIKE, which under the new '
-  'index misses the very rows the index guarantees are the only ones there, and which also '
-  'read an underscore in a folder name as a wildcard, so deleting Part_Files reached '
-  'PartXFiles too. All three now match case-insensitively against an escaped pattern, and '
-  'updateFolderServerPath rewrites a child path by splicing off the prefix by length rather '
-  'than with a String.replace that rewrote the first matching segment anywhere in it.'
+  'Three items deferred out of v99 for being unrelated to the row-count work that release '
+  'was actually about. First, the case-insensitive file lookup v99 gave folders never '
+  'reached files, which had carried the same defect in two different shapes since '
+  'idx_files_vault_path_unique_active went case-insensitive at v54: syncFile''s own '
+  'existence check stayed byte-exact for speed and only found a differently-cased row '
+  'through the 23505 it caught on insert, which works but only after paying for the failed '
+  'write, while getFileByPath had no case-insensitive path at all and simply could not see '
+  'one. getFileByPath now calls get_active_file_by_path(vault_id, file_path), a new RPC '
+  'shaped to match the index exactly - vault_id and LOWER(file_path) as equality '
+  'predicates, deleted_at IS NULL as a literal rather than a caller-supplied toggle - so '
+  'the match is provably index-backed rather than merely usually fast. syncFile''s primary '
+  'existence check stays byte-exact and off this RPC on purpose - it runs once per file at '
+  'high concurrency during a first check-in of a whole vault, and a case-insensitive lookup '
+  'on every file would slow down the path that never collides - so it reaches the same RPC '
+  'only from its 23505 catch, once the exception itself has already proven a collision '
+  'exists. Second, check_release_residue() went in at v93 pairing every remediation with a '
+  'clause proving its work stays done, but v99''s remediate_case_colliding_folders() was '
+  'added without the clause this file''s own doctrine calls for beside it - so a folders '
+  'index dropped and rebuilt without UNIQUE after v99 applied would carry the exact defect '
+  'v99 closed while verification read clean. The clause is now there, reporting the same '
+  'group shape the remediation clears. Third, get_user_module_defaults existed as two '
+  'overloads in production: this file''s own no-argument version, and a p_user_id one from '
+  'before the schema.sql to core.sql split that no DROP by exact signature had ever '
+  'reached, so it outlived every release since with neither overload authorized to answer '
+  'for somebody else - a caller could pass any p_user_id and read that user''s effective '
+  'module configuration with no membership check at all. Call sites decided which shape '
+  'survives rather than which looked newer: the no-argument form''s only caller is never '
+  'invoked from the UI, while the p_user_id form is what the admin impersonation feature '
+  'calls, and is also the shape this schema''s own history shows the function was written '
+  'with from the start. They are one function now, argument optional and defaulting to '
+  'auth.uid(), gated with require_same_org_user the same way get_user_vault_access and '
+  'get_user_permissions already gate exactly this shape of question'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -315,6 +317,17 @@ LANGUAGE sql IMMUTABLE AS $$
     ('core', NULL, 'function', 'set_org_column_defaults(uuid,jsonb)', 'is_org_member'),
     ('core', NULL, 'function', 'force_org_column_defaults(uuid,jsonb)', 'is_org_member'),
     ('core', NULL, 'function', 'update_org_branding(uuid,text,text,text,text,text)', 'is_org_member'),
+    -- Carried two overloads in production: a no-argument one this manifest
+    -- never listed, and a p_user_id one from before the schema.sql -> core.sql
+    -- split that no DROP by exact signature ever reached, so it outlived every
+    -- release since. Call sites decided which was stale rather than which was
+    -- newer - loadUserModuleDefaults (modulesSlice.ts) calls the no-argument
+    -- form and is never invoked from the UI; loadImpersonatedUserContext
+    -- (teams.ts), which the admin impersonation feature calls, passes
+    -- p_user_id. They are one function now, argument optional and defaulting
+    -- to auth.uid(), pinned on the helper that gates asking about somebody
+    -- else the same way get_user_vault_access and get_user_permissions do.
+    ('core', NULL, 'function', 'get_user_module_defaults(uuid)', 'require_same_org_user'),
     -- THE HELPERS THE ROWS ABOVE ARE PINNED ON
     --
     -- `requires` is a substring search of the *caller's* body, so it proves the
@@ -380,6 +393,14 @@ LANGUAGE sql IMMUTABLE AS $$
     -- it exists only so the renderer's cache reconciliation count matches what that
     -- function and get_vault_files_delta return.
     ('10-source-files', NULL, 'function', 'get_vault_files_count(uuid,uuid)', 'require_org_member'),
+    -- syncFile's own primary lookup stays byte-exact for speed and only
+    -- reaches this, from its 23505 catch, once a differently-cased row has
+    -- already proven a collision exists; getFileByPath had no
+    -- case-insensitive path at all and calls this on every lookup instead.
+    -- It is pinned on require_vault_access rather than require_org_member
+    -- because it takes only a vault id and derives the organization from the
+    -- vault itself instead of trusting a second argument the caller supplied.
+    ('10-source-files', NULL, 'function', 'get_active_file_by_path(uuid,text)', 'require_vault_access'),
     ('10-source-files', NULL, 'function', 'get_next_serial_number(uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'preview_next_serial_number(uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'update_serialization_settings_safe(uuid,jsonb)', 'require_org_member'),
@@ -2313,6 +2334,44 @@ BEGIN
              || ' to workflow ' || r.workflow_id || ', which belongs to '
              || r.workflow_org || '. Clear it: '
              || 'SELECT remediate_cross_tenant_workflow_history();';
+      RETURN NEXT;
+    END LOOP;
+  END IF;
+
+  -- ---------------------------------------------------------------------
+  -- Two active rows in `folders` spelling one path two ways.
+  --
+  -- idx_folders_unique_active is unique on (vault_id, LOWER(folder_path))
+  -- WHERE deleted_at IS NULL and forbids this by construction, and
+  -- remediate_case_colliding_folders() ran once, at v99, clearing every group
+  -- that existed then - so on a database that still carries the index this
+  -- clause finds nothing, every time. It travels here anyway, per this file's
+  -- own doctrine a few hundred lines up: a remediation and a residue check
+  -- travel together, or a database that skipped the remediation - or lost the
+  -- index afterwards, since nothing stops an operator from dropping and
+  -- rebuilding it without UNIQUE - verifies clean while carrying the exact
+  -- defect v99 closed.
+  -- ---------------------------------------------------------------------
+  IF to_regclass('public.folders') IS NOT NULL THEN
+    FOR r IN
+      SELECT f.vault_id, LOWER(f.folder_path) AS folder_key,
+             count(*) AS row_count,
+             array_agg(DISTINCT f.folder_path ORDER BY f.folder_path) AS spellings,
+             array_agg(f.id ORDER BY f.created_at, f.id) AS ids
+        FROM folders f
+       WHERE f.deleted_at IS NULL
+       GROUP BY f.vault_id, LOWER(f.folder_path)
+      HAVING count(*) > 1
+       ORDER BY f.vault_id, LOWER(f.folder_path)
+    LOOP
+      residue := 'case_colliding_folders';
+      identity := 'folders.vault_id = ' || r.vault_id
+                || ', LOWER(folder_path) = ''' || r.folder_key || '''';
+      detail := r.row_count || ' active row(s) - ids ' || array_to_string(r.ids, ', ')
+             || ' - spell one folder ' || array_to_string(r.spellings, ' / ')
+             || ' in vault ' || r.vault_id || '. idx_folders_unique_active should make '
+             || 'this impossible; if it is missing or was rebuilt without UNIQUE, restore '
+             || 'it and run: SELECT remediate_case_colliding_folders();';
       RETURN NEXT;
     END LOOP;
   END IF;
@@ -5037,7 +5096,11 @@ DROP FUNCTION IF EXISTS force_org_module_defaults(UUID, JSONB, JSONB, JSONB, JSO
 DROP FUNCTION IF EXISTS get_team_module_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS set_team_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS clear_team_module_defaults(UUID) CASCADE;
+-- Both overloads, by exact signature. The first is the only one this file has
+-- ever declared; the second is the pre-module-split leftover release 100
+-- retires - see get_user_module_defaults(UUID) below for the whole story.
 DROP FUNCTION IF EXISTS get_user_module_defaults() CASCADE;
+DROP FUNCTION IF EXISTS get_user_module_defaults(UUID) CASCADE;
 
 -- Get organization module defaults
 --
@@ -5272,15 +5335,52 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION clear_team_module_defaults(UUID) TO authenticated;
 
 -- Get user module defaults (from team or org, in priority order)
-CREATE OR REPLACE FUNCTION get_user_module_defaults()
+--
+-- ONE FUNCTION WHERE THERE WERE TWO
+--
+-- Production carried two overloads of this name: this file's own
+-- no-argument version, and a p_user_id UUID DEFAULT NULL version that
+-- predates the schema.sql -> core.sql split and that no `DROP FUNCTION
+-- IF EXISTS get_user_module_defaults() CASCADE` - exact on the empty
+-- signature - ever reached. It survived, untouched, since.
+--
+-- Checking call sites decided which was stale, not which looked newer.
+-- modulesSlice.ts's loadUserModuleDefaults calls the no-argument form and is
+-- never invoked from the UI. teams.ts's loadImpersonatedUserContext, which
+-- the admin "view as user" feature calls to read a target user's effective
+-- module config, passes p_user_id - and that is the shape this schema's own
+-- history shows the function was written with from the start: the original
+-- took p_user_id UUID DEFAULT NULL and resolved COALESCE(p_user_id,
+-- auth.uid()) precisely so one function could answer both "my own defaults"
+-- and "this other user's defaults" for whoever was allowed to ask.
+--
+-- What it did not do, in either overload, was check that "allowed to ask" -
+-- p_user_id was substituted with no membership test at all. Restored with
+-- one added, using require_same_org_user the same way get_user_vault_access
+-- and get_user_permissions already gate exactly this shape of question:
+-- looking up somebody else's own private-scoped data.
+--
+-- Gated on `p_user_id IS NOT NULL`, not on `p_user_id <> auth.uid()`: an
+-- unauthenticated caller has auth.uid() = NULL, and `p_user_id <> NULL`
+-- evaluates to NULL rather than true, so a caller with no session at all
+-- would have sailed past a check written that way. require_same_org_user
+-- still returns immediately when p_user_id names the caller themselves - a
+-- caller who passes their own id explicitly pays one extra membership check,
+-- not a refusal.
+CREATE OR REPLACE FUNCTION get_user_module_defaults(p_user_id UUID DEFAULT NULL)
 RETURNS JSONB AS $$
 DECLARE
   v_user_id UUID;
   v_user_org_id UUID;
   v_defaults JSONB;
 BEGIN
-  v_user_id := auth.uid();
-  
+  IF p_user_id IS NOT NULL THEN
+    PERFORM require_same_org_user(p_user_id);
+    v_user_id := p_user_id;
+  ELSE
+    v_user_id := auth.uid();
+  END IF;
+
   IF v_user_id IS NULL THEN
     RETURN NULL;
   END IF;
@@ -5312,7 +5412,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION get_user_module_defaults() TO authenticated;
+GRANT EXECUTE ON FUNCTION get_user_module_defaults(UUID) TO authenticated;
 
 -- ===========================================
 -- MODULE ACCESS FUNCTIONS

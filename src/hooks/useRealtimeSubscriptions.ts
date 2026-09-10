@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import {
   subscribeToFiles,
@@ -22,6 +22,89 @@ const LOCATION_FLUSH_DEBOUNCE_MS = 100
 const NOTIFICATION_BATCH_MS = 500
 
 /**
+ * A folder delete produces one row UPDATE per file inside it, each arriving as its own
+ * realtime event. This collapses a burst of those into one silent refresh instead of
+ * one per file - unrelated to, and much shorter than, the watcher's own suppression
+ * window, since nothing here writes to disk yet.
+ */
+const ORPHAN_DISCARD_REFRESH_DEBOUNCE_MS = 300
+
+export type FileDeletionOutcome =
+  | { type: 'not-a-deletion' }
+  | { type: 'removed-cloud-only' }
+  | { type: 'became-orphaned-locally' }
+
+/**
+ * Debounces the silent refresh that follows a realtime deletion, always calling
+ * whichever function `getCurrentRefresh` returns at the moment the timer actually
+ * fires - never one captured when `schedule` was called. This is what lets the
+ * subscription effect keep `requestSilentRefresh` out of its dependency array (a ref
+ * holds the latest value; `getCurrentRefresh` reads the ref) without the debounce
+ * itself quietly reverting to a stale callback in between.
+ *
+ * `isActive` is checked at fire time, not at schedule time, so a call scheduled just
+ * before the owning effect's cleanup runs never reaches into a torn-down subscription.
+ *
+ * Exported standalone so the fire-time-not-schedule-time read can be proven with a
+ * test that never mounts the hook.
+ */
+export function createOrphanDiscardRefreshScheduler(
+  getCurrentRefresh: () => (() => void) | undefined,
+  isActive: () => boolean,
+): { schedule: () => void; cancel: () => void } {
+  let timeout: ReturnType<typeof setTimeout> | null = null
+
+  const cancel = () => {
+    if (timeout) {
+      clearTimeout(timeout)
+      timeout = null
+    }
+  }
+
+  const schedule = () => {
+    if (!getCurrentRefresh()) return
+    cancel()
+    timeout = setTimeout(() => {
+      timeout = null
+      if (!isActive()) return
+      getCurrentRefresh()?.()
+    }, ORPHAN_DISCARD_REFRESH_DEBOUNCE_MS)
+  }
+
+  return { schedule, cancel }
+}
+
+/**
+ * Decide what an incoming file UPDATE means for realtime deletion propagation.
+ *
+ * Trash is a soft delete: `deleted_at` moves from unset to set, and that arrives here
+ * as an ordinary UPDATE rather than the DELETE case below - DELETE only fires for a
+ * hard row delete, which trash never performs.
+ *
+ * Exported standalone (no store access) so the classification can be unit tested
+ * without mounting the hook. `isRecentlyModified` and `hasPendingMetadata` are
+ * re-checked here even though the call site already returns before reaching this for
+ * both, so the guards hold for this function's own contract, not only because of where
+ * it happens to be called from.
+ */
+export function classifyDeletionUpdate(params: {
+  oldDeletedAt: string | null | undefined
+  newDeletedAt: string | null | undefined
+  isRecentlyModified: boolean
+  hasPendingMetadata: boolean
+  hasLocalCopy: boolean
+}): FileDeletionOutcome {
+  const wasJustDeleted = !params.oldDeletedAt && !!params.newDeletedAt
+  if (!wasJustDeleted || params.isRecentlyModified || params.hasPendingMetadata) {
+    return { type: 'not-a-deletion' }
+  }
+
+  return params.hasLocalCopy
+    ? { type: 'became-orphaned-locally' }
+    : { type: 'removed-cloud-only' }
+}
+
+/**
  * Subscribe to realtime updates from Supabase
  * Handles:
  * - File changes (checkout, check-in, version, state)
@@ -29,14 +112,35 @@ const NOTIFICATION_BATCH_MS = 500
  * - Organization settings
  * - Color swatches
  * - Permission changes
+ *
+ * @param requestSilentRefresh Runs a silent (`loadFiles(true)`) pass. Called after a
+ * file with a local copy is marked orphaned by a realtime deletion, so the merge that
+ * follows stamps the tombstone `orphanedAt` uses and the auto-discard block in
+ * useLoadFiles.ts can act on it - within a debounce window, not only on the next loud
+ * load. Optional so a caller that has no load pass wired up yet (or a test) still gets
+ * correct classification; it just will not see the file actually leave disk until
+ * something else triggers a load.
  */
 export function useRealtimeSubscriptions(
   organization: Organization | null,
   isOfflineMode: boolean,
   sessionKey = '',
+  requestSilentRefresh?: () => void,
 ) {
   const setOrganization = usePDMStore((s) => s.setOrganization)
   const addToast = usePDMStore((s) => s.addToast)
+
+  // Held in a ref, synced by its own tiny effect, rather than depended on directly by
+  // the subscription effect below: `requestSilentRefresh` resolves, through App.tsx,
+  // to `loadFiles` -> `runLoadFiles`, whose own dependencies include vaultPath,
+  // organization, user, currentVaultId, authenticatedUserId and sessionGeneration. Any
+  // change to any of those would otherwise tear down and resubscribe all six realtime
+  // channels below and clear the pending orphan-discard timeout, dropping deletion
+  // events that arrive during the resubscribe window.
+  const requestSilentRefreshRef = useRef(requestSilentRefresh)
+  useEffect(() => {
+    requestSilentRefreshRef.current = requestSilentRefresh
+  }, [requestSilentRefresh])
 
   useEffect(() => {
     if (!organization || isOfflineMode) return
@@ -61,6 +165,15 @@ export function useRealtimeSubscriptions(
     let subscriptionActive = true
     let checkoutEventSequence = 0
     const latestCheckoutEventByFile = new Map<string, number>()
+
+    // See createOrphanDiscardRefreshScheduler above: reads requestSilentRefreshRef at
+    // fire time, so it always calls the latest callback even though this effect does
+    // not list requestSilentRefresh as a dependency.
+    const orphanDiscardRefreshScheduler = createOrphanDiscardRefreshScheduler(
+      () => requestSilentRefreshRef.current,
+      () => subscriptionActive,
+    )
+    const scheduleOrphanDiscardRefresh = orphanDiscardRefreshScheduler.schedule
 
     // Batch file location updates to prevent render cascade when folder is moved
     // When a folder moves, each file inside sends its own UPDATE event - without batching,
@@ -260,31 +373,69 @@ export function useRealtimeSubscriptions(
             const { isFileRecentlyModified, files, vaultPath } = usePDMStore.getState()
             const localFile = files.find((f) => f.pdmData?.id === newFile.id)
 
+            const recentlyModified = isFileRecentlyModified(newFile.id)
+            const hasPendingMetadata = !!(
+              localFile?.pendingMetadata && Object.keys(localFile.pendingMetadata).length > 0
+            )
+
             // Log incoming realtime event for debugging
             log.debug('[Realtime]', 'UPDATE event received', {
               fileId: newFile.id,
               serverPartNumber: newFile.part_number,
               oldPath: oldFile?.file_path,
               newPath: newFile.file_path,
-              isRecentlyModified: isFileRecentlyModified(newFile.id),
-              hasPendingMetadata: !!(
-                localFile?.pendingMetadata && Object.keys(localFile.pendingMetadata).length > 0
-              ),
+              isRecentlyModified: recentlyModified,
+              hasPendingMetadata,
               localPartNumber: localFile?.pdmData?.part_number,
             })
 
             // Skip if file was recently modified locally (prevents state drift)
             // This handles the race condition where stale realtime events arrive
             // shortly after a local check-in/discard operation
-            if (isFileRecentlyModified(newFile.id)) {
+            if (recentlyModified) {
               log.debug('[Realtime]', 'SKIP: recently modified file', { fileId: newFile.id })
               break
             }
 
             // Skip if file has pending metadata (local changes not yet committed)
             // This prevents realtime events from overwriting user's unsaved edits
-            if (localFile?.pendingMetadata && Object.keys(localFile.pendingMetadata).length > 0) {
+            if (hasPendingMetadata) {
               log.debug('[Realtime]', 'SKIP: file with pending metadata', { fileId: newFile.id })
+              break
+            }
+
+            // Deletion propagation: trash is a soft delete (sets deleted_at), so it
+            // arrives here as this ordinary UPDATE rather than the DELETE case below -
+            // DELETE only fires for a hard row delete, which trash never performs.
+            // removeCloudFile already branches correctly on whether a local copy
+            // exists: a cloud-only row is dropped outright, a row with a local copy
+            // becomes 'deleted_remote' so the auto-discard block in useLoadFiles.ts can
+            // act on it under its own guards (pending metadata, disk mtime newer than
+            // the tombstone). Those guards run at discard time, using the tombstone the
+            // silent refresh below stamps - not here, since a fresh deletion has no
+            // tombstone yet.
+            const deletion = classifyDeletionUpdate({
+              oldDeletedAt: oldFile?.deleted_at,
+              newDeletedAt: newFile.deleted_at,
+              isRecentlyModified: recentlyModified,
+              hasPendingMetadata,
+              hasLocalCopy: !!localFile,
+            })
+
+            if (deletion.type !== 'not-a-deletion') {
+              removeCloudFile(newFile.id)
+              log.info('[Realtime]', 'File deleted from vault (soft delete)', {
+                fileId: hashCheckoutIdentifier(newFile.id),
+                hadLocalCopy: deletion.type === 'became-orphaned-locally',
+              })
+              if (deletion.type === 'became-orphaned-locally') {
+                // Nothing on disk has changed yet, so there is nothing for the file
+                // watcher to have an opinion about here - the refresh this schedules
+                // is what actually removes the file, and it does that under the merge's
+                // own tombstone-mtime and pending-metadata guards, plus the discard
+                // path's own watcher suppression, not a debounce.
+                scheduleOrphanDiscardRefresh()
+              }
               break
             }
 
@@ -847,6 +998,9 @@ export function useRealtimeSubscriptions(
         clearTimeout(locationFlushTimeout)
         flushLocationUpdates() // Flush any pending updates before cleanup
       }
+      // Clear any pending orphan-discard refresh - this effect's subscriptions are
+      // unmounting, so firing it after teardown would call into a torn-down state.
+      orphanDiscardRefreshScheduler.cancel()
       unsubscribeFiles()
       unsubscribeActivity()
       unsubscribeOrg()
@@ -855,5 +1009,6 @@ export function useRealtimeSubscriptions(
       unsubscribeVaults()
       unsubscribeAll()
     }
+    // requestSilentRefresh is intentionally not a dependency - see requestSilentRefreshRef above.
   }, [organization, isOfflineMode, sessionKey, setOrganization, addToast])
 }

@@ -254,6 +254,7 @@ DROP FUNCTION IF EXISTS get_team_module_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS set_team_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS clear_team_module_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS get_user_module_defaults() CASCADE;
+DROP FUNCTION IF EXISTS get_user_module_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS get_org_column_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS set_org_column_defaults(UUID, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS force_org_column_defaults(UUID, JSONB) CASCADE;

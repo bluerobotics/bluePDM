@@ -422,16 +422,33 @@ export async function getFile(fileId: string) {
   return { file: data, error }
 }
 
-export async function getFileByPath(orgId: string, filePath: string) {
+/**
+ * Get the active file at `filePath` within a vault, matched case-insensitively.
+ *
+ * Was a byte-exact `.eq('file_path', filePath)` scoped by org rather than
+ * vault, with no case-insensitive fallback at all - a file stored as
+ * `Parts/BRACKET.SLDPRT` was simply invisible to a lookup for
+ * `Parts/Bracket.SLDPRT`. Now calls `get_active_file_by_path` (schema 100),
+ * which matches the way `idx_files_vault_path_unique_active` matches:
+ * `(vault_id, LOWER(file_path)) WHERE deleted_at IS NULL`. Scoped to a vault
+ * rather than an org because that is what the index (and syncFile's own
+ * lookup) is scoped to, and because this function had no caller before this
+ * change, so there was no "should it see deleted rows" behavior to preserve -
+ * active-only is the only case the equivalent `mutations.ts` lookup needs.
+ *
+ * `// TODO: type this` - `get_active_file_by_path` is not yet in the
+ * generated `src/types/supabase.ts`; it will be once schema 100 is applied
+ * and types are regenerated.
+ */
+export async function getFileByPath(vaultId: string, filePath: string) {
   const client = getSupabaseClient()
-  const { data, error } = await client
-    .from('files')
-    .select('*')
-    .eq('org_id', orgId)
-    .eq('file_path', filePath)
-    .single()
+  const { data, error } = await (client.rpc as any)('get_active_file_by_path', {
+    // TODO: type this
+    p_vault_id: vaultId,
+    p_file_path: filePath,
+  })
 
-  return { file: data, error }
+  return { file: (data?.[0] as Record<string, unknown> | undefined) ?? null, error }
 }
 
 // ============================================
