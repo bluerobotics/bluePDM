@@ -7,26 +7,35 @@ API. The renderer lives in `src/`, the Electron main process in `electron/`, the
 
 ## Active plan
 
-Nothing in flight. 4.3.2 (schema 101) shipped: a new main-process handler
-(`electron/handlers/emptyDirs.ts`, `fs:trash-empty-dirs`) recycles a directory only after
-re-confirming with an unfiltered `readdirSync` that it is provably empty, deepest-first, with no
-permanent-delete fallback on any path; `discard-orphaned` derives the directories a batch of file
-removals just emptied and recycles them inside the existing 4.3.1 blast-radius guard, cooldown,
-and re-entrancy guard, relocating the current folder to its nearest surviving ancestor if the one
-being viewed was removed; `folders` gained `REPLICA IDENTITY FULL` and joined the
-`supabase_realtime` publication so a folder deleted while it held no files reaches other machines
-too (previously it produced no realtime event at all), driven by a new `subscribeToFolders`
-client subscription; and `canSkipMerge` (now `shouldSkipMerge` in `loadFilesCoordination.ts`)
-gained the folder-side signal it was missing, so the merge that subscription schedules actually
-runs instead of being short-circuited by three inputs a folder-only change never moves.
+Nothing in flight. 4.3.3 shipped (renderer only — no schema change, no API change): when a
+file's local path diverges from the path the vault records, the merge used to drop the server
+row entirely, so a folder renamed on one machine looked *empty* to everyone else. It now leaves
+a `moved_away` stub at the recorded path naming where the content actually lives
+(`src/hooks/useLoadFiles/cloudFileReconciliation.ts`), and the pending-move count that was
+always computed but never rendered is visible on the tree row, file row, and grid card. A new
+`adopt-server-paths` command (server wins) is the inverse of the terminal-only
+`reconcile-moved-paths` (local wins), and a **Resolve Pending Moves** dialog puts both
+directions behind a badge and context menu with per-direction preflight. The rest of the
+release fixed call sites that assumed a row with `pdmData` has local content, or that a
+`files.id` maps to exactly one row — `moved_away` is the first status where neither holds.
+Plan and four agent reports: `.cursor/plans/pending-move-visibility-*`.
 
 `syncFile`'s primary existence check stays byte-exact and off `get_active_file_by_path` on
 purpose — that was a deliberate scope decision for 4.3.1, not an oversight, and paying for a
 case-insensitive lookup on every file during a bulk first check-in would slow down the path that
-never collides. Still deferred: cleaning up the orphaned `files` rows left by the pre-4.3.0 move
-handling, which is diagnosis-only so far (`.cursor/plans/orphaned-file-rows-report.md`) — the
-superseded-row bucket has a server-verifiable remediation candidate, the genuinely-orphaned
-bucket does not, and neither has shipped.
+never collides.
+
+**Closed, do not reopen without new evidence:** cleaning up "orphaned" `files` rows from the
+pre-4.3.0 move handling. The diagnosis was finally run against production and the premise did
+not survive it — the 1,324 rows its `superseded_high_confidence` bucket flagged in `br-vault`
+are archive snapshots, revision branches, design variants, release copies, RFQ packages and
+vendored firmware trees, all backed by files really on disk, and its survivor rule would have
+kept `_ARCHIVE` over live `DEVELOPMENT`. Content hashing cannot distinguish a stale row from
+intentional duplication, which a CAD vault is full of. Path divergence is only detectable where
+the disk is visible, which is the client — that is what 4.3.3's `moved` / `moved_away` handling
+now does. Full verdict and the disproof at the top of
+`.cursor/plans/orphaned-file-rows-report.md`; read-only queries to reproduce in
+`.cursor/plans/orphaned-file-rows-runbook.sql`.
 
 Plans and agent reports live in `.cursor/plans/`. Never create a plan outside the repository.
 
