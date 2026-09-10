@@ -476,6 +476,12 @@ CREATE TABLE IF NOT EXISTS files (
   lock_message TEXT,
   checked_out_by_machine_id TEXT,
   checked_out_by_machine_name TEXT,
+  -- file_path / file_name at the moment checkout_file() ran, so discard can restore a
+  -- rename or move made during the checkout - renames themselves keep propagating to
+  -- file_path/file_name live, exactly as before. NULL when not checked out. Cleared by
+  -- checkin_file(), undoCheckout() and adminForceDiscardCheckout() alongside the lock.
+  checked_out_file_path TEXT,
+  checked_out_file_name TEXT,
   
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -667,9 +673,131 @@ CREATE TABLE IF NOT EXISTS folders (
   deleted_by UUID REFERENCES users(id)
 );
 
--- Partial unique index: only one active folder per path per vault
-CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_unique_active 
-  ON folders(vault_id, folder_path) 
+-- Soft-delete the losing row of every case-colliding pair of active folders.
+--
+-- WHICH ROW SURVIVES, AND WHY IN THAT ORDER
+--
+-- Nothing in this schema references folders.id - there is no `REFERENCES
+-- folders` anywhere in supabase/ - so no row here is referentially
+-- load-bearing, and the choice is entirely about which spelling the rest of the
+-- data already agrees with. In order:
+--
+--   1. the row with the most active files directly beneath it, matched
+--      byte-exactly on '<folder_path>/'. Those file rows are what the browser
+--      renders, so their spelling is the one the user is already looking at;
+--   2. failing that, the oldest created_at - the original row rather than the
+--      duplicate a later syncFolder inserted on a case-sensitive miss;
+--   3. failing that, the lowest id, so a re-run picks the same survivor.
+--
+-- The prefix test is written as left(file_path, n) = folder_path || '/' rather
+-- than as a LIKE, for two reasons. A folder called `100%` or `Part_Files` fed
+-- to LIKE as a pattern counts files it does not contain; and this runs while
+-- the schema is being applied, where like_escape() - the answer
+-- rename_folder_files() uses to that problem - lives in a core.sql this module
+-- may be applied over an older copy of.
+--
+-- Losers are soft-deleted, never hard-deleted, matching every other remediation
+-- in this schema. deleted_by is NULL because no user did this, the schema did.
+-- Soft-deleting is also what makes the function idempotent: a second run finds
+-- no active collisions, writes nothing to the ledger and prints nothing.
+--
+-- record_remediation() is likewise a core.sql object, so the ledger entry is
+-- guarded. The dedupe itself still happens against an older core - only the
+-- receipt is skipped, and the count is still returned.
+CREATE OR REPLACE FUNCTION remediate_case_colliding_folders()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_subjects JSONB;
+  v_rows INTEGER;
+BEGIN
+  WITH colliding AS (
+    SELECT f.id, f.org_id, f.vault_id, f.folder_path, f.created_by, f.created_at,
+           LOWER(f.folder_path) AS folder_key,
+           (SELECT count(*)
+              FROM files fi
+             WHERE fi.vault_id = f.vault_id
+               AND fi.deleted_at IS NULL
+               AND left(fi.file_path, length(f.folder_path) + 1) = f.folder_path || '/'
+           ) AS agreeing_files
+      FROM folders f
+     WHERE f.deleted_at IS NULL
+       AND EXISTS (SELECT 1
+                     FROM folders g
+                    WHERE g.vault_id = f.vault_id
+                      AND g.deleted_at IS NULL
+                      AND LOWER(g.folder_path) = LOWER(f.folder_path)
+                      AND g.id <> f.id)
+  ),
+  judged AS (
+    SELECT c.*,
+           first_value(c.id) OVER w         AS surviving_id,
+           first_value(c.folder_path) OVER w AS surviving_spelling
+      FROM colliding c
+    WINDOW w AS (PARTITION BY c.vault_id, c.folder_key
+                 ORDER BY c.agreeing_files DESC, c.created_at NULLS LAST, c.id)
+  ),
+  victims AS (
+    SELECT j.id, j.org_id, j.vault_id, j.folder_path, j.created_by, j.created_at,
+           j.agreeing_files, j.surviving_id, j.surviving_spelling
+      FROM judged j
+     WHERE j.id <> j.surviving_id
+  ),
+  deactivated AS (
+    UPDATE folders f
+       SET deleted_at = NOW(),
+           deleted_by = NULL
+      FROM victims v
+     WHERE f.id = v.id
+    RETURNING f.id
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.vault_id, v.folder_path), '[]'::jsonb),
+         (SELECT count(*) FROM deactivated)
+    INTO v_subjects, v_rows
+    FROM victims v;
+
+  IF to_regprocedure('public.record_remediation(text,integer,jsonb,text)') IS NULL THEN
+    RETURN COALESCE(v_rows, 0);
+  END IF;
+
+  RETURN record_remediation(
+    'case_colliding_folders', v_rows, v_subjects,
+    'Each row was a second active folders row differing from another only in '
+    || 'letter case, which on Windows is the same folder. The surviving row is '
+    || 'named in surviving_id and surviving_spelling: it is the spelling the '
+    || 'most active files already use, then the oldest, then the lowest id. '
+    || 'Nothing was deleted - to bring one back, set deleted_at = NULL on it '
+    || 'after renaming it to a path no active row holds, because '
+    || 'idx_folders_unique_active is now unique on LOWER(folder_path).');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION remediate_case_colliding_folders() FROM PUBLIC, anon, authenticated;
+
+-- Only one active row per folder per vault, compared case-insensitively.
+--
+-- Windows is this product's only target - a vault lives at something like
+-- C:\BluePLM\br-vault - and every consumer of this table keys on
+-- folder_path.toLowerCase(). The index was byte-exact, so `RADCAM` and `Radcam`
+-- were two active rows describing one folder, and the client's own two counts
+-- of one vault disagreed with each other: getVaultFolders reported 2015 rows
+-- while the load path built a map of 1995. files has been on LOWER(file_path)
+-- since v54; this is the same shape, arrived at late.
+--
+-- DROP+CREATE rather than CREATE IF NOT EXISTS: the name already exists on
+-- every installed database carrying the byte-exact definition, and IF NOT
+-- EXISTS would silently keep it.
+--
+-- The dedupe runs immediately above the CREATE and not at the module tail
+-- beside the other two remediations, which is where a reader would look for it.
+-- A unique index cannot be built while the duplicates it forbids are present:
+-- the statement would raise 23505, the Supabase SQL editor would roll back the
+-- whole file, and the module would be left unapplied.
+SELECT remediate_case_colliding_folders();
+
+DROP INDEX IF EXISTS idx_folders_unique_active;
+CREATE UNIQUE INDEX idx_folders_unique_active
+  ON folders(vault_id, LOWER(folder_path))
   WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_folders_org_id ON folders(org_id);
@@ -2484,7 +2612,7 @@ BEGIN
   END;
 
   -- Lock the row and check status atomically
-  SELECT id, file_name, checked_out_by, org_id
+  SELECT id, file_path, file_name, checked_out_by, org_id
   INTO v_file
   FROM files
   WHERE id = p_file_id
@@ -2507,7 +2635,9 @@ BEGIN
     );
   END IF;
   
-  -- Perform the checkout
+  -- Perform the checkout. The path snapshot is taken from the row's own file_path /
+  -- file_name, not from anything the caller supplies, so it always reflects where the
+  -- file actually is at this instant - discard restores to this snapshot later.
   UPDATE files
   SET 
     checked_out_by = v_actor,
@@ -2515,6 +2645,8 @@ BEGIN
     lock_message = p_lock_message,
     checked_out_by_machine_id = p_machine_id,
     checked_out_by_machine_name = p_machine_name,
+    checked_out_file_path = v_file.file_path,
+    checked_out_file_name = v_file.file_name,
     updated_by = v_actor,
     updated_at = NOW()
   WHERE id = p_file_id;
@@ -2822,6 +2954,8 @@ BEGIN
     lock_message = NULL,
     checked_out_by_machine_id = NULL,
     checked_out_by_machine_name = NULL,
+    checked_out_file_path = NULL,
+    checked_out_file_name = NULL,
     content_hash = COALESCE(p_new_content_hash, content_hash),
     file_size = COALESCE(p_new_file_size, file_size),
     part_number = COALESCE(p_part_number, part_number),
@@ -3886,7 +4020,11 @@ RETURNS TABLE (
   -- Needed by the explorer to tell committed per-configuration metadata apart from
   -- uncommitted edits. Without it every pending config value looks like a change and
   -- the file is marked modified forever.
-  custom_properties JSONB
+  custom_properties JSONB,
+  -- file_path/file_name at checkout time, so discard can restore a rename or move
+  -- made during the checkout. NULL when the file is not checked out.
+  checked_out_file_path TEXT,
+  checked_out_file_name TEXT
 ) AS $$
 BEGIN
   PERFORM require_org_member(p_org_id);
@@ -3897,7 +4035,8 @@ BEGIN
     f.part_number, f.description, f.revision, f.version,
     f.content_hash, f.file_size, f.state,
     f.checked_out_by, f.checked_out_at, f.updated_at,
-    f.custom_properties
+    f.custom_properties,
+    f.checked_out_file_path, f.checked_out_file_name
   FROM files f
   WHERE f.org_id = p_org_id
     AND f.deleted_at IS NULL
@@ -3907,6 +4046,29 @@ END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION get_vault_files_fast(UUID, UUID) TO authenticated;
+
+-- Cheap reconciliation count for the vault cache: the renderer compares this against
+-- its merged (cache + delta) row count and forces a full refetch on mismatch, so a
+-- delta that was missed (e.g. a mutation that forgot to bump updated_at) self-heals
+-- instead of persisting until the cache's 7-day TTL. Must mirror get_vault_files_fast
+-- exactly in both authorization and predicate - it is SECURITY DEFINER and gates only
+-- on require_org_member(), bypassing RLS, same as get_vault_files_fast. A PostgREST
+-- count: 'exact' query would instead go through RLS and disagree systematically.
+DROP FUNCTION IF EXISTS get_vault_files_count(UUID, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION get_vault_files_count(
+  p_org_id UUID,
+  p_vault_id UUID DEFAULT NULL
+) RETURNS BIGINT AS $$
+BEGIN
+  PERFORM require_org_member(p_org_id);
+  RETURN (SELECT COUNT(*) FROM files f
+          WHERE f.org_id = p_org_id
+            AND f.deleted_at IS NULL
+            AND (p_vault_id IS NULL OR f.vault_id = p_vault_id));
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_vault_files_count(UUID, UUID) TO authenticated;
 
 -- ===========================================
 -- MOVE FILE RPC
@@ -4046,7 +4208,10 @@ RETURNS TABLE (
   -- custom_properties would re-introduce the phantom "modified" state it fixes.
   custom_properties JSONB,
   deleted_at TIMESTAMPTZ,
-  is_deleted BOOLEAN
+  is_deleted BOOLEAN,
+  -- Kept in step with get_vault_files_fast: see the comment there.
+  checked_out_file_path TEXT,
+  checked_out_file_name TEXT
 ) AS $$
 BEGIN
   PERFORM require_org_member(p_org_id);
@@ -4059,7 +4224,8 @@ BEGIN
     f.checked_out_by, f.checked_out_at, f.updated_at,
     f.custom_properties,
     f.deleted_at,
-    (f.deleted_at IS NOT NULL) AS is_deleted
+    (f.deleted_at IS NOT NULL) AS is_deleted,
+    f.checked_out_file_path, f.checked_out_file_name
   FROM files f
   WHERE f.org_id = p_org_id
     AND f.vault_id = p_vault_id
@@ -4948,6 +5114,10 @@ ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS description TEXT;
 
 -- v46: Configuration-specific revisions for multi-config parts/assemblies
 ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT '{}'::jsonb;
+
+-- v98: Checkout path snapshot, so discard can restore a rename or move made during checkout
+ALTER TABLE files ADD COLUMN IF NOT EXISTS checked_out_file_path TEXT;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS checked_out_file_name TEXT;
 
 -- ===========================================
 -- REVOKING WHAT THE CLOSED HOLES PRODUCED

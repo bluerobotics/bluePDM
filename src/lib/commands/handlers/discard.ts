@@ -17,10 +17,19 @@ import { log } from '@/lib/logger'
 import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { clearVaultCache } from '@/lib/cache/vaultFileCache'
+import {
+  resolveCheckoutFileOnDisk,
+  performCheckoutPathRestore,
+  finalizeRestoredFileTracking,
+  pendingMetadataPathsToClear,
+} from './discardRestorePath'
 
 const MAX_RETRY_ATTEMPTS = 3
 const RETRY_BASE_DELAY_MS = 1000
 const UNDO_CHECKOUT_MAX_RETRIES = 2
+// Matches the watcher-suppression window used by rename/move/download/get-latest,
+// long enough for the debounced FileWatcher event for our own rename to land.
+const WATCHER_SUPPRESSION_CLEAR_DELAY_MS = 5000
 
 function logDiscard(
   level: 'info' | 'warn' | 'error' | 'debug',
@@ -234,6 +243,12 @@ export const discardCommand: Command<DiscardParams> = {
     let failed = 0
     const errors: string[] = []
 
+    // Named (rather than inferred) so `results[i].discardedPaths` narrows cleanly on
+    // `success` below instead of widening to `string[] | undefined` across the union.
+    type DiscardFileResult =
+      | { success: true; discardedPaths: string[] }
+      | { success: false; error: string }
+
     // Process all files in parallel, collect updates for batch store update
     const pendingUpdates: Array<{
       path: string
@@ -242,6 +257,12 @@ export const discardCommand: Command<DiscardParams> = {
 
     // Track paths to remove from store (deleted files that will become cloud-only)
     const pathsToRemove: string[] = []
+
+    // Relative paths touched by a rename-back restore, for two purposes:
+    // clearing processing state (spinners) on both the old and restored paths,
+    // and releasing file watcher suppression once the whole batch settles.
+    const extraProcessingPaths: string[] = []
+    const restoredWatcherPaths: string[] = []
 
     // Start tracking the discard phase
     const discardStepId = tracker.startStep('Discard files', {
@@ -253,7 +274,7 @@ export const discardCommand: Command<DiscardParams> = {
     const results = await processWithConcurrency(
       filesToDiscard,
       CONCURRENT_OPERATIONS,
-      async (file) => {
+      async (file): Promise<DiscardFileResult> => {
         const fileCtx = getFileContext(file)
 
         try {
@@ -265,22 +286,41 @@ export const discardCommand: Command<DiscardParams> = {
             return { success: false, error: `${file.name}: No content hash` }
           }
 
-          // Check if file actually exists locally (don't trust diffStatus alone)
-          const fileExists = await window.electronAPI?.fileExists(file.path)
-          const isDeletedLocally = !fileExists || file.diffStatus === 'deleted'
+          const fileId = file.pdmData!.id
+
+          // Resolve which ctx.files entry actually sits on disk for this checkout.
+          // The user may have selected the ghost row at the pre-rename path while
+          // the renamed file is a separate entry sharing the same server id.
+          const { resolvedFile, existsOnDisk } = await resolveCheckoutFileOnDisk(
+            ctx.files,
+            fileId,
+            file,
+          )
+          const isDeletedLocally = !existsOnDisk
+
+          // The path this file's persisted pending metadata ends up keyed at once this
+          // discard finishes. Starts as the resolved on-disk path and is overwritten with
+          // the restored path below if a rename-back happens - renameFileInStore migrates
+          // any persisted*ByPath map (see src/stores/persistedPathKeys.ts) from the old key
+          // to the new one, so by the time we clear metadata for this file, the entry (if
+          // any) lives at that final path, not at whatever path was true when this file was
+          // selected or first resolved.
+          let finalPath: string = resolvedFile.path
 
           logDiscard('debug', 'Processing file', {
             operationId,
             ...fileCtx,
             contentHash,
-            fileExists,
+            resolvedPath: resolvedFile.path,
+            existsOnDisk,
             isDeletedLocally,
           })
 
           if (isDeletedLocally) {
-            // For files that don't exist locally, just release checkout using undoCheckout
-            // This is simpler than checkinFile and doesn't do any version/content logic
-            const result = await undoCheckout(file.pdmData!.id, user.id)
+            // For files that don't exist locally anywhere, just release checkout
+            // using undoCheckout. This is simpler than checkinFile and doesn't do
+            // any version/content logic.
+            const result = await undoCheckout(fileId, user.id)
             if (!result.success) {
               logDiscard('error', 'Failed to release checkout for deleted file', {
                 operationId,
@@ -298,8 +338,27 @@ export const discardCommand: Command<DiscardParams> = {
             pathsToRemove.push(file.path)
             logDiscard('debug', 'Released checkout for deleted file', { operationId, ...fileCtx })
           } else {
-            // For files that exist locally, download server version to replace local changes
-            await window.electronAPI?.setReadonly(file.path, false)
+            // Rename the file back to its checkout-time path first, if it moved,
+            // so the download below never lands on a path about to be renamed.
+            const restoreResult = await performCheckoutPathRestore(
+              ctx,
+              resolvedFile,
+              file,
+              operationId,
+            )
+            if ('error' in restoreResult) {
+              progress.update()
+              return { success: false, error: restoreResult.error }
+            }
+            const { downloadPath, restoredFrom } = restoreResult
+            finalPath = downloadPath
+
+            if (restoredFrom) {
+              restoredWatcherPaths.push(restoredFrom.currentRelPath, restoredFrom.originalRelPath)
+            } else {
+              // No restore needed - clear read-only in place, matching today's behaviour.
+              await window.electronAPI?.setReadonly(downloadPath, false)
+            }
 
             // Download with retry logic (URL refreshed each attempt in case of expiry)
             let writeResult:
@@ -324,7 +383,7 @@ export const discardCommand: Command<DiscardParams> = {
                 break
               }
 
-              writeResult = await window.electronAPI?.downloadUrl(url, file.path, contentHash)
+              writeResult = await window.electronAPI?.downloadUrl(url, downloadPath, contentHash)
               if (writeResult?.success) break
 
               lastDownloadError = writeResult?.error || 'Download failed'
@@ -350,7 +409,7 @@ export const discardCommand: Command<DiscardParams> = {
                 error: lastDownloadError,
               })
               // Restore read-only so the file isn't left writable without checkout
-              await window.electronAPI?.setReadonly(file.path, true)
+              await window.electronAPI?.setReadonly(downloadPath, true)
               progress.update()
               return { success: false, error: `${file.name}: ${userMessage}` }
             }
@@ -358,7 +417,7 @@ export const discardCommand: Command<DiscardParams> = {
             // Release checkout with retry (file already has server content, so undo must succeed)
             let undoResult: { success: boolean; error?: string | null } = { success: false }
             for (let attempt = 0; attempt <= UNDO_CHECKOUT_MAX_RETRIES; attempt++) {
-              undoResult = await undoCheckout(file.pdmData!.id, user.id)
+              undoResult = await undoCheckout(fileId, user.id)
               if (undoResult.success) break
               if (attempt < UNDO_CHECKOUT_MAX_RETRIES) {
                 logDiscard('warn', 'undoCheckout failed, retrying...', {
@@ -379,7 +438,7 @@ export const discardCommand: Command<DiscardParams> = {
               })
               // File has server content but checkout is still held -- report as failure
               // so the user knows to retry or force-release
-              await window.electronAPI?.setReadonly(file.path, true)
+              await window.electronAPI?.setReadonly(downloadPath, true)
               progress.update()
               return {
                 success: false,
@@ -387,11 +446,30 @@ export const discardCommand: Command<DiscardParams> = {
               }
             }
 
-            await window.electronAPI?.setReadonly(file.path, true)
+            await window.electronAPI?.setReadonly(downloadPath, true)
+
+            if (restoredFrom) {
+              finalizeRestoredFileTracking(
+                ctx,
+                resolvedFile,
+                downloadPath,
+                restoredFrom,
+                file.pdmData!.version,
+                writeResult.hash || contentHash,
+              )
+              extraProcessingPaths.push(restoredFrom.currentRelPath, restoredFrom.originalRelPath)
+            }
+
             pendingUpdates.push({
-              path: file.path,
+              path: downloadPath,
               updates: {
-                pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+                pdmData: {
+                  ...file.pdmData!,
+                  checked_out_by: null,
+                  checked_out_user: null,
+                  checked_out_file_path: null,
+                  checked_out_file_name: null,
+                },
                 localHash: writeResult.hash || contentHash,
                 diffStatus: undefined,
                 localActiveVersion: undefined,
@@ -401,7 +479,10 @@ export const discardCommand: Command<DiscardParams> = {
             logDiscard('debug', 'Discarded file successfully', { operationId, ...fileCtx })
           }
           progress.update()
-          return { success: true }
+          return {
+            success: true,
+            discardedPaths: pendingMetadataPathsToClear(file.path, resolvedFile.path, finalPath),
+          }
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : 'Unknown error'
           logDiscard('error', 'Exception during discard', {
@@ -421,8 +502,9 @@ export const discardCommand: Command<DiscardParams> = {
       const result = results[i]
       if (result.success) {
         succeeded++
-        // Track path for clearing persisted pending metadata
-        discardedPaths.push(filesToDiscard[i].path)
+        // Track every path this file could have held persisted pending metadata under,
+        // for clearing below. Deduped once, after the loop.
+        discardedPaths.push(...result.discardedPaths)
 
         // Mark file as recently modified to prevent realtime state drift
         // Stale realtime UPDATE events may arrive shortly after discard
@@ -446,18 +528,28 @@ export const discardCommand: Command<DiscardParams> = {
       durationMs: Date.now() - discardPhaseStart,
     })
 
-    // Clear any persisted pending metadata for successfully discarded files
-    // This ensures local metadata edits made during checkout are reverted
+    // Clear any persisted pending metadata for successfully discarded files.
+    // This ensures local metadata edits made during checkout are reverted, even when the
+    // file was renamed or moved mid-checkout: discardedPaths already covers every path
+    // (selected, resolved, and restored) each file could be keyed under, so a plain
+    // dedup - not a second pass keyed differently - is all that's needed here.
     if (discardedPaths.length > 0) {
-      ctx.clearPersistedPendingMetadataForPaths(discardedPaths)
+      ctx.clearPersistedPendingMetadataForPaths([...new Set(discardedPaths)])
     }
+
+    // Include both the pre-restore and restored relative paths for any renamed
+    // files so their spinners clear along with everything else in this batch.
+    const finalPathsBeingProcessed =
+      extraProcessingPaths.length > 0
+        ? [...new Set([...allPathsBeingProcessed, ...extraProcessingPaths])]
+        : allPathsBeingProcessed
 
     // ATOMIC UPDATE: Apply all store updates and clear processing in single render
     const storeUpdateStepId = tracker.startStep('Atomic store update', {
       updateCount: pendingUpdates.length,
     })
     const storeUpdateStart = performance.now()
-    ctx.updateFilesAndClearProcessing(pendingUpdates, allPathsBeingProcessed)
+    ctx.updateFilesAndClearProcessing(pendingUpdates, finalPathsBeingProcessed)
     ctx.setLastOperationCompletedAt(Date.now())
     const storeUpdateDuration = Math.round(performance.now() - storeUpdateStart)
     tracker.endStep(storeUpdateStepId, 'completed', { durationMs: storeUpdateDuration })
@@ -465,9 +557,17 @@ export const discardCommand: Command<DiscardParams> = {
     logDiscard('info', 'Atomic store update complete', {
       operationId,
       updatedFiles: pendingUpdates.length,
-      processingPathsCleared: allPathsBeingProcessed.length,
+      processingPathsCleared: finalPathsBeingProcessed.length,
       durationMs: storeUpdateDuration,
     })
+
+    // Release file watcher suppression for any restored paths on the same delay
+    // window used by rename/move/download/get-latest, so late FS events for our
+    // own rename don't trigger a spurious "unexpected external change" reload.
+    if (restoredWatcherPaths.length > 0) {
+      const paths = [...new Set(restoredWatcherPaths)]
+      setTimeout(() => ctx.clearExpectedFileChanges(paths), WATCHER_SUPPRESSION_CLEAR_DELAY_MS)
+    }
 
     // Remove deleted files from store (they'll reappear as 'cloud' on next refresh)
     if (pathsToRemove.length > 0) {

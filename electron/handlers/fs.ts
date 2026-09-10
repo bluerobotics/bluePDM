@@ -13,7 +13,12 @@ import { pipeline } from 'stream/promises'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { findLockingProcessViaService } from './solidworks'
-import { createVaultWatcher, type VaultWatcher, type WatcherScanCache } from './fsWatcher'
+import {
+  createVaultWatcher,
+  isIgnoredVaultPath,
+  type VaultWatcher,
+  type WatcherScanCache,
+} from './fsWatcher'
 import type { LocalFileInfo } from '../types'
 
 const execAsync = promisify(exec)
@@ -153,9 +158,10 @@ async function scanWorkingTree(
     const subdirectories: string[] = []
 
     for (const item of items) {
-      if (item.name.startsWith('.')) continue
-
       const fullPath = path.join(dir, item.name)
+      const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, '/')
+
+      if (isIgnoredVaultPath(relativePath)) continue
 
       let stats: fsTypes.Stats
       try {
@@ -164,8 +170,6 @@ async function scanWorkingTree(
         log('Error reading directory entry: ' + String(error))
         continue
       }
-
-      const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, '/')
 
       if (item.isDirectory()) {
         entries.set(relativePath, buildDirectoryEntry(fullPath, relativePath, stats))
@@ -267,6 +271,24 @@ function forgetScanCacheEntry(absolutePath: string): void {
   if (!relativePath || relativePath.startsWith('..')) return
 
   deleteScanEntry(workingFilesScanCache.entries, relativePath)
+}
+
+/**
+ * Drop the cached scan after a handler put entries on disk behind the watcher's back.
+ *
+ * Forgetting individual entries is not enough here. The delta scan only re-walks the
+ * paths the watcher reported, and these handlers suppress their own events as expected,
+ * so nothing ever names the arriving subtree - and there is no cache entry to forget for
+ * a path the cache never held. Only rebuilding discovers it. A copy of 53 files that
+ * skipped this left every later delta scan reporting the destination folder as empty.
+ *
+ * @param operation - Handler that mutated the tree, for the log line
+ * @param detail - Paths involved, for the log line
+ */
+function invalidateScanCacheAfterWrite(operation: string, detail: Record<string, unknown>): void {
+  if (!workingFilesScanCache) return
+  watcherScanCache.invalidate()
+  log(`Dropped cached vault scan after ${operation}`, detail)
 }
 
 // Track delete operations for debugging
@@ -1528,11 +1550,12 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         const items = await fs.promises.readdir(dir, { withFileTypes: true })
 
         for (const item of items) {
-          if (item.name.startsWith('.')) continue
-
           const fullPath = path.join(dir, item.name)
           // Relative path from vault root (not from folder)
           const relativePath = path.relative(workingDirectory!, fullPath).replace(/\\/g, '/')
+
+          if (isIgnoredVaultPath(relativePath)) continue
+
           const stats = await fs.promises.stat(fullPath)
 
           if (item.isDirectory()) {
@@ -1651,6 +1674,18 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     workingFilesScanCache = { rootDir, entries }
 
     return { success: true, files: sortScanEntries(entries), wasFullScan: false }
+  })
+
+  /**
+   * Drop the cached scan on the renderer's word that it has gone stale.
+   *
+   * The renderer can see staleness the main process cannot: a folder-scoped refresh
+   * that finds entries the store never held means the cache missed a write. This lets
+   * it self-heal rather than needing the user to press Full Refresh.
+   */
+  ipcMain.handle('fs:invalidate-scan-cache', async (_, reason: string) => {
+    invalidateScanCacheAfterWrite('renderer request', { reason })
+    return { success: true }
   })
 
   // Compute hashes for files in batches
@@ -2338,7 +2373,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
           // A rename relocates entries rather than removing them, and a directory rename
           // moves a whole subtree. Renames are rare, so drop the cache and let the next
           // list call rebuild it instead of patching keys by hand.
-          watcherScanCache.invalidate()
+          invalidateScanCacheAfterWrite('rename', { oldPath, newPath, fileCount })
           return { success: true, fileCount }
         } catch (error) {
           const attemptDuration = Date.now() - attemptStart
@@ -2783,6 +2818,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
   })
 
   ipcMain.handle('fs:copy-file', async (_, sourcePath: string, destPath: string) => {
+    let startedWriting = false
     try {
       // Dropping an item onto the folder it already lives in resolves to a copy onto
       // itself, which CopyFileW rejects with EPERM. Treat it as the no-op it is.
@@ -2793,6 +2829,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
 
       const stats = fs.statSync(sourcePath)
       let fileCount = 0
+      startedWriting = true
 
       if (stats.isDirectory()) {
         fileCount = copyDirSync(sourcePath, destPath)
@@ -2808,14 +2845,22 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         log('Copied file: ' + sourcePath + ' -> ' + destPath)
       }
 
+      invalidateScanCacheAfterWrite('copy', { sourcePath, destPath, fileCount })
+
       return { success: true, fileCount }
     } catch (error) {
       log('Error copying: ' + String(error))
+      // A copy that threw partway still left entries on disk that the cache does not know
+      // about, and a stale cache is the same defect whether or not the copy finished.
+      if (startedWriting) {
+        invalidateScanCacheAfterWrite('failed copy', { sourcePath, destPath })
+      }
       return { success: false, error: String(error) }
     }
   })
 
   ipcMain.handle('fs:move-file', async (_, sourcePath: string, destPath: string) => {
+    let startedWriting = false
     try {
       const stats = fs.statSync(sourcePath)
       const isDirectory = stats.isDirectory()
@@ -2836,6 +2881,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
       if (!fs.existsSync(destDir)) {
         fs.mkdirSync(destDir, { recursive: true })
       }
+      startedWriting = true
 
       try {
         fs.renameSync(sourcePath, destPath)
@@ -2843,7 +2889,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         // A move relocates entries rather than removing them, and moving a directory
         // shifts a whole subtree. Moves are rare, so drop the cache and let the next
         // list call rebuild it instead of patching keys by hand.
-        watcherScanCache.invalidate()
+        invalidateScanCacheAfterWrite('move', { sourcePath, destPath, fileCount })
         return { success: true, fileCount }
       } catch (renameErr) {
         log('Rename failed, trying copy+delete: ' + String(renameErr))
@@ -2853,22 +2899,45 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         const copiedCount = copyDirSync(sourcePath, destPath)
         fs.rmSync(sourcePath, { recursive: true, force: true })
         log(`Moved (copy+delete) directory: ${sourcePath} -> ${destPath} (${copiedCount} files)`)
-        watcherScanCache.invalidate()
+        invalidateScanCacheAfterWrite('move', {
+          sourcePath,
+          destPath,
+          fileCount: copiedCount,
+        })
         return { success: true, fileCount: copiedCount }
       } else {
         copyFileWritable(sourcePath, destPath)
         fs.unlinkSync(sourcePath)
         log('Moved (copy+delete) file: ' + sourcePath + ' -> ' + destPath)
-        watcherScanCache.invalidate()
+        invalidateScanCacheAfterWrite('move', { sourcePath, destPath, fileCount: 1 })
         return { success: true, fileCount: 1 }
       }
     } catch (error) {
       log('Error moving: ' + String(error))
+      if (startedWriting) {
+        invalidateScanCacheAfterWrite('failed move', { sourcePath, destPath })
+      }
       return { success: false, error: String(error) }
     }
   })
 
   ipcMain.handle('fs:open-in-explorer', async (_, targetPath: string) => {
+    try {
+      // A directory is opened, not revealed: showItemInFolder would land the user
+      // in the parent with the folder merely selected.
+      if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+        const error = await shell.openPath(targetPath)
+        if (error) {
+          logError(`[Main] Failed to open folder: ${targetPath}`, { error })
+          return { success: false, error }
+        }
+        return { success: true }
+      }
+    } catch (error) {
+      logError(`[Main] Error opening folder: ${targetPath}`, { error: String(error) })
+      return { success: false, error: String(error) }
+    }
+
     shell.showItemInFolder(targetPath)
     return { success: true }
   })

@@ -1,7 +1,11 @@
+import { log } from '@/lib/logger'
 import { buildConfigurationMapPayload } from '@/lib/metadata/configurationMaps'
 
 import { getSupabaseClient } from '../client'
 import { getCurrentUserEmail } from '../auth'
+
+/** Postgres unique-constraint violation (SQLSTATE 23505). */
+const UNIQUE_VIOLATION = '23505'
 
 // ============================================
 // File Checkout Operations
@@ -32,6 +36,60 @@ function toClearableRpcValue(value: string | null | undefined): string | undefin
 }
 
 /**
+ * Update payload for releasing a checkout lock (undoCheckout / adminForceDiscardCheckout).
+ *
+ * file_path/file_name are optional because only undoCheckout() restores them from the
+ * checkout path snapshot - adminForceDiscardCheckout() clears the snapshot without
+ * reverting the path, since an admin releasing someone else's lock has no local copy
+ * of the file to move back.
+ */
+type ReleaseCheckoutUpdate = {
+  checked_out_by: null
+  checked_out_at: null
+  lock_message: null
+  checked_out_by_machine_id: null
+  checked_out_by_machine_name: null
+  checked_out_file_path: null
+  checked_out_file_name: null
+  updated_at: string
+  file_path?: string
+  file_name?: string
+}
+
+/**
+ * The part of the row `checkout_file` returns that callers read back.
+ *
+ * checkout_file() takes the path snapshot from the row's own file_path/file_name at
+ * lock time and then returns `row_to_json(f.*)` of the row it just updated, so both
+ * snapshot columns are always present on success. checkout.ts depends on that: the
+ * store copy of the snapshot is what discard reads to decide whether to rename a file
+ * back, and realtime cannot be relied on to deliver it (it skips files with pending
+ * metadata, and it never arrives at all offline).
+ */
+export interface CheckoutSnapshotFields {
+  checked_out_file_path: string
+  checked_out_file_name: string
+}
+
+/**
+ * Read the snapshot columns off the row the RPC returned. The RPC's payload is
+ * JSONB, so it arrives structurally opaque; anything that does not carry both
+ * columns as strings is reported as no snapshot, leaving the caller to fall back
+ * rather than store a half-populated one.
+ */
+function readCheckoutSnapshot(file: unknown): CheckoutSnapshotFields | undefined {
+  if (typeof file !== 'object' || file === null) return undefined
+
+  const { checked_out_file_path: path, checked_out_file_name: name } = file as Record<
+    string,
+    unknown
+  >
+  if (typeof path !== 'string' || typeof name !== 'string') return undefined
+
+  return { checked_out_file_path: path, checked_out_file_name: name }
+}
+
+/**
  * Checkout a file using atomic RPC to prevent race conditions
  * Note: userEmail parameter is kept for API compatibility but no longer used
  * (RPC handles activity logging internally)
@@ -46,7 +104,7 @@ export async function checkoutFile(
     machineId?: string
     machineName?: string
   },
-) {
+): Promise<{ success: boolean; file?: CheckoutSnapshotFields; error?: string | null }> {
   const client = getSupabaseClient()
 
   // Use pre-computed values if provided, otherwise fetch (for single-file calls)
@@ -72,7 +130,7 @@ export async function checkoutFile(
   }
 
   // RPC returns JSONB with { success, error?, file? }
-  const result = data as { success: boolean; error?: string; file?: any }
+  const result = data as { success: boolean; error?: string; file?: unknown }
 
   if (!result.success) {
     return { success: false, error: result.error }
@@ -80,7 +138,7 @@ export async function checkoutFile(
 
   // DO NOT add manual activity logging - RPC handles it!
 
-  return { success: true, file: result.file, error: null }
+  return { success: true, file: readCheckoutSnapshot(result.file), error: null }
 }
 
 export async function checkinFile(
@@ -405,21 +463,55 @@ export async function undoCheckout(fileId: string, userId: string) {
     return { success: false, error: 'File is checked out by another user' }
   }
 
-  // Release the checkout without saving changes
-  // Must bump updated_at so delta sync picks up the change (cache uses updated_at as watermark)
-  const { data, error } = await client
-    .from('files')
-    .update({
-      checked_out_by: null,
-      checked_out_at: null,
-      lock_message: null,
-      checked_out_by_machine_id: null,
-      checked_out_by_machine_name: null,
-      updated_at: new Date().toISOString(),
+  // Release the checkout without saving changes. Both snapshot columns null means an
+  // older lock taken before checked_out_file_path/_name existed - fall back to clearing
+  // the lock alone rather than writing file_path/file_name to null.
+  const hasPathSnapshot = file.checked_out_file_path !== null || file.checked_out_file_name !== null
+
+  // The lock columns alone. Kept separate from the path revert below so the
+  // unique-violation fallback can reuse it verbatim.
+  const lockRelease: ReleaseCheckoutUpdate = {
+    checked_out_by: null,
+    checked_out_at: null,
+    lock_message: null,
+    checked_out_by_machine_id: null,
+    checked_out_by_machine_name: null,
+    checked_out_file_path: null,
+    checked_out_file_name: null,
+    // Must bump updated_at so delta sync picks up the change (cache uses updated_at as watermark)
+    updated_at: new Date().toISOString(),
+  }
+
+  const releaseUpdate: ReleaseCheckoutUpdate = { ...lockRelease }
+
+  if (hasPathSnapshot) {
+    // The rename or move was already pushed to file_path/file_name live by renameCommand
+    // or moveCommand, so restoring here is what makes the server row agree with the local
+    // file discard is about to rename back to.
+    if (file.checked_out_file_path !== null) releaseUpdate.file_path = file.checked_out_file_path
+    if (file.checked_out_file_name !== null) releaseUpdate.file_name = file.checked_out_file_name
+  }
+
+  const releaseCheckout = (update: ReleaseCheckoutUpdate) =>
+    client.from('files').update(update).eq('id', fileId).select().single()
+
+  let { data, error } = await releaseCheckout(releaseUpdate)
+
+  // The path revert can collide with files' unique (vault_id, LOWER(file_path))
+  // index when another row took the checkout-time path while this file was
+  // renamed away from it. Releasing the lock matters more than the revert: by the
+  // time undoCheckout runs, discard has already renamed and re-downloaded the
+  // local file, and failing here leaves a lock that retrying can never clear.
+  if (error?.code === UNIQUE_VIOLATION && releaseUpdate.file_path !== undefined) {
+    log.warn('[Checkout]', 'Restoring the checkout-time path collided, releasing the lock only', {
+      fileId,
+      checkedOutFilePath: file.checked_out_file_path,
+      error: error.message,
     })
-    .eq('id', fileId)
-    .select()
-    .single()
+    const fallback = await releaseCheckout(lockRelease)
+    data = fallback.data
+    error = fallback.error
+  }
 
   if (error) {
     return { success: false, error: error.message }
@@ -483,18 +575,24 @@ export async function adminForceDiscardCheckout(
     checkedOutUser = userData
   }
 
-  // Release the checkout without saving changes
+  // Release the checkout without saving changes. Unlike undoCheckout(), the path is
+  // never reverted here - an admin releasing someone else's lock has no local copy of
+  // the file to move back, so only the lock and the now-stale snapshot are cleared.
   // Must bump updated_at so delta sync picks up the change (cache uses updated_at as watermark)
+  const releaseUpdate: ReleaseCheckoutUpdate = {
+    checked_out_by: null,
+    checked_out_at: null,
+    lock_message: null,
+    checked_out_by_machine_id: null,
+    checked_out_by_machine_name: null,
+    checked_out_file_path: null,
+    checked_out_file_name: null,
+    updated_at: new Date().toISOString(),
+  }
+
   const { data, error } = await client
     .from('files')
-    .update({
-      checked_out_by: null,
-      checked_out_at: null,
-      lock_message: null,
-      checked_out_by_machine_id: null,
-      checked_out_by_machine_name: null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(releaseUpdate)
     .eq('id', fileId)
     .select()
     .single()

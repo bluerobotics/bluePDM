@@ -12,7 +12,8 @@
 
 import type { LocalFile as StoreLocalFile, ToastType } from '../../stores/pdmStore'
 import type { User, Organization } from '../../types/pdm'
-import type { OperationType } from '../../stores/types'
+import type { OperationType, ServerFile } from '../../stores/types'
+import { buildFullPath as buildVaultFullPath, isPathWithinDirectory } from '../utils'
 
 // Re-export LocalFile for use by handlers
 export type LocalFile = StoreLocalFile
@@ -37,6 +38,10 @@ export interface CommandContext {
 
   // All files in the vault (for folder operations)
   files: LocalFile[]
+
+  // Every file the server holds for this vault, keyed by relative path. Needed wherever an
+  // operation has to cover what is on the server rather than what is in the local tree.
+  serverFiles: ServerFile[]
 
   // Confirmation dialog (async - resolves when user clicks confirm/cancel)
   confirm?: (opts: {
@@ -496,6 +501,31 @@ export interface MatchGhostFileParams {
   targetFile: LocalFile
 }
 
+/**
+ * Parameters for the reconcile-moved-paths command.
+ *
+ * Writes the current local path of every `diffStatus === 'moved'` file to its server record. The
+ * command takes no selection: the targets are whatever the vault holds, because a partially
+ * reconciled vault is what this exists to fix.
+ */
+export interface ReconcileMovedPathsParams {
+  /**
+   * Write. Omitted or false performs the pre-flight and reports without touching the server.
+   *
+   * Named for the write rather than for the dry run so that no caller can write by forgetting a
+   * flag. This is the highest-consequence write in the application; it has to be asked for.
+   */
+  apply?: boolean
+
+  /**
+   * Reconcile the rows nobody else holds and leave the held ones alone.
+   *
+   * Without it a run that finds any target checked out by another user refuses entirely and names
+   * the holders, so they can be asked to check in. Opting in is the deliberate second choice.
+   */
+  skipCheckedOut?: boolean
+}
+
 // ============================================
 // Command Definition
 // ============================================
@@ -529,6 +559,7 @@ export type CommandId =
   | 'bulk-delete-assembly'
   | 'pack-and-go'
   | 'match-ghost-file'
+  | 'reconcile-moved-paths'
 
 export interface Command<TParams = unknown> {
   // Identifier
@@ -581,19 +612,33 @@ export type CommandMap = {
   'bulk-delete-assembly': Command<BulkAssemblyParams>
   'pack-and-go': Command<PackAndGoParams>
   'match-ghost-file': Command<MatchGhostFileParams>
+  'reconcile-moved-paths': Command<ReconcileMovedPathsParams>
 }
 
 // ============================================
 // Utility Types
 // ============================================
 
-// Helper to get files in a folder (including nested)
+/**
+ * Every file inside a folder, at any depth.
+ *
+ * Containment is `isPathWithinDirectory`, the same rule the deletion enumerators and
+ * `removeFilesFromStore` use: on a directory boundary, so "Fixed Lens" cannot reach
+ * "Fixed Lens Models", and case-insensitive, because Windows is. Comparing case-sensitively
+ * found nothing at all under a folder whose stored spelling differed from its children's, so
+ * a folder of checked-out files reported none to discard and a folder move carried no
+ * bookkeeping for the files it moved.
+ *
+ * The helper also matches the directory itself, which the previous `+ '/'` form could not, so
+ * the exact match is dropped again here: a folder is not one of its own contents.
+ */
 export function getFilesInFolder(files: LocalFile[], folderPath: string): LocalFile[] {
-  const normalizedFolder = folderPath.replace(/\\/g, '/')
   return files.filter((f) => {
     if (f.isDirectory) return false
-    const normalizedPath = f.relativePath.replace(/\\/g, '/')
-    return normalizedPath.startsWith(normalizedFolder + '/')
+    if (!isPathWithinDirectory(f.relativePath, folderPath)) return false
+    // Only the folder itself can be this short; every file under it adds a separator and a
+    // name, and differing case or separators cannot change a path's length.
+    return f.relativePath.length > folderPath.length
   })
 }
 
@@ -752,6 +797,124 @@ export function getFilesCheckedOutByOthers(
   return selectedFiles.filter(
     (f) => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== userId,
   )
+}
+
+/**
+ * One server file record a delete-server selection covers.
+ *
+ * Identified by the row that will be soft-deleted rather than by a local file, because the
+ * two do not correspond: a server row can have no local file at all.
+ */
+export interface ServerDeletionTarget {
+  /** `files.id` of the record to soft-delete. */
+  fileId: string
+  name: string
+  /** Path on the server, forward-slashed and relative to the vault root. */
+  relativePath: string
+  /** Absolute local path, for store removal and processing spinners. */
+  path: string
+  /** The store row for this record, when one exists. */
+  localFile?: LocalFile
+}
+
+/**
+ * Every server record a delete-server selection covers.
+ *
+ * A folder's contents come from `serverFiles`, not from the local rows under it. The two
+ * disagree whenever a file was never downloaded or its row was pruned, and enumerating
+ * locally left the difference behind: one folder delete found 5 of the 53 records the server
+ * actually held, and the other 48 survived as orphans that a later copy to the same path then
+ * collided with. `serverFiles` holds the active vault only, so a prefix match cannot reach
+ * outside it, and the match is on a directory boundary so deleting "Fixed Lens" does not take
+ * "Fixed Lens Models" with it.
+ *
+ * Selected files are unchanged: a file is exactly itself, and only when it carries a record.
+ *
+ * @param files - All local rows, used to attach the store row for each record
+ * @param serverFiles - The vault's server file list
+ * @param selection - The items the user acted on
+ * @param vaultPath - Vault root, for the absolute path of records with no local row
+ */
+export function getServerDeletionTargets(
+  files: LocalFile[],
+  serverFiles: ServerFile[],
+  selection: LocalFile[],
+  vaultPath: string | null,
+): ServerDeletionTarget[] {
+  const localByRelativePath = new Map<string, LocalFile>()
+  for (const file of files) {
+    if (file.isDirectory) continue
+    localByRelativePath.set(file.relativePath.replace(/\\/g, '/').toLowerCase(), file)
+  }
+
+  const targets = new Map<string, ServerDeletionTarget>()
+
+  const addServerFile = (serverFile: ServerFile): void => {
+    if (targets.has(serverFile.id)) return
+    const relativePath = serverFile.file_path.replace(/\\/g, '/')
+    const localFile = localByRelativePath.get(relativePath.toLowerCase())
+    targets.set(serverFile.id, {
+      fileId: serverFile.id,
+      name: serverFile.name,
+      relativePath,
+      path: localFile?.path ?? buildVaultFullPath(vaultPath ?? '', relativePath),
+      localFile,
+    })
+  }
+
+  for (const item of selection) {
+    if (item.isDirectory) {
+      for (const serverFile of serverFiles) {
+        if (isPathWithinDirectory(serverFile.file_path, item.relativePath)) {
+          addServerFile(serverFile)
+        }
+      }
+    } else if (item.pdmData?.id && !targets.has(item.pdmData.id)) {
+      targets.set(item.pdmData.id, {
+        fileId: item.pdmData.id,
+        name: item.name,
+        relativePath: item.relativePath.replace(/\\/g, '/'),
+        path: item.path,
+        localFile: item,
+      })
+    }
+  }
+
+  return Array.from(targets.values())
+}
+
+/**
+ * What a delete-server selection covers on disk: the selected items themselves plus every
+ * local file inside a selected folder, so each file is handed to the batch delete explicitly
+ * rather than relying on the folder delete to take its contents with it.
+ *
+ * Containment is decided by `isPathWithinDirectory`, the same rule `getServerDeletionTargets`
+ * uses for the server records and `removeFilesFromStore` uses when it prunes a folder's
+ * children. When these disagreed, a folder whose stored spelling differed in case from its
+ * children's left the files on disk while the records and the rows were both gone.
+ *
+ * Cloud-only items are skipped: there is nothing local to delete.
+ *
+ * @param files - All local rows, searched for the contents of selected folders
+ * @param selection - The items the user acted on
+ */
+export function getLocalDeletionItems(files: LocalFile[], selection: LocalFile[]): LocalFile[] {
+  const items: LocalFile[] = []
+
+  for (const item of selection) {
+    if (item.diffStatus === 'cloud') continue
+    items.push(item)
+    if (!item.isDirectory) continue
+
+    for (const file of files) {
+      if (file.isDirectory) continue
+      if (file.diffStatus === 'cloud') continue
+      if (isPathWithinDirectory(file.relativePath, item.relativePath)) items.push(file)
+    }
+  }
+
+  // A file can be both selected and inside a selected folder
+  return [...new Map(items.map((f) => [f.path, f])).values()]
 }
 
 /**

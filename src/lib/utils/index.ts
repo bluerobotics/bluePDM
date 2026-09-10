@@ -69,8 +69,12 @@ export {
   buildFullPath,
   getRelativePath,
   isAbsolutePath,
+  isPathWithinDirectory,
   ensureTrailingSeparator,
 } from './path'
+
+// LIKE pattern utilities
+export { escapeLikePattern, folderPrefixLikePattern } from './likePattern'
 
 // Format utilities
 export {

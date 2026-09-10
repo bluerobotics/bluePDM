@@ -30,10 +30,13 @@ import type {
   LocalFile,
 } from '../types'
 import {
+  getServerDeletionTargets,
+  getLocalDeletionItems,
   getSyncedFilesFromSelection,
   getUnsyncedFilesFromSelection,
   getFilesCheckedOutByOthers,
 } from '../types'
+import { isPathWithinDirectory } from '../../utils'
 import { checkinFile, softDeleteFile, deleteFolderByPath } from '../../supabase'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
 import { FileOperationTracker } from '../../fileOperationTracker'
@@ -211,14 +214,13 @@ function categorizeFoldersForDeletion(
   const foldersToRemove: string[] = []
 
   for (const folderPath of folderPaths) {
-    // Normalize path separators for comparison
-    const normalizedFolderPath = folderPath.replace(/\\/g, '/')
-
-    // Check if any synced files inside this folder will become cloud-only
-    const hasCloudChildren = syncedFileUpdates.some((update) => {
-      const normalizedFilePath = update.path.replace(/\\/g, '/')
-      return normalizedFilePath.startsWith(normalizedFolderPath + '/')
-    })
+    // Check if any synced files inside this folder will become cloud-only.
+    // Same containment rule as the server enumeration and the store's own pruning: a folder
+    // whose stored spelling differs in case from its children's would otherwise look empty
+    // and be deleted off disk, taking cloud-only rows the server still holds out of view.
+    const hasCloudChildren = syncedFileUpdates.some((update) =>
+      isPathWithinDirectory(update.path, folderPath),
+    )
 
     if (hasCloudChildren) {
       foldersToMakeCloudOnly.push(folderPath)
@@ -677,12 +679,14 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       return `Cannot delete files checked out by others: ${names}${suffix}`
     }
 
-    // Get synced files (including cloud-only)
-    const syncedFiles = getSyncedFilesFromSelection(ctx.files, files)
-    const cloudOnlyFiles = files.filter((f) => f.diffStatus === 'cloud' && f.pdmData?.id)
-    const allFilesToDelete = [
-      ...new Map([...syncedFiles, ...cloudOnlyFiles].map((f) => [f.path, f])).values(),
-    ]
+    // Enumerated the same way execute() does, so validation cannot reject a folder whose
+    // only server content is records with no local row.
+    const allFilesToDelete = getServerDeletionTargets(
+      ctx.files,
+      ctx.serverFiles,
+      files,
+      ctx.vaultPath,
+    )
 
     if (allFilesToDelete.length === 0) {
       // Check for local-only folders OR empty cloud-only folders
@@ -733,26 +737,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     ctx.addProcessingFoldersSync(selectedPaths, 'delete')
 
     // Heavy scanning — runs AFTER spinner is visible so UI doesn't freeze
-    const allFilesToDelete: LocalFile[] = []
-
-    for (const item of files) {
-      if (item.isDirectory) {
-        // Get all synced files inside the folder
-        const folderPath = item.relativePath.replace(/\\/g, '/')
-        const filesInFolder = ctx.files.filter((f) => {
-          if (f.isDirectory) return false
-          if (!f.pdmData?.id) return false
-          const filePath = f.relativePath.replace(/\\/g, '/')
-          return filePath.startsWith(folderPath + '/')
-        })
-        allFilesToDelete.push(...filesInFolder)
-      } else if (item.pdmData?.id) {
-        allFilesToDelete.push(item)
-      }
-    }
-
-    // Remove duplicates
-    const uniqueFiles = [...new Map(allFilesToDelete.map((f) => [f.path, f])).values()]
+    const uniqueFiles = getServerDeletionTargets(ctx.files, ctx.serverFiles, files, ctx.vaultPath)
 
     // Check for local folders to delete
     const hasLocalFolders = files.some((f) => f.isDirectory && f.diffStatus !== 'cloud')
@@ -950,22 +935,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     if (deleteLocal) {
       // Expand selection to include files inside selected folders
       // This ensures files are explicitly deleted even if folder deletion fails
-      const expandedLocalItems: LocalFile[] = []
-      for (const item of files.filter((f) => f.diffStatus !== 'cloud')) {
-        expandedLocalItems.push(item)
-        if (item.isDirectory) {
-          const folderPath = item.relativePath.replace(/\\/g, '/')
-          const filesInFolder = ctx.files.filter((f) => {
-            if (f.isDirectory) return false
-            if (f.diffStatus === 'cloud') return false
-            const filePath = f.relativePath.replace(/\\/g, '/')
-            return filePath.startsWith(folderPath + '/')
-          })
-          expandedLocalItems.push(...filesInFolder)
-        }
-      }
-      // Remove duplicates (in case files were both selected and inside a selected folder)
-      const localItemsToDelete = [...new Map(expandedLocalItems.map((f) => [f.path, f])).values()]
+      const localItemsToDelete = getLocalDeletionItems(ctx.files, files)
 
       if (localItemsToDelete.length > 0) {
         const localDeleteStepId = tracker.startStep('Delete local files', {
@@ -1025,19 +995,14 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
         uniqueFiles,
         CONCURRENT_OPERATIONS,
         async (file) => {
-          if (!file.pdmData?.id) {
-            completedCount++
-            ctx.updateProgressToast(
-              toastId,
-              completedCount,
-              Math.round((completedCount / totalFiles) * 100),
-              undefined,
-              `${completedCount}/${totalFiles}`,
-            )
-            return false
-          }
           try {
-            const result = await softDeleteFile(file.pdmData.id, user.id)
+            const result = await softDeleteFile(file.fileId, user.id)
+            // The server refuses a record checked out by someone else and says so without
+            // throwing. Now that a folder delete covers records with no local row, that is
+            // the only place the refusal can be seen, so it has to reach the user.
+            if (!result.success && result.error) {
+              errors.push(`${file.name}: ${result.error}`)
+            }
             completedCount++
             ctx.updateProgressToast(
               toastId,
@@ -1077,9 +1042,13 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       // If keeping local copies (deleteLocal = false), update successfully deleted files
       // to show as local-only (clear pdmData)
       if (!deleteLocal) {
-        const keptLocalFiles = uniqueFiles.filter(
-          (f, i) => serverResults[i] && f.diffStatus !== 'cloud',
-        )
+        const keptLocalFiles: LocalFile[] = []
+        uniqueFiles.forEach((target, i) => {
+          const localFile = target.localFile
+          if (serverResults[i] && localFile && localFile.diffStatus !== 'cloud') {
+            keptLocalFiles.push(localFile)
+          }
+        })
 
         if (keptLocalFiles.length > 0) {
           // Update files to local-only status

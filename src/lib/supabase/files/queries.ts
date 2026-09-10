@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '../client'
 import { log } from '@/lib/logger'
+import { folderPrefixLikePattern } from '@/lib/utils/likePattern'
 import { hashCheckoutIdentifier, type CheckoutUserProfile } from '@/types/pdm'
 
 // ============================================
@@ -58,7 +59,9 @@ export async function getFiles(
   }
 
   if (options?.folder) {
-    query = query.ilike('file_path', `${options.folder}%`)
+    // The separator is part of the pattern: a bare `Parts%` prefix also answers
+    // with everything under `PartsOld`, and `_` in a folder name is a wildcard.
+    query = query.ilike('file_path', folderPrefixLikePattern(options.folder))
   }
 
   if (options?.workflow_state_ids && options.workflow_state_ids.length > 0) {
@@ -101,6 +104,10 @@ export interface LightweightFile {
   // Carries the reserved _config_tabs / _config_descriptions keys the explorer needs to
   // recognise per-configuration metadata that is already committed.
   custom_properties: Record<string, unknown> | null
+  /** file_path at the moment of checkout, from the checkout path snapshot. Null when not checked out. */
+  checked_out_file_path: string | null
+  /** file_name at the moment of checkout, from the checkout path snapshot. Null when not checked out. */
+  checked_out_file_name: string | null
 }
 
 // Delta file includes deletion info
@@ -200,6 +207,54 @@ export async function getFilesDelta(
   })
 
   return { files, error: null }
+}
+
+/**
+ * Get the true count of non-deleted files for a vault, for cache reconciliation.
+ *
+ * Calls get_vault_files_count, which mirrors get_vault_files_fast's authorization
+ * (SECURITY DEFINER, gated only on require_org_member) and predicate exactly, so this
+ * count is directly comparable to a row count assembled from get_vault_files_fast /
+ * get_vault_files_delta. A plain PostgREST count: 'exact' query would instead go
+ * through RLS and disagree systematically - do not substitute one in.
+ *
+ * @param orgId Organization ID
+ * @param vaultId Vault ID
+ * @returns Server-side file count, or null (with error set) if the RPC failed
+ */
+export async function getVaultFilesCount(
+  orgId: string,
+  vaultId: string,
+): Promise<{ count: number | null; error: unknown }> {
+  const logFn =
+    typeof window !== 'undefined' && (window as any).electronAPI?.log // TODO: type this
+      ? (level: string, msg: string, data?: any) => // TODO: type this
+          (window as any).electronAPI.log(level, msg, data) // TODO: type this
+      : () => {}
+
+  logFn('debug', '[getVaultFilesCount] Querying vault file count', { orgId, vaultId })
+
+  const client = getSupabaseClient()
+
+  // Use RPC function so the count shares get_vault_files_fast's predicate exactly
+  const { data, error }: { data: unknown; error: { message: string } | null } = await (
+    client.rpc as any // TODO: type this
+  )('get_vault_files_count', {
+    p_org_id: orgId,
+    p_vault_id: vaultId,
+  })
+
+  if (error) {
+    logFn('error', '[getVaultFilesCount] RPC error', { error: error.message })
+    return { count: null, error }
+  }
+
+  const count = typeof data === 'string' ? Number(data) : (data as number | null)
+  const validCount = typeof count === 'number' && Number.isFinite(count) ? count : null
+
+  logFn('debug', '[getVaultFilesCount] Result', { count: validCount })
+
+  return { count: validCount, error: null }
 }
 
 /**
@@ -894,7 +949,9 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
         checked_out_by,
         checked_out_at,
         updated_at,
-        custom_properties
+        custom_properties,
+        checked_out_file_path,
+        checked_out_file_name
       )
     `,
     )
@@ -927,6 +984,8 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
       checked_out_at: string | null
       updated_at: string
       custom_properties: Record<string, unknown> | null
+      checked_out_file_path: string | null
+      checked_out_file_name: string | null
     } | null
 
     // Verify this is actually a drawing file
@@ -949,6 +1008,8 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
           checked_out_at: parent.checked_out_at,
           updated_at: parent.updated_at,
           custom_properties: parent.custom_properties,
+          checked_out_file_path: parent.checked_out_file_path,
+          checked_out_file_name: parent.checked_out_file_name,
         })
       }
     }

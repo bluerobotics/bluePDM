@@ -196,6 +196,37 @@ export function getRelativePath(fullPath: string, vaultPath: string): string {
 }
 
 /**
+ * Check whether a path is a directory or something beneath it.
+ *
+ * Matching is on a separator boundary, never a bare prefix, so deleting "Fixed Lens"
+ * leaves "Fixed Lens Models" alone. Separators and case are normalised because vault
+ * paths reach here in both spellings and Windows treats them as the same file.
+ *
+ * An empty directory matches nothing rather than everything: a caller that lost track
+ * of which folder it meant should touch no rows at all.
+ *
+ * @param candidate - Path to test
+ * @param directory - Directory path the candidate may live in
+ * @returns True when candidate is the directory itself or a descendant of it
+ *
+ * @example
+ * isPathWithinDirectory("Fixed Lens/a.sldprt", "Fixed Lens") // true
+ * isPathWithinDirectory("Fixed Lens Models/a.sldprt", "Fixed Lens") // false
+ */
+export function isPathWithinDirectory(candidate: string, directory: string): boolean {
+  if (!candidate || !directory) return false
+
+  const normalizedCandidate = toForwardSlash(candidate).toLowerCase()
+  const normalizedDirectory = toForwardSlash(directory).toLowerCase().replace(/\/+$/, '')
+  if (!normalizedDirectory) return false
+
+  return (
+    normalizedCandidate === normalizedDirectory ||
+    normalizedCandidate.startsWith(normalizedDirectory + '/')
+  )
+}
+
+/**
  * Check if a path is absolute (starts with drive letter or root)
  *
  * @param path - Path to check

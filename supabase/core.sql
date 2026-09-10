@@ -113,28 +113,40 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 97 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 99 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'An account could finish signing in belonging to no organization and not be told. v95 '
-  'pinned users.org_id against self-update, which was right, but linkUserToOrganization '
-  'still set that column with a PATCH whenever the email domain matched an org; PostgREST '
-  'refused the write, the refusal was logged as a warning, and the org was returned anyway. '
-  'The account then registered a user_sessions row stamped with that org - a table whose '
-  'policy only checks user_id = auth.uid() - so it appeared in the online-presence '
-  'indicator while being absent from Members & Teams and from every other query that reads '
-  'real membership, and no admin could repair it, because the admin update policy is gated '
-  'on `org_id IN (...)` and NULL IN (...) is NULL. Because the domain branch returned early '
-  'it also never reached join_org_by_slug, so the org code such a user had been given was '
-  'never actually used and they were never added to the default team. ensure_user_org_id() '
-  'now resolves a pending invitation first and an email-domain match second for any account '
-  'whose org_id is still NULL, honours blocked_users on both routes, and performs the '
-  'UPDATE as definer - repairing accounts already stranded on their next sign-in. The '
-  'client no longer writes users.org_id, users.role or pending_org_members.claimed_at at '
-  'all: every route goes through join_org_by_slug or this function, and reads the column '
-  'back before reporting an organization, so a link that does not persist surfaces as a '
-  'failure instead of a working-looking session.'
+  'Two disagreements about how many rows a vault has. The first is between the client''s '
+  'file cache and the server: restoring a file from trash clears deleted_at without bumping '
+  'updated_at, so a client whose watermark already passed the delete never sees the restore '
+  'in its delta query and stays short until the cache''s 7-day TTL, with nothing to notice '
+  'the shortfall by. get_vault_files_count(p_org_id, p_vault_id) gives the renderer a cheap '
+  'true row count to compare its merged cache against, mirroring get_vault_files_fast''s '
+  'SECURITY DEFINER authorization and predicate exactly so the two never disagree for '
+  'reasons unrelated to an actual missed delta; on mismatch the renderer forces one full '
+  'refetch, capped by a per-vault cooldown, to rebuild the cache from the authoritative row '
+  'set. The second is inside the folders table. idx_folders_unique_active was byte-exact on '
+  '(vault_id, folder_path) while every consumer of that table keys on '
+  'folder_path.toLowerCase(), so on Windows - this product''s only target - RADCAM and '
+  'Radcam were two active rows describing one folder; one production vault carried twenty '
+  'such pairs, and a single load reported 2015 folders and then built a map of 1995 from '
+  'them. The index is now on (vault_id, LOWER(folder_path)), which is what files has had '
+  'since v54. A unique index cannot be built while the duplicates it forbids are still '
+  'present, so remediate_case_colliding_folders() runs immediately above the CREATE in the '
+  'same file rather than at the module tail beside the other two remediations: in the other '
+  'order the statement raises 23505 and the Supabase editor rolls back the whole module. '
+  'Per colliding group it keeps the spelling the most active files already use, then the '
+  'oldest row, then the lowest id, and soft-deletes the rest with deleted_by NULL after '
+  'copying every row verbatim into schema_remediation_log; a folder with no case twin is '
+  'never touched and a second run writes nothing. The three client functions that walk a '
+  'folder''s descendants - deleteFolderByPath, deleteFolderOnServer and '
+  'updateFolderServerPath - matched them with a case-sensitive LIKE, which under the new '
+  'index misses the very rows the index guarantees are the only ones there, and which also '
+  'read an underscore in a folder name as a wildcard, so deleting Part_Files reached '
+  'PartXFiles too. All three now match case-insensitively against an escaped pattern, and '
+  'updateFolderServerPath rewrites a child path by splicing off the prefix by length rather '
+  'than with a String.replace that rewrote the first matching segment anywhere in it.'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -344,6 +356,9 @@ LANGUAGE sql IMMUTABLE AS $$
 
     -- 10-source-files.sql - REQUIRED, so probe is NULL
     ('10-source-files', NULL, 'table', 'files', NULL),
+    -- Present since v49 and never listed here, which meant a database missing
+    -- it verified clean while every empty folder in every vault was invisible.
+    ('10-source-files', NULL, 'table', 'folders', NULL),
     -- The two entity gates the rows below are pinned on. See the note beside
     -- is_org_admin() above for why a helper named by a `requires` clause has to
     -- be an entry in its own right.
@@ -352,15 +367,19 @@ LANGUAGE sql IMMUTABLE AS $$
     ('10-source-files', NULL, 'function', 'require_vault_access(uuid)',
       'current_actor_id && u.org_id = v_org_id'),
     ('10-source-files', NULL, 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
-    ('10-source-files', NULL, 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
+    ('10-source-files', NULL, 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties && checked_out_file_path'),
     -- Repairs what the pre-87 checkin_file erased, and can only add keys. Both
     -- gates are pinned because they are independent: require_org_member decides
     -- whether the caller is in the organization named, is_org_admin whether an
     -- ordinary member may perform an admin write. A version carrying only the
     -- first would let any member of the organization rewrite its metadata.
     ('10-source-files', NULL, 'function', 'repair_config_maps(uuid,jsonb)', 'require_org_member && is_org_admin'),
-    ('10-source-files', NULL, 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member'),
-    ('10-source-files', NULL, 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member && checked_out_file_path'),
+    ('10-source-files', NULL, 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member && checked_out_file_path'),
+    -- Must stay SECURITY DEFINER and share get_vault_files_fast's predicate exactly -
+    -- it exists only so the renderer's cache reconciliation count matches what that
+    -- function and get_vault_files_delta return.
+    ('10-source-files', NULL, 'function', 'get_vault_files_count(uuid,uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'get_next_serial_number(uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'preview_next_serial_number(uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'update_serialization_settings_safe(uuid,jsonb)', 'require_org_member'),
@@ -387,9 +406,15 @@ LANGUAGE sql IMMUTABLE AS $$
     -- What the holes above produced, on a database that ran an earlier release.
     ('10-source-files', NULL, 'function', 'remediate_cross_tenant_share_links()', 'record_remediation'),
     ('10-source-files', NULL, 'function', 'remediate_cross_tenant_workflow_history()', 'record_remediation'),
+    -- The dedupe that has to run before idx_folders_unique_active can be built
+    -- on LOWER(folder_path). `kind` is only 'table' or 'function', so the index
+    -- itself cannot be an entry; this is the closest anchor there is, because
+    -- the module creates the function, calls it and creates the index in one
+    -- block, so the function's presence is what says the block ran.
+    ('10-source-files', NULL, 'function', 'remediate_case_colliding_folders()', 'record_remediation'),
     -- Entity-scoped: these resolve the organization from the id they are given
     -- and gate on that. They took no p_org_id, so the old sweep never saw them.
-    ('10-source-files', NULL, 'function', 'checkout_file(uuid,uuid,text,text,text)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'checkout_file(uuid,uuid,text,text,text)', 'require_file_access && checked_out_file_path'),
     ('10-source-files', NULL, 'function', 'move_file(uuid,uuid,text,text)', 'require_file_access'),
     ('10-source-files', NULL, 'function', 'rename_folder_files(text,text,uuid,uuid)', 'require_vault_access && like_escape'),
     ('10-source-files', NULL, 'function', 'get_available_transitions(uuid,uuid)', 'require_file_access'),

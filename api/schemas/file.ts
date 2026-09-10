@@ -21,5 +21,7 @@ export const fileSchema = {
     state: { type: 'string', enum: ['not_tracked', 'wip', 'in_review', 'released', 'obsolete'] },
     checked_out_by: { type: ['string', 'null'] },
     checked_out_at: { type: ['string', 'null'] },
+    checked_out_file_path: { type: ['string', 'null'] },
+    checked_out_file_name: { type: ['string', 'null'] },
   },
 } as const

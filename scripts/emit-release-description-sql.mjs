@@ -23,14 +23,20 @@ if (!expected) {
 
 const version = Number(args.find((a) => /^\d+$/.test(a)) ?? expected[1])
 
-const entry = source.match(new RegExp(`^\\s*${version}:\\s*'((?:[^'\\\\]|\\\\.)*)',`, 'm'))
+// Both quote styles, because Prettier picks whichever needs fewer escapes and a
+// release description full of apostrophes therefore lands double-quoted. Reading
+// only the single-quoted form made this tool fail on exactly the entries it was
+// written for.
+const entry = source.match(
+  new RegExp(`^\\s*${version}:\\s*(?:'((?:[^'\\\\]|\\\\.)*)'|"((?:[^"\\\\]|\\\\.)*)")\\s*,`, 'm'),
+)
 if (!entry) {
   throw new Error(`no VERSION_DESCRIPTIONS[${version}] entry found`)
 }
 
-const text = entry[1]
+const text = (entry[1] ?? entry[2])
   .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-  .replace(/\\'/g, "'")
+  .replace(/\\(['"])/g, '$1')
   .replace(/\u2019/g, "'")
 
 const words = text.split(' ')

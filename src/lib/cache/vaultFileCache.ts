@@ -11,7 +11,12 @@
  * - Subsequent loads: ~100-200ms (cache read + small delta fetch)
  */
 
-import { getFilesDelta, LightweightFile, DeltaFile } from '@/lib/supabase/files/queries'
+import {
+  getFilesDelta,
+  getVaultFilesCount,
+  LightweightFile,
+  DeltaFile,
+} from '@/lib/supabase/files/queries'
 import { log } from '@/lib/logger'
 import {
   hashCheckoutIdentifier,
@@ -52,6 +57,15 @@ const STORE_NAME = 'vault-files'
 
 // Cache expiry - if cache is older than this, do a full refresh
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+// Reconciliation guard: if the merged (cache + delta) row count disagrees with the
+// server's true count (e.g. a mutation that forgot to bump updated_at, so a delta was
+// missed), we force one full refetch to rebuild the cache. Silent refreshes fire on
+// every file-watcher event, which can be several per second, so a systematic mismatch
+// is throttled to at most one extra full fetch per vault per cooldown window rather
+// than one per refresh.
+const COUNT_RECONCILE_COOLDOWN_MS = 60_000
+const countReconcileForcedAt = new Map<string, number>()
 
 let dbPromise: Promise<IDBDatabase> | null = null
 const vaultWriteQueues = new Map<string, Promise<void>>()
@@ -321,6 +335,8 @@ export function applyDeltaToCache(
         checked_out_at: delta.checked_out_at,
         updated_at: delta.updated_at,
         custom_properties: delta.custom_properties,
+        checked_out_file_path: delta.checked_out_file_path,
+        checked_out_file_name: delta.checked_out_file_name,
         // Preserve user info if checkout user hasn't changed
         checked_out_user: preserveUserInfo ? existing!.checked_out_user : undefined,
       }
@@ -363,13 +379,38 @@ export async function getFilesWithCache(
     mergeMs: 0,
   }
 
+  // Shared full-fetch path, used both for a cache miss and as the reconciliation
+  // fallback below. Called at most once per getFilesWithCache invocation - never
+  // recursive - so a systematic count mismatch still costs exactly one extra fetch.
+  async function fullFetchAndCache(): Promise<{
+    files: CachedServerFile[] | null
+    error: unknown
+    cacheHit: boolean
+    deltaCount: number
+    timing: typeof timing
+  }> {
+    const fetchStart = performance.now()
+    const { files, error } = await fetchFullFn()
+    timing.fetchMs = Math.round(performance.now() - fetchStart)
+
+    if (error || !files) {
+      return { files, error, cacheHit: false, deltaCount: 0, timing }
+    }
+
+    // Cache the result for next time
+    void setCachedVaultFiles(orgId, vaultId, files, context)
+
+    return { files, error: null, cacheHit: false, deltaCount: 0, timing }
+  }
+
   // Try cache first
   const cacheStart = performance.now()
   const cached = await getCachedVaultFiles(orgId, vaultId)
   timing.cacheReadMs = Math.round(performance.now() - cacheStart)
 
   if (cached) {
-    // Cache hit - fetch only delta
+    // Cache hit - fetch the delta and the reconciliation count in parallel so the
+    // count check adds no latency to the critical path.
     log.info('[VaultCache]', 'Cache hit', {
       orgId: hashCheckoutIdentifier(orgId),
       vaultId: hashCheckoutIdentifier(vaultId),
@@ -379,7 +420,11 @@ export async function getFilesWithCache(
     })
 
     const fetchStart = performance.now()
-    const { files: deltaFiles, error } = await getFilesDelta(orgId, vaultId, cached.watermark)
+    const [{ files: deltaFiles, error }, { count: serverCount, error: countError }] =
+      await Promise.all([
+        getFilesDelta(orgId, vaultId, cached.watermark),
+        getVaultFilesCount(orgId, vaultId),
+      ])
     timing.fetchMs = Math.round(performance.now() - fetchStart)
 
     if (error) {
@@ -396,30 +441,52 @@ export async function getFilesWithCache(
     const deltaCount = deltaFiles?.length || 0
     log.info('[VaultCache]', `Delta: ${deltaCount} changes since ${cached.watermark}`)
 
+    let mergedFiles: CachedServerFile[]
     if (deltaCount > 0) {
       // Merge delta into cache
       const mergeStart = performance.now()
-      const mergedFiles = applyDeltaToCache(cached.files, deltaFiles!)
+      mergedFiles = applyDeltaToCache(cached.files, deltaFiles!)
       timing.mergeMs = Math.round(performance.now() - mergeStart)
+    } else {
+      mergedFiles = cached.files
+    }
 
-      // Update cache with merged data
-      void setCachedVaultFiles(orgId, vaultId, mergedFiles, context)
+    // Reconciliation guard: a missed delta (a truncated RPC result, a mutation that
+    // forgot to bump updated_at, the strict `>` watermark boundary) would otherwise
+    // silently persist until CACHE_MAX_AGE_MS. A count failure must never degrade or
+    // fail the load, so skip the check entirely when the count is unavailable. A
+    // concurrent write between the two parallel queries can produce a spurious
+    // mismatch - that costs one extra full fetch, never correctness, and is not worth
+    // retrying.
+    if (!countError && serverCount !== null && serverCount !== undefined) {
+      if (mergedFiles.length !== serverCount) {
+        const now = Date.now()
+        const lastForcedAt = countReconcileForcedAt.get(vaultId) ?? 0
 
-      return {
-        files: mergedFiles,
-        error: null,
-        cacheHit: true,
-        deltaCount,
-        timing,
+        if (now - lastForcedAt >= COUNT_RECONCILE_COOLDOWN_MS) {
+          countReconcileForcedAt.set(vaultId, now)
+          log.warn('[VaultCache]', 'Cache/server count mismatch, forcing full refetch', {
+            vaultId: hashCheckoutIdentifier(vaultId),
+            cachedCount: mergedFiles.length,
+            serverCount,
+            deltaCount,
+          })
+
+          return fullFetchAndCache()
+        }
       }
     }
 
-    // No changes - return cache as-is
+    if (deltaCount > 0) {
+      // Update cache with merged data
+      void setCachedVaultFiles(orgId, vaultId, mergedFiles, context)
+    }
+
     return {
-      files: cached.files,
+      files: mergedFiles,
       error: null,
       cacheHit: true,
-      deltaCount: 0,
+      deltaCount,
       timing,
     }
   }
@@ -431,30 +498,7 @@ export async function getFilesWithCache(
     requestId: context?.requestId,
   })
 
-  const fetchStart = performance.now()
-  const { files, error } = await fetchFullFn()
-  timing.fetchMs = Math.round(performance.now() - fetchStart)
-
-  if (error || !files) {
-    return {
-      files,
-      error,
-      cacheHit: false,
-      deltaCount: 0,
-      timing,
-    }
-  }
-
-  // Cache the result for next time
-  void setCachedVaultFiles(orgId, vaultId, files, context)
-
-  return {
-    files,
-    error: null,
-    cacheHit: false,
-    deltaCount: 0,
-    timing,
-  }
+  return fullFetchAndCache()
 }
 
 /**

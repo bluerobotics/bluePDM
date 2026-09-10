@@ -228,11 +228,14 @@ export function useFilePaneOperations({
   return {
     // File operations
     handleInlineDownload: fileOps.handleDownload,
+    handleInlineGetLatest: fileOps.handleGetLatest,
     handleInlineCheckout: fileOps.handleCheckout,
     handleInlineCheckin: fileOps.handleCheckin,
     handleInlineUpload: fileOps.handleUpload,
     handleMoveFiles: fileOps.handleMoveFiles,
     selectedDownloadableFiles: fileOps.selectedDownloadableFiles,
+    selectedCloudOnlyFiles: fileOps.selectedCloudOnlyFiles,
+    selectedUpdatableFiles: fileOps.selectedUpdatableFiles,
     selectedCheckoutableFiles: fileOps.selectedCheckoutableFiles,
     selectedCheckinableFiles: fileOps.selectedCheckinableFiles,
     selectedUploadableFiles: fileOps.selectedUploadableFiles,

@@ -79,7 +79,8 @@ interface VirtualizedTreeRowProps {
   onRefresh?: (silent?: boolean) => void
   // Multi-select props for FileActionButtons
   selectedFiles: string[]
-  selectedDownloadableFiles: LocalFile[]
+  /** Cloud-only files in the multi-select - drives the download button's count/hover state. */
+  selectedCloudOnlyFiles: LocalFile[]
   selectedUploadableFiles: LocalFile[]
   selectedCheckoutableFiles: LocalFile[]
   selectedCheckinableFiles: LocalFile[]
@@ -259,7 +260,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
   isHiddenFromNonAdmins,
   onRefresh,
   selectedFiles,
-  selectedDownloadableFiles,
+  selectedCloudOnlyFiles,
   selectedUploadableFiles,
   selectedCheckoutableFiles,
   selectedCheckinableFiles,
@@ -498,7 +499,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
           operationType={operationType}
           onRefresh={onRefresh}
           selectedFiles={selectedFiles}
-          selectedDownloadableFiles={selectedDownloadableFiles}
+          selectedCloudOnlyFiles={selectedCloudOnlyFiles}
           selectedUploadableFiles={selectedUploadableFiles}
           selectedCheckoutableFiles={selectedCheckoutableFiles}
           selectedCheckinableFiles={selectedCheckinableFiles}

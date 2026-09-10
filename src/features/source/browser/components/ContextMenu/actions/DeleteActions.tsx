@@ -1,10 +1,11 @@
 /**
  * Delete actions for context menu (delete local, delete server, delete both)
  */
+import { useMemo } from 'react'
 import { CloudOff, Trash2, Undo2 } from 'lucide-react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
-import { executeCommand } from '@/lib/commands'
+import { executeCommand, getServerDeletionTargets } from '@/lib/commands'
 import type { RefreshableActionProps, SelectionCounts, SelectionState } from './types'
 
 interface DeleteActionsProps extends RefreshableActionProps {
@@ -44,6 +45,15 @@ export function DeleteActions({
   handleUndo,
 }: DeleteActionsProps) {
   const { files, user, addToast } = usePDMStore()
+  const serverFiles = usePDMStore((s) => s.serverFiles)
+  const vaultPath = usePDMStore((s) => s.vaultPath)
+
+  // What delete-server will actually cover. Counted from the server list rather than the
+  // local rows, so the confirmation cannot promise fewer deletions than it performs.
+  const serverDeletionTargets = useMemo(
+    () => getServerDeletionTargets(files, serverFiles, contextFiles, vaultPath),
+    [files, serverFiles, contextFiles, vaultPath],
+  )
 
   // Helper to get all files including those inside folders
   const getAllFilesFromSelection = () => {
@@ -188,11 +198,11 @@ export function DeleteActions({
           className="context-menu-item"
           onClick={() => {
             onClose()
-            const storedSyncedFiles = [...syncedFilesInDelete]
+            const serverCount = serverDeletionTargets.length
 
             setCustomConfirm({
-              title: `Delete from Server ${storedSyncedFiles.length > 1 ? `${storedSyncedFiles.length} Items` : 'Item'}?`,
-              message: `${storedSyncedFiles.length} file${storedSyncedFiles.length > 1 ? 's' : ''} will be removed from the server. Local copies will be kept.`,
+              title: `Delete from Server ${serverCount > 1 ? `${serverCount} Items` : 'Item'}?`,
+              message: `${serverCount} file${serverCount > 1 ? 's' : ''} will be removed from the server. Local copies will be kept.`,
               warning:
                 'Local copies will become unsynced. Files can be recovered from server trash within 30 days.',
               confirmText: 'Delete from Server',

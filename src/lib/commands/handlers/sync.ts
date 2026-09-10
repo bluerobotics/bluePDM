@@ -17,6 +17,7 @@ import type { SWReference } from '../../supabase/files/mutations'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
 import { resolveFileMetadata, resolveTabNumber } from '@/lib/metadata/overlay'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { addToSyncIndex } from '../../cache/localSyncIndex'
@@ -53,6 +54,28 @@ function logSync(
   context: Record<string, unknown>,
 ) {
   log[level]('[Sync]', message, context)
+}
+
+/**
+ * Turn a raw server error into something the user can act on.
+ *
+ * Mirrors `translateCheckinError` in `checkin.ts`. The unique-index violation is the one that
+ * needs restating: Postgres reports `23505` on `idx_files_vault_path_unique_active`, which reads
+ * as a key collision but means a file already holds that path with different letter casing. The
+ * remedy is a refresh — once the colliding row is in the local list the file is no longer treated
+ * as unsynced, so retrying the sync can never clear it. Anything else is passed through, since a
+ * raw message the user can quote is better than a generic one.
+ */
+export function translateSyncError(error: string | null | undefined, fileName: string): string {
+  if (!error) return `${fileName}: ${t('syncError.failed')}`
+  if (
+    error.includes('idx_files_vault_path_unique_active') ||
+    error.includes('duplicate key') ||
+    error.includes('23505')
+  ) {
+    return `${fileName}: ${t('syncError.pathCaseConflict')}`
+  }
+  return `${fileName}: ${error}`
 }
 
 /**
@@ -327,9 +350,9 @@ export const syncCommand: Command<SyncParams> = {
               error instanceof Error
                 ? error.message
                 : typeof error === 'object' && error !== null
-                  ? (error as any).message || String(error) // TODO: type this
-                  : String(error || 'Upload failed')
-            return { success: false, error: `${file.name}: ${errorMsg}` }
+                  ? (error as { message?: string }).message || String(error)
+                  : String(error || '')
+            return { success: false, error: translateSyncError(errorMsg, file.name) }
           }
 
           await window.electronAPI?.setReadonly(file.path, true)
@@ -412,7 +435,15 @@ export const syncCommand: Command<SyncParams> = {
 
     // Show sync result
     if (failed > 0) {
-      ctx.addToast('warning', `Synced ${succeeded}/${total} files`)
+      // Show first error in toast for visibility
+      const firstError = errors[0] || t('syncError.unknown')
+      ctx.addToast(
+        'error',
+        errors.length > 1
+          ? t('syncError.toastWithMore', { reason: firstError, count: errors.length - 1 })
+          : t('syncError.toast', { reason: firstError }),
+      )
+      logSync('error', 'Some files failed to sync', { failedCount: failed, errors })
     } else {
       ctx.addToast('success', `Synced ${succeeded} file${succeeded > 1 ? 's' : ''} to cloud`)
     }

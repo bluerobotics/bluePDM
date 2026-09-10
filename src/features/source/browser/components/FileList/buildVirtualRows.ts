@@ -2,6 +2,7 @@ import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/pdmStore'
 import type { ConfigBomItem, DrawingRefItem } from '@/stores/types'
 
+import { getFileStatus } from '../../hooks/useFileStatus'
 import type { ConfigWithDepth } from '../../types'
 import { findLocalFileByPath } from '../../utils/localFileLookup'
 import type { ConfigSectionGroup, SelectableRow, VirtualRow } from './rowTypes'
@@ -169,7 +170,11 @@ export function buildVirtualRows({
     const isCut =
       clipboard?.operation === 'cut' &&
       clipboard.files.some((clipboardFile) => clipboardFile.path === file.path)
-    const isEditable = !!file.pdmData?.id && file.pdmData?.checked_out_by === userId
+    // Canonical rule (see useFileStatus.ts `canEdit`): checked out by me, or never synced at all.
+    // A server row alone is not enough - that excluded local-only files that have never been
+    // checked in, even though every other editing surface (DetailsPanel, FileCardMetadata,
+    // useFileEditHandlers) already allows them.
+    const isEditable = getFileStatus(file, userId).canEdit
     const basePartNumber = resolvedText(resolvePartNumber(file))
 
     rows.push({

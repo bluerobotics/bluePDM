@@ -34,6 +34,8 @@ function cachedFile(ownerId: string, checkedOutUser?: CheckoutUserProfile): Cach
     checked_out_at: '2026-08-10T17:00:00.000Z',
     updated_at: '2026-08-10T17:00:00.000Z',
     custom_properties: null,
+    checked_out_file_path: null,
+    checked_out_file_name: null,
     checked_out_user: checkedOutUser,
   }
 }

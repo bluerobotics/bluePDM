@@ -5,6 +5,7 @@
  * These functions mirror the conditional rendering logic in each action component
  */
 import type { LocalFile } from '@/stores/pdmStore'
+import { getOutdatedFilesFromSelection } from '@/lib/commands/handlers/getLatest'
 import type { SelectionCounts, SelectionState } from '../actions/types'
 
 /**
@@ -74,7 +75,7 @@ export function countAssemblyActions(props: MenuItemCountProps): number {
  * Count items from SyncActions component
  */
 export function countSyncActions(props: MenuItemCountProps): number {
-  const { contextFiles, counts, state } = props
+  const { contextFiles, counts, state, allFiles } = props
   let count = 0
 
   const anyCloudOnly =
@@ -82,6 +83,15 @@ export function countSyncActions(props: MenuItemCountProps): number {
 
   // Download cloud-only files
   if (anyCloudOnly) count++
+
+  // Get Latest for outdated files - never mixed with the Download item above.
+  // Same predicate as the Download item's `anyCloudOnly` above, and the same one
+  // SyncActions.tsx / PDMItems.tsx use to show the item: at least one outdated file
+  // in the selection, including files inside selected folders.
+  const outdatedFilesInSelection = getOutdatedFilesFromSelection(allFiles, contextFiles)
+  const anyOutdated =
+    outdatedFilesInSelection.length > 0 || contextFiles.some((f) => f.diffStatus === 'outdated')
+  if (anyOutdated) count++
 
   // Keep Local Only (Ignore) submenu
   if (state.anyUnsynced && !state.allCloudOnly) count++

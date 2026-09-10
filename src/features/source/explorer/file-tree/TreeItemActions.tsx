@@ -30,7 +30,8 @@ interface FileActionButtonsProps {
   onRefresh?: (silent?: boolean) => void
   // Multi-select props
   selectedFiles: string[]
-  selectedDownloadableFiles: LocalFile[]
+  /** Cloud-only files in the multi-select - drives the download button's count/hover state. */
+  selectedCloudOnlyFiles: LocalFile[]
   selectedUploadableFiles: LocalFile[]
   selectedCheckoutableFiles: LocalFile[]
   selectedCheckinableFiles: LocalFile[]
@@ -53,7 +54,7 @@ export function FileActionButtons({
   operationType,
   onRefresh,
   selectedFiles,
-  selectedDownloadableFiles,
+  selectedCloudOnlyFiles,
   selectedUploadableFiles,
   selectedCheckoutableFiles,
   selectedCheckinableFiles,
@@ -83,33 +84,25 @@ export function FileActionButtons({
 
   if (file.isDirectory) return null
 
-  // Inline action: Download a single file or get latest
+  // Inline action: Download cloud-only files. Never touches outdated files - see `handleInlineGetLatest`.
   const handleInlineDownload = (e: React.MouseEvent) => {
     e.stopPropagation()
 
-    const isMultiSelect = selectedFiles.includes(file.path) && selectedDownloadableFiles.length > 1
+    const isMultiSelect = selectedFiles.includes(file.path) && selectedCloudOnlyFiles.length > 1
+    const targetFiles = isMultiSelect ? selectedCloudOnlyFiles : [file]
 
-    if (isMultiSelect) {
-      const outdatedFiles = selectedDownloadableFiles.filter((f) => f.diffStatus === 'outdated')
-      const cloudFiles = selectedDownloadableFiles.filter((f) => f.diffStatus === 'cloud')
-
-      if (outdatedFiles.length > 0) {
-        executeCommand('get-latest', { files: outdatedFiles }, { onRefresh })
-      }
-      if (cloudFiles.length > 0) {
-        executeCommand('download', { files: cloudFiles }, { onRefresh })
-      }
-      setIsDownloadHovered(false)
-      setIsUpdateHovered(false)
-      return
-    }
-
-    if (file.diffStatus === 'outdated') {
-      executeCommand('get-latest', { files: [file] }, { onRefresh })
-    } else {
-      executeCommand('download', { files: [file] }, { onRefresh })
-    }
+    executeCommand('download', { files: targetFiles }, { onRefresh })
     setIsDownloadHovered(false)
+  }
+
+  // Inline action: Update outdated files to the latest server version. Never touches cloud-only files.
+  const handleInlineGetLatest = (e: React.MouseEvent) => {
+    e.stopPropagation()
+
+    const isMultiSelect = selectedFiles.includes(file.path) && selectedUpdatableFiles.length > 1
+    const targetFiles = isMultiSelect ? selectedUpdatableFiles : [file]
+
+    executeCommand('get-latest', { files: targetFiles }, { onRefresh })
     setIsUpdateHovered(false)
   }
 
@@ -187,17 +180,17 @@ export function FileActionButtons({
           onClick={handleInlineDownload}
           isProcessing={operationType === 'download'}
           selectedCount={
-            selectedFiles.includes(file.path) && selectedDownloadableFiles.length > 1
-              ? selectedDownloadableFiles.length
+            selectedFiles.includes(file.path) && selectedCloudOnlyFiles.length > 1
+              ? selectedCloudOnlyFiles.length
               : undefined
           }
           isSelectionHovered={
             selectedFiles.includes(file.path) &&
-            selectedDownloadableFiles.length > 1 &&
+            selectedCloudOnlyFiles.length > 1 &&
             downloadHoveredRef.current
           }
           onMouseEnter={() =>
-            selectedDownloadableFiles.length > 1 &&
+            selectedCloudOnlyFiles.length > 1 &&
             selectedFiles.includes(file.path) &&
             setIsDownloadHovered(true)
           }
@@ -208,7 +201,7 @@ export function FileActionButtons({
       {/* Sync outdated files - only when online */}
       {!isOfflineMode && file.diffStatus === 'outdated' && (
         <InlineSyncButton
-          onClick={handleInlineDownload}
+          onClick={handleInlineGetLatest}
           isProcessing={operationType === 'sync'}
           selectedCount={
             selectedFiles.includes(file.path) && selectedUpdatableFiles.length > 1
@@ -467,25 +460,23 @@ export function FolderActionButtons({
   if (!shouldShow) return null
 
   /**
-   * Handle download/get-latest for folder.
-   * Uses pre-computed diffCounts to determine which commands to execute.
+   * Handle download for folder - cloud-only files. Never touches outdated files.
    * Commands operate on the folder itself - the command system handles
    * finding and processing files within the folder.
    */
   const handleInlineDownload = (e: React.MouseEvent) => {
     e.stopPropagation()
+    executeCommand('download', { files: [file] }, { onRefresh })
+  }
 
-    // Use pre-computed diffCounts for O(1) lookup instead of O(N) filter
-    // diffCounts.cloud is derived from actual children, so it updates when files are downloaded
-    const hasOutdated = diffCounts && diffCounts.outdated > 0
-    const hasCloud = diffCounts && diffCounts.cloud > 0
-
-    if (hasOutdated) {
-      executeCommand('get-latest', { files: [file] }, { onRefresh })
-    }
-    if (hasCloud) {
-      executeCommand('download', { files: [file] }, { onRefresh })
-    }
+  /**
+   * Handle get-latest for folder - outdated files. Never touches cloud-only files.
+   * Commands operate on the folder itself - the command system handles
+   * finding and processing files within the folder.
+   */
+  const handleInlineGetLatest = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    executeCommand('get-latest', { files: [file] }, { onRefresh })
   }
 
   const handleInlineCheckout = (e: React.MouseEvent) => {
@@ -516,7 +507,7 @@ export function FolderActionButtons({
       {/* 1. Update (outdated) - only when online */}
       {!isOfflineMode && diffCounts && diffCounts.outdated > 0 && (
         <InlineSyncButton
-          onClick={handleInlineDownload}
+          onClick={handleInlineGetLatest}
           count={diffCounts.outdated}
           isProcessing={operationType === 'sync'}
         />

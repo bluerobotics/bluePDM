@@ -1,5 +1,6 @@
 import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
+import { escapeLikePattern, folderPrefixLikePattern } from '@/lib/utils/likePattern'
 
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
 import { getSupabaseClient } from '../client'
@@ -156,12 +157,11 @@ export async function restoreFile(
   }
 
   // Check if a file with the same path already exists (case-insensitive: Windows paths are case-insensitive)
-  const escapedPath = file.file_path.replace(/%/g, '\\%').replace(/_/g, '\\_')
   const { data: existingFile } = await client
     .from('files')
     .select('id')
     .eq('vault_id', file.vault_id)
-    .ilike('file_path', escapedPath)
+    .ilike('file_path', escapeLikePattern(file.file_path))
     .is('deleted_at', null)
     .single()
 
@@ -173,12 +173,16 @@ export async function restoreFile(
   }
 
   // Restore - clear deleted_at and deleted_by
+  // Also bump updated_at so the watermark-based delta sync (get_vault_files_delta)
+  // surfaces the restore to other clients even if the deployed RPC keys off
+  // updated_at. Without this, other machines keep the row cached as trashed.
   // Select full PDMFile-compatible data including workflow_state for addCloudFile()
   const { data: restoredFile, error } = await client
     .from('files')
     .update({
       deleted_at: null,
       deleted_by: null,
+      updated_at: new Date().toISOString(),
     })
     .eq('id', fileId)
     .select(
@@ -395,8 +399,9 @@ export async function getDeletedFiles(
       }
 
       if (options?.folderPath) {
-        // Match files that were in this folder or subfolders
-        query = query.ilike('file_path', `${options.folderPath}%`)
+        // Match files that were in this folder or subfolders. The pattern carries
+        // the separator, so `Parts` cannot also answer with `PartsOld/a.sldprt`.
+        query = query.ilike('file_path', folderPrefixLikePattern(options.folderPath))
       }
 
       const { data, error } = await query

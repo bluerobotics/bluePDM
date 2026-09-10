@@ -337,6 +337,7 @@ export const ConfigRow = memo(function ConfigRow({
               onMouseDown={(e) => e.stopPropagation()}
               disabled={!isEditable}
               placeholder="Description"
+              title={isEditable ? undefined : t('source.configEdit.checkOutToEdit')}
               className={`w-full px-1.5 py-0.5 text-xs rounded border transition-colors bg-transparent
                 ${
                   isEditable
@@ -357,10 +358,15 @@ export const ConfigRow = memo(function ConfigRow({
                   basePartNumber && tabNumber
                     ? `${basePartNumber}-${tabNumber}`
                     : basePartNumber || tabNumber || ''
+                const disabledTitle = t('source.configEdit.checkOutToEdit')
                 return fullNumber ? (
-                  <span className="text-xs text-plm-fg-muted">{fullNumber}</span>
+                  <span className="text-xs text-plm-fg-muted" title={disabledTitle}>
+                    {fullNumber}
+                  </span>
                 ) : (
-                  <span className="text-plm-fg-dim text-xs">—</span>
+                  <span className="text-plm-fg-dim text-xs" title={disabledTitle}>
+                    —
+                  </span>
                 )
               }
 
@@ -404,10 +410,17 @@ export const ConfigRow = memo(function ConfigRow({
               // Separate tab number column for config rows - only active when tabs enabled
               if (!tabEnabled || !isEditable) {
                 const tabNumber = tabEnabled ? config.tabNumber || '' : ''
+                const disabledTitle = !isEditable
+                  ? t('source.configEdit.checkOutToEdit')
+                  : undefined
                 return tabNumber ? (
-                  <span className="text-xs text-plm-fg-muted">{tabNumber}</span>
+                  <span className="text-xs text-plm-fg-muted" title={disabledTitle}>
+                    {tabNumber}
+                  </span>
                 ) : (
-                  <span className="text-plm-fg-dim text-xs">—</span>
+                  <span className="text-plm-fg-dim text-xs" title={disabledTitle}>
+                    —
+                  </span>
                 )
               }
 

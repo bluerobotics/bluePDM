@@ -139,6 +139,11 @@ export const forceReleaseCommand: Command<ForceReleaseParams> = {
                   ...file.pdmData!,
                   checked_out_by: null,
                   checked_out_user: null,
+                  // adminForceDiscardCheckout clears the snapshot server-side, so the
+                  // store copy must go too - a released file that keeps one would let a
+                  // later discard restore a path from a lock that no longer exists.
+                  checked_out_file_path: null,
+                  checked_out_file_name: null,
                 },
               },
             })

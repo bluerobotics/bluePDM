@@ -1,6 +1,11 @@
+import { escapeLikePattern, folderPrefixLikePattern } from '@/lib/utils/likePattern'
+
 import { getSupabaseClient } from '../client'
 import { getCurrentUser, getCurrentUserEmail } from '../auth'
 import { withRetry } from '../../network'
+
+/** Postgres unique-constraint violation (SQLSTATE 23505). */
+const UNIQUE_VIOLATION = '23505'
 
 // ============================================
 // Private Helper Functions
@@ -159,6 +164,55 @@ async function dbWithRetry<T>(
   }
 
   return lastResult
+}
+
+/** The columns of an active `files` row that a sync needs to update it. */
+interface ActiveFileRow {
+  id: string
+  version: number
+  deleted_at: string | null
+  org_id: string
+}
+
+/**
+ * Find the active file row whose path matches `filePath` case-insensitively.
+ *
+ * This is the slow way there and is used only after a byte-exact lookup has
+ * already missed: `idx_files_file_path` is a plain btree on `file_path`, so
+ * `.ilike()` cannot use it and the query is a scan. syncFile's own lookup stays
+ * byte-exact for that reason - it runs once per file at CONCURRENT_OPERATIONS
+ * concurrency during a first check-in of a whole vault - and pays for this only
+ * on a collision.
+ *
+ * The pattern carries no wildcards of its own, so `Part_Files.sldprt` cannot
+ * match `PartXFiles.sldprt`.
+ *
+ * Deliberately neither `.single()` nor `.maybeSingle()`, for the same reason
+ * `findActiveFolderByPath` in `folders.ts` avoids them: postgrest-js reports
+ * "more than one row" with the same `PGRST116` code it uses for no rows at all,
+ * so a caller reading `PGRST116` as "absent" would take two rows for zero.
+ * Ordering plus a limit answers with one row whatever the table holds, and the
+ * order is stable so two machines looking at one collision agree on which row
+ * they mean.
+ */
+async function findActiveFileByPath(
+  client: ReturnType<typeof getSupabaseClient>,
+  vaultId: string,
+  orgId: string,
+  filePath: string,
+) {
+  const { data, error } = await client
+    .from('files')
+    .select('id, version, deleted_at, org_id')
+    .eq('vault_id', vaultId)
+    .eq('org_id', orgId)
+    .ilike('file_path', escapeLikePattern(filePath))
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(1)
+
+  return { file: (data?.[0] as ActiveFileRow | undefined) ?? null, error }
 }
 
 // ============================================
@@ -327,11 +381,13 @@ export async function syncFile(
       })
     }
 
-    // If active file exists with same org, update it
-    if (activeFile) {
+    // Apply this sync to a row that is already there. Written as a function
+    // because the byte-exact check above is not the only way in: an insert the
+    // case-insensitive unique index refuses arrives at the same row below.
+    const updateExistingFile = async (existingFile: ActiveFileRow) => {
       logFn('debug', '[syncFile] Updating active file', {
         filePath,
-        existingId: activeFile.id,
+        existingId: existingFile.id,
         metadata,
       })
 
@@ -339,7 +395,7 @@ export async function syncFile(
       const updatePayload: Record<string, unknown> = {
         content_hash: contentHash,
         file_size: fileSize,
-        version: activeFile.version + 1,
+        version: existingFile.version + 1,
         updated_at: new Date().toISOString(),
         updated_by: userId,
       }
@@ -357,7 +413,8 @@ export async function syncFile(
 
       const dbWriteStart = performance.now()
       const { data: updatedFile, error } = await dbWithRetry(
-        () => client.from('files').update(updatePayload).eq('id', activeFile.id).select().single(),
+        () =>
+          client.from('files').update(updatePayload).eq('id', existingFile.id).select().single(),
         'File update',
         logFn,
       )
@@ -383,8 +440,8 @@ export async function syncFile(
       await dbWithRetry(
         () =>
           client.from('file_versions').insert({
-            file_id: activeFile.id,
-            version: activeFile.version + 1,
+            file_id: existingFile.id,
+            version: existingFile.version + 1,
             revision: fileData.revision,
             content_hash: contentHash,
             file_size: fileSize,
@@ -400,7 +457,7 @@ export async function syncFile(
       const totalDurationMs = Math.round(performance.now() - syncStart)
       logFn('info', '[syncFile] Update SUCCESS', {
         filePath,
-        fileId: activeFile.id,
+        fileId: existingFile.id,
         durationMs: dbWriteMs,
       })
       logFn('info', '[syncFile] Sync complete', {
@@ -416,6 +473,11 @@ export async function syncFile(
         sizeBytes: fileSize,
       })
       return { file: updatedFile, error: null, isNew: false }
+    }
+
+    // If active file exists with same org, update it
+    if (activeFile) {
+      return await updateExistingFile(activeFile)
     }
 
     // No active file exists - create new file record
@@ -464,6 +526,44 @@ export async function syncFile(
         code: (error as any)?.code, // TODO: type this
         durationMs: dbWriteMs,
       })
+
+      // idx_files_vault_path_unique_active is unique on (vault_id,
+      // LOWER(file_path)), so an active row stored as `Parts/BRACKET.SLDPRT`
+      // refuses the insert of `Parts/Bracket.SLDPRT` that the byte-exact check
+      // above could not see. The row is there; this is the update it always
+      // was. Without this, the same miss/insert/reject repeats on every retry
+      // and the file never syncs at all.
+      if (error?.code === UNIQUE_VIOLATION) {
+        const { file: collidingFile, error: refetchError } = await findActiveFileByPath(
+          client,
+          vaultId,
+          orgId,
+          filePath,
+        )
+
+        if (collidingFile) {
+          logFn('info', '[syncFile] Path already held in another case, updating that row', {
+            filePath,
+            existingId: collidingFile.id,
+          })
+          return await updateExistingFile(collidingFile)
+        }
+
+        // The index is partial on `deleted_at IS NULL`, so 23505 means an active
+        // row for this path exists in some spelling. Not reading it back means
+        // something else is wrong - trashed in between, or the re-fetch failed -
+        // and the caller must hear about it rather than be handed a null file
+        // with a null error, which check-in would count as a success.
+        logFn('warn', '[syncFile] Unique violation but no active file found', {
+          filePath,
+          vaultId,
+          orgId,
+          insertError: error.message,
+          fetchError: refetchError?.message,
+        })
+        throw refetchError ?? error
+      }
+
       throw error || new Error('Insert returned no data')
     }
 
@@ -849,7 +949,9 @@ async function updateFolderPathLegacy(
   let query = client
     .from('files')
     .select('id, file_path, file_name')
-    .ilike('file_path', `${oldFolderPath}/%`)
+    // Escaped, or `Part_Files/%` also matches `PartXFiles/Sub/a.sldprt` and this
+    // rename walks into a folder the caller never named.
+    .ilike('file_path', folderPrefixLikePattern(oldFolderPath))
     .is('deleted_at', null)
 
   if (vaultId) {

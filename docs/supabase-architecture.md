@@ -397,6 +397,8 @@ Main file metadata table (30+ columns).
 | `lock_message` | `TEXT` | Checkout comment |
 | `checked_out_by_machine_id` | `TEXT` | Device ID |
 | `checked_out_by_machine_name` | `TEXT` | Device name |
+| `checked_out_file_path` | `TEXT` | Path at the instant of checkout, for discard to restore |
+| `checked_out_file_name` | `TEXT` | Name at the instant of checkout, for discard to restore |
 | `created_by` | `UUID` | File creator |
 | `updated_by` | `UUID` | Last modifier |
 | `custom_properties` | `JSONB` | Custom metadata fields |
@@ -1252,6 +1254,7 @@ Server-side PostgreSQL functions called via `client.rpc()`:
 | `checkin_file(p_file_id, p_user_id, ...)` | Atomic checkin with versioning |
 | `get_vault_files_fast(p_org_id, p_vault_id)` | Bulk fetch (no pagination) |
 | `get_vault_files_delta(p_org_id, p_vault_id, p_since)` | Incremental sync |
+| `get_vault_files_count(p_org_id, p_vault_id)` | True row count, for the client cache to reconcile against |
 | `move_file(p_file_id, p_new_path, ...)` | Atomic move with validation |
 
 ### Workflow Engine
@@ -1612,10 +1615,10 @@ Database and app versions must match to prevent compatibility issues.
 
 ```sql
 -- Database version
-SELECT version FROM schema_version;  -- e.g., 97
+SELECT version FROM schema_version;  -- e.g., 99
 
 -- App expected version
-EXPECTED_SCHEMA_VERSION = 97  -- src/lib/schemaVersion.ts
+EXPECTED_SCHEMA_VERSION = 99  -- src/lib/schemaVersion.ts
 ```
 
 ### Version Mismatch Handling

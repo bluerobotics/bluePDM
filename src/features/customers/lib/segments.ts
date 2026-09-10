@@ -17,6 +17,15 @@ export const SEGMENT_IDS = ['new', 'active', 'at_risk', 'churned', 'prospect'] a
 
 export type SegmentId = (typeof SEGMENT_IDS)[number]
 
+/** Recency past which a buyer is at risk. Mirrors the SQL's 180-day branch. */
+export const AT_RISK_AFTER_DAYS = 180
+
+/** Recency past which a buyer is churned. Mirrors the SQL's 365-day branch. */
+export const CHURNED_AFTER_DAYS = 365
+
+/** How long after their first order a buyer still counts as new. */
+export const NEW_WITHIN_DAYS = 90
+
 export interface SegmentMeta {
   id: SegmentId
   label: string
@@ -100,11 +109,11 @@ export function deriveSegment(
 
   const recencyDays = daysSince(lastOrder, asOf)
   if (recencyDays == null) return 'prospect'
-  if (recencyDays > 365) return 'churned'
-  if (recencyDays > 180) return 'at_risk'
+  if (recencyDays > CHURNED_AFTER_DAYS) return 'churned'
+  if (recencyDays > AT_RISK_AFTER_DAYS) return 'at_risk'
 
   const firstOrderDays = daysSince(firstOrder, asOf)
-  if (firstOrderDays != null && firstOrderDays <= 90) return 'new'
+  if (firstOrderDays != null && firstOrderDays <= NEW_WITHIN_DAYS) return 'new'
 
   return 'active'
 }

@@ -12,6 +12,8 @@ import {
   sendError,
   ErrorCode,
   computeHash,
+  escapeLikePattern,
+  folderPrefixLikePattern,
   getFileTypeFromExtension,
   triggerWebhooks,
   changeFileStateViaWorkflow,
@@ -19,6 +21,9 @@ import {
 } from '../utils/index.js'
 import type { LegacyFileState } from '../utils/index.js'
 import type { FileRecord } from '../types.js'
+
+/** Postgres unique-constraint violation (SQLSTATE 23505). */
+const UNIQUE_VIOLATION = '23505'
 
 const fileRoutes: FastifyPluginAsync = async (fastify) => {
   // List files with optional filters
@@ -74,7 +79,10 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         .range(offset as number, (offset as number) + (limit as number) - 1)
 
       if (vault_id) query = query.eq('vault_id', vault_id)
-      if (folder) query = query.ilike('file_path', `${folder}%`)
+      // Escaped and separator-bounded, the same as getFiles() in
+      // src/lib/supabase/files/queries.ts: a bare `Parts%` prefix also answers
+      // with everything under `PartsOld`, and `_` is legal in a folder name.
+      if (folder) query = query.ilike('file_path', folderPrefixLikePattern(String(folder)))
       if (state) query = query.eq('state', state)
       if (search) {
         const s = String(search).replace(/[,%._()]/g, '')
@@ -369,7 +377,7 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
 
       const { data: file, error: fetchError } = await request
         .supabase!.from('files')
-        .select('id, checked_out_by')
+        .select('id, checked_out_by, checked_out_file_path, checked_out_file_name')
         .eq('id', id)
         .eq('org_id', request.user!.org_id)
         .single()
@@ -381,18 +389,90 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 403, ErrorCode.FORBIDDEN, 'File is not checked out to you')
       }
 
-      const { data, error } = await request
-        .supabase!.from('files')
-        .update({
-          checked_out_by: null,
-          checked_out_at: null,
-          lock_message: null,
-        })
-        .eq('id', id)
-        .select()
-        .single()
+      // Both snapshot columns null means an older lock taken before checked_out_file_path/
+      // _name existed - fall back to clearing the lock alone rather than writing
+      // file_path/file_name to null. Matches undoCheckout() in
+      // src/lib/supabase/files/checkout.ts.
+      const hasPathSnapshot =
+        file.checked_out_file_path !== null || file.checked_out_file_name !== null
+
+      type ReleaseCheckoutUpdate = {
+        checked_out_by: null
+        checked_out_at: null
+        lock_message: null
+        checked_out_by_machine_id: null
+        checked_out_by_machine_name: null
+        checked_out_file_path: null
+        checked_out_file_name: null
+        // Must bump updated_at so delta sync picks up the change (cache uses updated_at
+        // as watermark) - matches undoCheckout() in src/lib/supabase/files/checkout.ts.
+        // Without this, a release performed through this route is invisible to a client
+        // doing a delta load and the file can keep showing as checked out.
+        updated_at: string
+        file_path?: string
+        file_name?: string
+      }
+
+      // The lock columns alone. Kept separate from the path revert below so the
+      // unique-violation fallback can reuse it verbatim.
+      const lockRelease: ReleaseCheckoutUpdate = {
+        checked_out_by: null,
+        checked_out_at: null,
+        lock_message: null,
+        checked_out_by_machine_id: null,
+        checked_out_by_machine_name: null,
+        checked_out_file_path: null,
+        checked_out_file_name: null,
+        updated_at: new Date().toISOString(),
+      }
+
+      const releaseUpdate: ReleaseCheckoutUpdate = { ...lockRelease }
+
+      if (hasPathSnapshot) {
+        if (file.checked_out_file_path !== null) {
+          releaseUpdate.file_path = file.checked_out_file_path
+        }
+        if (file.checked_out_file_name !== null) {
+          releaseUpdate.file_name = file.checked_out_file_name
+        }
+      }
+
+      const releaseCheckout = (update: ReleaseCheckoutUpdate) =>
+        request.supabase!.from('files').update(update).eq('id', id).select().single()
+
+      let { data, error } = await releaseCheckout(releaseUpdate)
+
+      // Restoring the checkout-time path collides with files' unique
+      // (vault_id, LOWER(file_path)) index when another row has since taken that
+      // path. Releasing the lock matters more than the revert: refusing here
+      // leaves a lock no retry of this route can ever clear. Gated on a revert
+      // actually having been in flight - a unique violation without one came
+      // from somewhere else and is not ours to swallow. Mirrors undoCheckout()
+      // in src/lib/supabase/files/checkout.ts.
+      if (error?.code === UNIQUE_VIOLATION && releaseUpdate.file_path !== undefined) {
+        request.log.warn(
+          {
+            fileId: id,
+            checkedOutFilePath: file.checked_out_file_path,
+            err: error,
+          },
+          '[Checkout] Restoring the checkout-time path collided, releasing the lock only',
+        )
+        const fallback = await releaseCheckout(lockRelease)
+        data = fallback.data
+        error = fallback.error
+      }
 
       if (error) throw error
+      if (!data) {
+        return sendError(
+          reply,
+          500,
+          ErrorCode.INTERNAL_ERROR,
+          'Undo checkout updated no rows (check permissions)',
+        )
+      }
+
       return { success: true, file: data }
     },
   )
@@ -476,12 +556,11 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // Check existing (case-insensitive: Windows paths are case-insensitive)
-      const escapedPath = file_path.replace(/%/g, '\\%').replace(/_/g, '\\_')
       const { data: existing } = await request
         .supabase!.from('files')
         .select('id, version')
         .eq('vault_id', vault_id)
-        .ilike('file_path', escapedPath)
+        .ilike('file_path', escapeLikePattern(file_path))
         .is('deleted_at', null)
         .single()
 
@@ -712,11 +791,15 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 409, ErrorCode.CONFLICT, 'Cannot delete file checked out by another user')
       }
 
+      // Also bump updated_at so the watermark-based delta sync (get_vault_files_delta)
+      // surfaces the deletion to other clients even if the deployed RPC keys off
+      // updated_at. Without this, other machines keep the row cached as a "ghost".
       const { error } = await request
         .supabase!.from('files')
         .update({
           deleted_at: new Date().toISOString(),
           deleted_by: request.user!.id,
+          updated_at: new Date().toISOString(),
         })
         .eq('id', id)
 
@@ -1153,7 +1236,9 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         .eq('org_id', request.user!.org_id)
         .eq('file_type', 'drawing')
         .is('deleted_at', null)
-        .ilike('file_name', `${baseName}%`)
+        // Intentionally a prefix match, but on the literal base name: unescaped,
+        // `Bracket_A%` also answers with `BracketXA.slddrw`.
+        .ilike('file_name', `${escapeLikePattern(baseName)}%`)
         .limit(1)
 
       if (!drawings || drawings.length === 0) {

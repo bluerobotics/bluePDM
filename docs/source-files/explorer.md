@@ -33,7 +33,13 @@ Files show different states based on their sync status:
 ## Actions
 
 ### Download Files
-Click the download button to get the latest version from the server.
+Click the download button to fetch files that exist only in the cloud and are not yet on your
+disk. It acts only on Cloud Only files, so a folder containing both Cloud Only and Outdated
+files downloads just the ones you do not have.
+
+### Get Latest
+Click the update button, or choose **Get Latest** from the right-click menu, to replace files
+you already have with a newer version from the server. It acts only on Outdated files.
 
 ### Check Out
 Before editing a file, check it out to lock it:

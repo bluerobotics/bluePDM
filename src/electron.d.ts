@@ -371,6 +371,8 @@ declare global {
       listWorkingFilesDelta: (
         changedPaths: string[],
       ) => Promise<FilesListResult & { wasFullScan?: boolean }>
+      // Forces the next delta call to re-walk the vault instead of patching the cached scan.
+      invalidateScanCache: (reason: string) => Promise<OperationResult>
       listDirFiles: (dirPath: string) => Promise<FilesListResult>
       // Fast folder listing - no hash computation (for folder-scoped refresh)
       listFolderFast: (

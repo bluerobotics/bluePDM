@@ -11,6 +11,9 @@ export { computeHash, generateWebhookSecret, signWebhookPayload } from './crypto
 // File utilities
 export { getFileTypeFromExtension } from './files.js'
 
+// LIKE pattern escaping (copy of src/lib/utils/likePattern.ts - see that file)
+export { escapeLikePattern, folderPrefixLikePattern } from './likePattern.js'
+
 // Odoo integration.
 // The unguarded transport (odooXmlRpc) is deliberately not re-exported here:
 // reaching it requires importing './odoo.js' directly, so the guarded wrapper

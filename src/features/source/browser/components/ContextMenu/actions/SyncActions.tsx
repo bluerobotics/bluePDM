@@ -2,10 +2,12 @@
  * Sync actions for context menu (download, first check in, ignore)
  */
 import React from 'react'
-import { ArrowDown, ArrowUp, EyeOff, FileX, FolderX } from 'lucide-react'
+import { ArrowDown, ArrowUp, EyeOff, FileX, FolderX, RefreshCw } from 'lucide-react'
+import { t } from '@/lib/i18n'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
-import { executeCommand } from '@/lib/commands'
+import { executeCommand, getCloudOnlyFilesFromSelection } from '@/lib/commands'
+import { getOutdatedFilesFromSelection } from '@/lib/commands/handlers/getLatest'
 import type { RefreshableActionProps, SelectionCounts, SelectionState } from './types'
 import { ContextSubmenu } from '../components'
 
@@ -31,31 +33,52 @@ export function SyncActions({
   setShowIgnoreSubmenu,
   ignoreSubmenuTimeoutRef,
 }: SyncActionsProps) {
-  const { activeVaultId, addIgnorePattern, getIgnorePatterns, addToast } = usePDMStore()
+  const { files, activeVaultId, addIgnorePattern, getIgnorePatterns, addToast } = usePDMStore()
 
   const anyCloudOnly =
     counts.cloudOnlyCount > 0 || contextFiles.some((f) => f.diffStatus === 'cloud')
+
+  // Cloud-only files drive the Download item; outdated files drive the Get Latest item below.
+  // The two sets never overlap - each file is either 'cloud' or 'outdated', never both.
+  const cloudOnlyFilesInSelection = getCloudOnlyFilesFromSelection(files, contextFiles)
+  const outdatedFilesInSelection = getOutdatedFilesFromSelection(files, contextFiles)
+  const anyOutdated =
+    outdatedFilesInSelection.length > 0 || contextFiles.some((f) => f.diffStatus === 'outdated')
   const currentVaultId = activeVaultId
 
   return (
     <>
-      {/* Download cloud-only files */}
+      {(anyCloudOnly || anyOutdated) && <div className="context-menu-separator" />}
+
+      {/* Download cloud-only files. Never touches outdated files - see Get Latest below. */}
       {anyCloudOnly && (
-        <>
-          <div className="context-menu-separator" />
-          <div
-            className="context-menu-item text-plm-success"
-            onClick={() => {
-              onClose()
-              // Use command system for consistent incremental store updates
-              executeCommand('download', { files: contextFiles }, { onRefresh })
-            }}
-          >
-            <ArrowDown size={14} className="text-plm-success" />
-            Download{' '}
-            {counts.cloudOnlyCount > 0 ? `${counts.cloudOnlyCount} files` : multiSelect ? '' : ''}
-          </div>
-        </>
+        <div
+          className="context-menu-item text-plm-success"
+          onClick={() => {
+            onClose()
+            // Use command system for consistent incremental store updates
+            executeCommand('download', { files: cloudOnlyFilesInSelection }, { onRefresh })
+          }}
+        >
+          <ArrowDown size={14} className="text-plm-success" />
+          Download{' '}
+          {counts.cloudOnlyCount > 0 ? `${counts.cloudOnlyCount} files` : multiSelect ? '' : ''}
+        </div>
+      )}
+
+      {/* Get Latest for outdated files. Never touches cloud-only files - see Download above. */}
+      {anyOutdated && (
+        <div
+          className="context-menu-item text-purple-400"
+          onClick={() => {
+            onClose()
+            executeCommand('get-latest', { files: outdatedFilesInSelection }, { onRefresh })
+          }}
+        >
+          <RefreshCw size={14} className="text-purple-400" />
+          {t('fileOps.getLatest', 'Get Latest')}{' '}
+          {outdatedFilesInSelection.length > 0 ? `${outdatedFilesInSelection.length} files` : ''}
+        </div>
       )}
 
       {/* Keep Local Only (Ignore) - for unsynced files */}

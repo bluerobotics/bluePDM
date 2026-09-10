@@ -29,8 +29,12 @@ import {
   getInodeMap,
   getVersionMap,
   updateInodes,
+  type SyncIndexPathInfo,
 } from '@/lib/cache/localSyncIndex'
+import { showCommandConfirm } from '@/lib/commands/executor'
+import { t } from '@/lib/i18n'
 import { logExplorer } from '@/lib/userActionLogger'
+import type { LocalFile } from '@/stores/types'
 import type { CheckoutProfileScope } from '@/lib/supabase/files/queries'
 import {
   hashCheckoutIdentifier,
@@ -58,6 +62,29 @@ const CHECKOUT_PROFILE_RETRY_BASE_MS = 200
 
 /** Enough resolved renames to recognise the pattern without logging all of them. */
 const RENAME_LOG_SAMPLE_LIMIT = 5
+
+/**
+ * Orphan batches larger than this wait for the user instead of being discarded.
+ *
+ * Steady-state cleanup is one file or a few - a colleague deleted a part, or replaced
+ * a drawing - and going through a dialog for that would train people to click past it.
+ * A batch in double figures is not that: it means a folder was deleted on the server,
+ * or that classification has gone wrong for a whole group of files at once. Both are
+ * worth a person looking, because auto-discard is on by default and the files are
+ * multi-megabyte CAD documents that may hold work never checked in.
+ */
+const AUTO_DISCARD_CONFIRM_THRESHOLD = 10
+
+/** Enough orphan paths to see what a batch is without logging thousands. */
+const ORPHAN_LOG_SAMPLE_LIMIT = 10
+
+/**
+ * Vaults whose large orphan batch has already been put to the user this session.
+ *
+ * Session-scoped on purpose: a declined batch must not re-prompt on the next refresh,
+ * and must not be remembered so long that a genuinely new batch goes unmentioned.
+ */
+const largeOrphanBatchPromptedVaults = new Set<string>()
 
 /**
  * Merge phases hand the thread back after this long. The merge runs as one
@@ -117,6 +144,53 @@ async function mapYielding<T, R>(
 function waitForCheckoutRetry(attempt: number): Promise<void> {
   const delayMs = CHECKOUT_PROFILE_RETRY_BASE_MS * 2 ** (attempt - 1)
   return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+/**
+ * Put a large orphan batch to the user, and discard only what they agree to.
+ *
+ * Deliberately not awaited by the load that found the batch. The confirmation is a
+ * modal, and awaiting it inside runExclusiveLoad would hold the load lock for as long
+ * as the dialog stayed open, so an unanswered dialog would stall every refresh. The
+ * cost of detaching is that the discard runs outside the lock and may supersede a
+ * merge, which the loader already reruns.
+ */
+async function confirmAndDiscardOrphanBatch(
+  vaultId: string,
+  candidates: LocalFile[],
+): Promise<void> {
+  const candidatePaths = new Set(candidates.map((f) => f.path))
+
+  const confirmed = await showCommandConfirm({
+    title: t('autoDiscard.largeBatch.title', 'Remove files deleted from the vault?'),
+    message: t(
+      'autoDiscard.largeBatch.message',
+      'These local files are no longer in the vault on the server, so BluePLM would normally remove them automatically. There are more than usual, so nothing has been removed yet. Removing them sends the local copies to the Recycle Bin. Cancel to keep them and review them in the file browser.',
+    ),
+    items: candidates.map((f) => f.relativePath),
+    confirmText: t('autoDiscard.largeBatch.confirm', 'Remove files'),
+  })
+
+  if (!confirmed) {
+    window.electronAPI?.log('info', '[AutoDiscard] Large orphan batch declined', {
+      vaultId,
+      count: candidates.length,
+    })
+    return
+  }
+
+  // Re-derived from the store rather than trusting the list the dialog was built
+  // from: a refresh or a download may have resolved some of it while the dialog was
+  // open, and only files that are still orphaned should be deleted.
+  const stillOrphaned = usePDMStore
+    .getState()
+    .files.filter(
+      (f) => !f.isDirectory && f.diffStatus === 'deleted_remote' && candidatePaths.has(f.path),
+    )
+
+  if (stillOrphaned.length === 0) return
+
+  await executeCommand('discard-orphaned', { files: stillOrphaned })
 }
 
 interface CheckoutProfileFetchResult {
@@ -240,6 +314,11 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
   const latestSessionContext = useRef<LoadFilesSessionContext | undefined>(sessionContext)
   latestSessionContext.current = sessionContext
 
+  // Folders whose refresh already dropped the main-process scan cache, so a refresh that
+  // keeps growing for some other reason cannot invalidate on every press. See the
+  // self-heal in refreshCurrentFolder.
+  const scanCacheSelfHealedFolders = useRef(new Set<string>())
+
   const authenticatedUserId =
     sessionContext?.authenticatedUserId !== undefined
       ? sessionContext.authenticatedUserId
@@ -345,6 +424,11 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
       // actually committed has an orphan list worth acting on.
       let committedMerge = false
 
+      // Orphans whose file on disk was written after the server row disappeared, so
+      // the local copy holds work that exists nowhere else. Collected during the merge,
+      // where the tombstone timestamps are in scope, and read by the auto-discard.
+      const orphansEditedSinceServerRowLost = new Set<string>()
+
       try {
         // Run local file scan and server fetch in PARALLEL for faster boot
         // Note: listWorkingFiles now returns FAST (no blocking hash computation)
@@ -408,7 +492,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
         // they were deleted by another user (orphaned)
         const syncIndexPromise = currentVaultId
           ? getSyncIndex(currentVaultId)
-          : Promise.resolve(new Set<string>())
+          : Promise.resolve(new Map<string, SyncIndexPathInfo>())
 
         // Load inode map for rename detection (ino -> old relativePath)
         const inodeMapPromise = currentVaultId
@@ -968,320 +1052,335 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             let unmatchedCount = 0
             const unmatchedSamples: string[] = []
 
-            localFiles = await mapYielding(localFiles, (localFile) => {
-              if (localFile.isDirectory) {
-                // Check if this folder exists on server (from explicit folder records)
-                const folderKey = localFile.relativePath.toLowerCase()
-                const serverFolder = serverFoldersMap.get(folderKey)
-                if (serverFolder) {
-                  // Attach folder pdmData for synced folders
-                  return {
-                    ...localFile,
-                    isSynced: true,
-                    pdmData: { id: serverFolder.id, folder_path: serverFolder.folder_path } as any, // TODO: type this
+            localFiles = await mapYielding(
+              localFiles,
+              (localFile) => {
+                if (localFile.isDirectory) {
+                  // Check if this folder exists on server (from explicit folder records)
+                  const folderKey = localFile.relativePath.toLowerCase()
+                  const serverFolder = serverFoldersMap.get(folderKey)
+                  if (serverFolder) {
+                    // Attach folder pdmData for synced folders
+                    return {
+                      ...localFile,
+                      isSynced: true,
+                      pdmData: {
+                        id: serverFolder.id,
+                        folder_path: serverFolder.folder_path,
+                      } as any, // TODO: type this
+                    }
+                  }
+                  return localFile
+                }
+
+                // Use lowercase for case-insensitive matching (Windows compatibility)
+                const lookupKey = localFile.relativePath.toLowerCase()
+                let pdmData = pdmMap.get(lookupKey)
+                let isMovedFile = false
+
+                // Debug: track match/unmatch counts
+                if (pdmData) {
+                  matchedCount++
+                } else {
+                  unmatchedCount++
+                  if (unmatchedSamples.length < 5) {
+                    unmatchedSamples.push(lookupKey)
                   }
                 }
-                return localFile
-              }
 
-              // Use lowercase for case-insensitive matching (Windows compatibility)
-              const lookupKey = localFile.relativePath.toLowerCase()
-              let pdmData = pdmMap.get(lookupKey)
-              let isMovedFile = false
+                // Preserve localActiveVersion from existing file (for rollback state)
+                // Try both absolute path and relative path for robust lookup
+                const existingLocalActiveVersion =
+                  existingLocalActiveVersions.get(localFile.path) ||
+                  existingLocalActiveVersions.get(localFile.relativePath)
 
-              // Debug: track match/unmatch counts
-              if (pdmData) {
-                matchedCount++
-              } else {
-                unmatchedCount++
-                if (unmatchedSamples.length < 5) {
-                  unmatchedSamples.push(lookupKey)
+                // Preserve localVersion from existing file (tracks actual version on disk)
+                // The lowercase fallback matches the IndexedDB sync index key space, which is
+                // the only seed available on cold start.
+                const existingLocalVersion =
+                  existingLocalVersions.get(localFile.path) ||
+                  existingLocalVersions.get(localFile.relativePath) ||
+                  existingLocalVersions.get(localFile.relativePath.toLowerCase())
+
+                // Debug: log when localActiveVersion is being preserved (helps diagnose rollback issues)
+                if (existingLocalActiveVersion !== undefined) {
+                  window.electronAPI?.log('debug', '[LoadFiles] Preserving localActiveVersion', {
+                    path: localFile.relativePath,
+                    version: existingLocalActiveVersion,
+                  })
                 }
-              }
 
-              // Preserve localActiveVersion from existing file (for rollback state)
-              // Try both absolute path and relative path for robust lookup
-              const existingLocalActiveVersion =
-                existingLocalActiveVersions.get(localFile.path) ||
-                existingLocalActiveVersions.get(localFile.relativePath)
+                // Preserve localHash from existing file if not computed fresh
+                // This prevents falling back to timestamp-based diff detection after file watcher refreshes
+                // Try both full path (in-memory entries) and relativePath (IndexedDB entries) so a
+                // persisted hash from a previous app session is always reachable.
+                const existingLocalHash =
+                  existingLocalHashes.get(localFile.path) ||
+                  existingLocalHashes.get(localFile.relativePath) ||
+                  existingLocalHashes.get(localFile.relativePath.toLowerCase())
+                const effectiveLocalHash = localFile.localHash || existingLocalHash
 
-              // Preserve localVersion from existing file (tracks actual version on disk)
-              // The lowercase fallback matches the IndexedDB sync index key space, which is
-              // the only seed available on cold start.
-              const existingLocalVersion =
-                existingLocalVersions.get(localFile.path) ||
-                existingLocalVersions.get(localFile.relativePath) ||
-                existingLocalVersions.get(localFile.relativePath.toLowerCase())
-
-              // Debug: log when localActiveVersion is being preserved (helps diagnose rollback issues)
-              if (existingLocalActiveVersion !== undefined) {
-                window.electronAPI?.log('debug', '[LoadFiles] Preserving localActiveVersion', {
-                  path: localFile.relativePath,
-                  version: existingLocalActiveVersion,
-                })
-              }
-
-              // Preserve localHash from existing file if not computed fresh
-              // This prevents falling back to timestamp-based diff detection after file watcher refreshes
-              // Try both full path (in-memory entries) and relativePath (IndexedDB entries) so a
-              // persisted hash from a previous app session is always reachable.
-              const existingLocalHash =
-                existingLocalHashes.get(localFile.path) ||
-                existingLocalHashes.get(localFile.relativePath) ||
-                existingLocalHashes.get(localFile.relativePath.toLowerCase())
-              const effectiveLocalHash = localFile.localHash || existingLocalHash
-
-              // PRIMARY: Inode-based rename detection
-              // The NTFS file index (ino) persists across renames. If we previously recorded
-              // this file's inode at a different path, it was renamed/moved.
-              if (!pdmData && inodeRenameMap.size > 0) {
-                const inodeMatch = inodeRenameMap.get(localFile.relativePath.toLowerCase())
-                if (inodeMatch) {
-                  pdmData = inodeMatch
-                  isMovedFile = true
-                }
-              }
-
-              // FALLBACK: Hash-based move detection for cases where inode is unavailable
-              // (e.g., first load after upgrade, network drives, ino=0)
-              if (!pdmData && effectiveLocalHash) {
-                const movedFromFile = checkedOutByMeByHash.get(effectiveLocalHash)
-                if (movedFromFile) {
-                  const originalPathStillExists = localPathSet.has(
-                    movedFromFile.file_path.toLowerCase(),
-                  )
-
-                  if (!originalPathStillExists) {
-                    pdmData = movedFromFile
+                // PRIMARY: Inode-based rename detection
+                // The NTFS file index (ino) persists across renames. If we previously recorded
+                // this file's inode at a different path, it was renamed/moved.
+                if (!pdmData && inodeRenameMap.size > 0) {
+                  const inodeMatch = inodeRenameMap.get(localFile.relativePath.toLowerCase())
+                  if (inodeMatch) {
+                    pdmData = inodeMatch
                     isMovedFile = true
                   }
                 }
-              }
 
-              // Determine diff status
-              let diffStatus:
-                | 'added'
-                | 'modified'
-                | 'outdated'
-                | 'moved'
-                | 'ignored'
-                | 'deleted_remote'
-                | undefined
-              if (!pdmData) {
-                // File exists locally but not on server
-                // Check if it's in the ignore list (keep local only)
-                if (isIgnoredPath(localFile.relativePath)) {
-                  diffStatus = 'ignored'
-                } else {
-                  // Check if this file was previously synced (in sync index)
-                  // If it was synced before but is no longer on server, it was deleted by another user
-                  const wasPrevinouslySynced = localSyncIndex.has(
-                    localFile.relativePath.toLowerCase(),
-                  )
-                  if (wasPrevinouslySynced) {
-                    // File was synced before but no longer on server = orphaned (deleted_remote)
-                    diffStatus = 'deleted_remote'
-                    window.electronAPI?.log('debug', '[LoadFiles] Detected orphaned file', {
-                      path: localFile.relativePath,
-                      reason: 'in_sync_index_but_not_on_server',
-                    })
-                  } else {
-                    // File was never synced = genuinely new (added)
-                    diffStatus = 'added'
+                // FALLBACK: Hash-based move detection for cases where inode is unavailable
+                // (e.g., first load after upgrade, network drives, ino=0)
+                if (!pdmData && effectiveLocalHash) {
+                  const movedFromFile = checkedOutByMeByHash.get(effectiveLocalHash)
+                  if (movedFromFile) {
+                    const originalPathStillExists = localPathSet.has(
+                      movedFromFile.file_path.toLowerCase(),
+                    )
+
+                    if (!originalPathStillExists) {
+                      pdmData = movedFromFile
+                      isMovedFile = true
+                    }
                   }
                 }
-              } else if (isMovedFile) {
-                // File was moved - needs check-in to update server path (but no version increment)
-                diffStatus = 'moved'
-              } else if (pdmData.content_hash && effectiveLocalHash) {
-                // Both hashes available - use hash comparison (most accurate)
-                if (pdmData.content_hash === effectiveLocalHash) {
-                  // Hashes match - file is synced, leave diffStatus undefined
-                } else {
-                  // Hashes differ - determine if local is newer or cloud is newer
+
+                // Determine diff status
+                let diffStatus:
+                  | 'added'
+                  | 'modified'
+                  | 'outdated'
+                  | 'moved'
+                  | 'ignored'
+                  | 'deleted_remote'
+                  | undefined
+                if (!pdmData) {
+                  // File exists locally but not on server
+                  // Check if it's in the ignore list (keep local only)
+                  if (isIgnoredPath(localFile.relativePath)) {
+                    diffStatus = 'ignored'
+                  } else {
+                    // Check if this file was previously synced (in sync index)
+                    // If it was synced before but is no longer on server, it was deleted by another user.
+                    // The index keeps a tombstone for such a path, so the answer no longer
+                    // depends on the server row having disappeared since the last load.
+                    const syncedPath = localSyncIndex.get(localFile.relativePath.toLowerCase())
+                    if (syncedPath) {
+                      // File was synced before but no longer on server = orphaned (deleted_remote)
+                      diffStatus = 'deleted_remote'
+                      if (
+                        syncedPath.orphanedAt !== undefined &&
+                        new Date(localFile.modifiedTime).getTime() > syncedPath.orphanedAt
+                      ) {
+                        orphansEditedSinceServerRowLost.add(localFile.relativePath.toLowerCase())
+                      }
+                    } else {
+                      // File was never synced = genuinely new (added)
+                      diffStatus = 'added'
+                    }
+                  }
+                } else if (isMovedFile) {
+                  // File was moved - needs check-in to update server path (but no version increment)
+                  diffStatus = 'moved'
+                } else if (pdmData.content_hash && effectiveLocalHash) {
+                  // Both hashes available - use hash comparison (most accurate)
+                  if (pdmData.content_hash === effectiveLocalHash) {
+                    // Hashes match - file is synced, leave diffStatus undefined
+                  } else {
+                    // Hashes differ - determine if local is newer or cloud is newer
+                    const localModTime = new Date(localFile.modifiedTime).getTime()
+                    const cloudUpdateTime = pdmData.updated_at
+                      ? new Date(pdmData.updated_at).getTime()
+                      : 0
+
+                    if (localModTime > cloudUpdateTime) {
+                      diffStatus = 'modified'
+                    } else {
+                      diffStatus = 'outdated'
+                    }
+                  }
+                } else if (pdmData.content_hash) {
+                  // No local hash available - use VERSION-BASED detection first, then TIMESTAMP fallback
                   const localModTime = new Date(localFile.modifiedTime).getTime()
                   const cloudUpdateTime = pdmData.updated_at
                     ? new Date(pdmData.updated_at).getTime()
                     : 0
+                  const isCheckedOutByMe = pdmData.checked_out_by === user?.id
 
-                  if (localModTime > cloudUpdateTime) {
-                    diffStatus = 'modified'
+                  // PRIORITY 1: Use tracked localVersion for accurate outdated detection
+                  // This is set when files are downloaded, checked in, or rolled back
+                  if (existingLocalVersion !== undefined && pdmData.version !== undefined) {
+                    if (existingLocalVersion < pdmData.version) {
+                      // Server has a newer version - file is definitely outdated
+                      diffStatus = 'outdated'
+                    } else if (existingLocalVersion === pdmData.version) {
+                      // Versions match - file should be synced
+                      // But if checked out by me and local is newer, might be modified
+                      if (isCheckedOutByMe && localModTime > cloudUpdateTime + 5000) {
+                        diffStatus = 'modified'
+                      }
+                      // Otherwise: leave as synced (diffStatus undefined)
+                    }
+                    // If existingLocalVersion > pdmData.version: local has uncommitted changes (modified)
+                    // This shouldn't normally happen, but leave status as-is
                   } else {
-                    diffStatus = 'outdated'
-                  }
-                }
-              } else if (pdmData.content_hash) {
-                // No local hash available - use VERSION-BASED detection first, then TIMESTAMP fallback
-                const localModTime = new Date(localFile.modifiedTime).getTime()
-                const cloudUpdateTime = pdmData.updated_at
-                  ? new Date(pdmData.updated_at).getTime()
-                  : 0
-                const isCheckedOutByMe = pdmData.checked_out_by === user?.id
+                    // No localVersion available — do NOT use timestamp fallback for "outdated"
+                    // since it produces mass false positives (e.g., files downloaded weeks ago
+                    // whose server updated_at was bumped by unrelated checkout/checkin activity).
+                    // Instead, trust that background hash computation will resolve the real status.
+                    const MODIFIED_TOLERANCE_MS = 5000
 
-                // PRIORITY 1: Use tracked localVersion for accurate outdated detection
-                // This is set when files are downloaded, checked in, or rolled back
-                if (existingLocalVersion !== undefined && pdmData.version !== undefined) {
-                  if (existingLocalVersion < pdmData.version) {
-                    // Server has a newer version - file is definitely outdated
-                    diffStatus = 'outdated'
-                  } else if (existingLocalVersion === pdmData.version) {
-                    // Versions match - file should be synced
-                    // But if checked out by me and local is newer, might be modified
-                    if (isCheckedOutByMe && localModTime > cloudUpdateTime + 5000) {
+                    if (
+                      isCheckedOutByMe &&
+                      localModTime > cloudUpdateTime + MODIFIED_TOLERANCE_MS
+                    ) {
                       diffStatus = 'modified'
                     }
-                    // Otherwise: leave as synced (diffStatus undefined)
+                    // For non-checked-out files: leave as synced (undefined) and let
+                    // background hash computation determine the accurate status.
                   }
-                  // If existingLocalVersion > pdmData.version: local has uncommitted changes (modified)
-                  // This shouldn't normally happen, but leave status as-is
-                } else {
-                  // No localVersion available — do NOT use timestamp fallback for "outdated"
-                  // since it produces mass false positives (e.g., files downloaded weeks ago
-                  // whose server updated_at was bumped by unrelated checkout/checkin activity).
-                  // Instead, trust that background hash computation will resolve the real status.
-                  const MODIFIED_TOLERANCE_MS = 5000
-
-                  if (isCheckedOutByMe && localModTime > cloudUpdateTime + MODIFIED_TOLERANCE_MS) {
-                    diffStatus = 'modified'
-                  }
-                  // For non-checked-out files: leave as synced (undefined) and let
-                  // background hash computation determine the accurate status.
                 }
-              }
-              // The background hash computation will set the proper status once hashes are computed
+                // The background hash computation will set the proper status once hashes are computed
 
-              // Preserve pendingMetadata from existing file OR from persistedPendingMetadata (for app restart)
-              // For moved files, also try looking up by the OLD path (stored in pdmData.file_path)
-              // since pendingMetadata was stored under the old path before the rename
-              const recoveredPending =
-                existingPendingMetadata.get(localFile.path) ||
-                persistedPendingMetadata[localFile.path] ||
-                (isMovedFile && pdmData?.file_path
-                  ? existingPendingByServerPath.get(pdmData.file_path.toLowerCase()) ||
-                    persistedPendingMetadata[buildFullPath(loadingForVaultPath, pdmData.file_path)]
-                  : undefined)
+                // Preserve pendingMetadata from existing file OR from persistedPendingMetadata (for app restart)
+                // For moved files, also try looking up by the OLD path (stored in pdmData.file_path)
+                // since pendingMetadata was stored under the old path before the rename
+                const recoveredPending =
+                  existingPendingMetadata.get(localFile.path) ||
+                  persistedPendingMetadata[localFile.path] ||
+                  (isMovedFile && pdmData?.file_path
+                    ? existingPendingByServerPath.get(pdmData.file_path.toLowerCase()) ||
+                      persistedPendingMetadata[
+                        buildFullPath(loadingForVaultPath, pdmData.file_path)
+                      ]
+                    : undefined)
 
-              // Compare against the server row: an edit the server already holds is not an edit,
-              // and leaving it pending marks the file as needing check-in forever.
-              const preservedPending = dropCommittedPendingMetadata(recoveredPending, pdmData)
+                // Compare against the server row: an edit the server already holds is not an edit,
+                // and leaving it pending marks the file as needing check-in forever.
+                const preservedPending = dropCommittedPendingMetadata(recoveredPending, pdmData)
 
-              // Check if this file was recently modified locally (e.g., just saved to SW file + DB)
-              // If so, preserve the existing pdmData to prevent server data from overwriting local changes
-              // This handles the race condition between Save to File and FileWatcher triggering LoadFiles
-              const recentlyModifiedData = recentlyModifiedPdmData.get(localFile.path)
+                // Check if this file was recently modified locally (e.g., just saved to SW file + DB)
+                // If so, preserve the existing pdmData to prevent server data from overwriting local changes
+                // This handles the race condition between Save to File and FileWatcher triggering LoadFiles
+                const recentlyModifiedData = recentlyModifiedPdmData.get(localFile.path)
 
-              // Determine final pdmData:
-              // 1. If file was recently modified locally, use preserved pdmData (highest priority)
-              // 2. Otherwise use server pdmData as-is
-              //
-              // Pending values are deliberately NOT merged in here. Doing so re-created, on every
-              // vault load, the same conflation updatePendingMetadata used to perform: the edit
-              // read back as a value the server confirmed. Readers overlay pending over committed
-              // at render time through src/lib/metadata/overlay.ts.
-              let finalPdmData = pdmData
+                // Determine final pdmData:
+                // 1. If file was recently modified locally, use preserved pdmData (highest priority)
+                // 2. Otherwise use server pdmData as-is
+                //
+                // Pending values are deliberately NOT merged in here. Doing so re-created, on every
+                // vault load, the same conflation updatePendingMetadata used to perform: the edit
+                // read back as a value the server confirmed. Readers overlay pending over committed
+                // at render time through src/lib/metadata/overlay.ts.
+                let finalPdmData = pdmData
 
-              if (recentlyModifiedData && pdmData) {
-                // Recently modified - keep the local pdmData to prevent reversion
-                finalPdmData = mergePdmFileData(recentlyModifiedData, {
-                  checked_out_by: pdmData.checked_out_by,
-                  checked_out_at: pdmData.checked_out_at,
-                })
-                window.electronAPI?.log(
-                  'debug',
-                  '[LoadFiles] SKIP merge for recently modified file',
-                  {
-                    path: localFile.path,
-                    serverPartNumber: pdmData?.part_number,
-                    preservedPartNumber: recentlyModifiedData.part_number,
-                    reason: 'recently_modified',
-                  },
-                )
-              }
-
-              if (finalPdmData?.id) {
-                const preservedUserInfo = existingCheckedOutUsers.get(finalPdmData.id)
-                const profile = isCheckoutProfileForOwner(
-                  preservedUserInfo,
-                  finalPdmData.checked_out_by,
-                )
-                  ? preservedUserInfo
-                  : finalPdmData.checked_out_user
-                finalPdmData = reconcileCheckoutProfile(finalPdmData, profile)
-              }
-
-              // CRITICAL: Preserve 'modified' status for files with pending metadata changes
-              // The hash comparison above may incorrectly set diffStatus to undefined because
-              // the file content hasn't changed yet (user only edited UI fields).
-              // But we know there ARE pending changes, so force 'modified' status.
-              const finalDiffStatus =
-                preservedPending && Object.keys(preservedPending).length > 0 && pdmData
-                  ? ('modified' as const)
-                  : diffStatus
-
-              // When a file is detected as moved via inode/hash, mirror the BR number
-              // (part_number) into pendingMetadata so it's preserved if a subsequent
-              // reload fails to re-detect the move (e.g., inode data is lost).
-              let finalPending = preservedPending
-              if (isMovedFile && pdmData?.part_number && !preservedPending?.part_number) {
-                finalPending = {
-                  ...preservedPending,
-                  part_number: pdmData.part_number,
-                }
-              }
-
-              // Only the failure - a server part number that did not survive the move -
-              // is worth a line of its own. Logging the success case too made an
-              // unreconciled folder rename cost hundreds of IPC calls per load from
-              // inside this loop; the count now rides along in Merge summary.
-              if (isMovedFile) {
-                const partNumberLost = !!pdmData?.part_number && !finalPending?.part_number
-                if (partNumberLost) {
-                  window.electronAPI?.log('warn', '[LoadFiles] Moved file lost its part number', {
-                    oldPath: pdmData?.file_path,
-                    newPath: localFile.relativePath,
-                    pdmPartNumber: pdmData?.part_number ?? null,
-                    preservedPartNumber: preservedPending?.part_number ?? null,
+                if (recentlyModifiedData && pdmData) {
+                  // Recently modified - keep the local pdmData to prevent reversion
+                  finalPdmData = mergePdmFileData(recentlyModifiedData, {
+                    checked_out_by: pdmData.checked_out_by,
+                    checked_out_at: pdmData.checked_out_at,
                   })
+                  window.electronAPI?.log(
+                    'debug',
+                    '[LoadFiles] SKIP merge for recently modified file',
+                    {
+                      path: localFile.path,
+                      serverPartNumber: pdmData?.part_number,
+                      preservedPartNumber: recentlyModifiedData.part_number,
+                      reason: 'recently_modified',
+                    },
+                  )
                 }
-              }
 
-              // Determine localVersion:
-              // - If file is synced (hashes verifiably match), use server version
-              // - If preserved from previous state and >= server version, keep it (prevents stale cache overwrite)
-              // - Otherwise undefined (will be set when downloaded or checked in)
-              //
-              // CRITICAL: We must NOT stamp pdmData.version onto localVersion when there is no
-              // disk evidence (no localHash AND no existingLocalVersion). Doing so makes the file
-              // appear synced at the server's version forever, even though disk content may not
-              // match. Instead, leave localVersion undefined and let the forced background hash
-              // (see filesNeedingHash logic below) resolve the truth from disk.
-              const isSyncedWithServer =
-                pdmData &&
-                !finalDiffStatus &&
-                pdmData.content_hash &&
-                effectiveLocalHash &&
-                pdmData.content_hash === effectiveLocalHash
-              const computedLocalVersion = isSyncedWithServer && pdmData
-                ? existingLocalVersion !== undefined && existingLocalVersion >= pdmData.version
-                  ? existingLocalVersion
-                  : pdmData.version
-                : existingLocalVersion
+                if (finalPdmData?.id) {
+                  const preservedUserInfo = existingCheckedOutUsers.get(finalPdmData.id)
+                  const profile = isCheckoutProfileForOwner(
+                    preservedUserInfo,
+                    finalPdmData.checked_out_by,
+                  )
+                    ? preservedUserInfo
+                    : finalPdmData.checked_out_user
+                  finalPdmData = reconcileCheckoutProfile(finalPdmData, profile)
+                }
 
-              return {
-                ...localFile,
-                pdmData: finalPdmData || undefined,
-                isSynced: !!pdmData,
-                diffStatus: finalDiffStatus,
-                // Preserve rollback state if it exists
-                localActiveVersion: existingLocalActiveVersion,
-                // Track actual version on disk
-                localVersion: computedLocalVersion,
-                // Preserve localHash from existing file if not computed fresh
-                localHash: effectiveLocalHash,
-                // Preserve pendingMetadata so user's unsaved edits survive file refresh
-                pendingMetadata: finalPending,
-              }
-            }, yieldIfSlow)
+                // CRITICAL: Preserve 'modified' status for files with pending metadata changes
+                // The hash comparison above may incorrectly set diffStatus to undefined because
+                // the file content hasn't changed yet (user only edited UI fields).
+                // But we know there ARE pending changes, so force 'modified' status.
+                const finalDiffStatus =
+                  preservedPending && Object.keys(preservedPending).length > 0 && pdmData
+                    ? ('modified' as const)
+                    : diffStatus
+
+                // When a file is detected as moved via inode/hash, mirror the BR number
+                // (part_number) into pendingMetadata so it's preserved if a subsequent
+                // reload fails to re-detect the move (e.g., inode data is lost).
+                let finalPending = preservedPending
+                if (isMovedFile && pdmData?.part_number && !preservedPending?.part_number) {
+                  finalPending = {
+                    ...preservedPending,
+                    part_number: pdmData.part_number,
+                  }
+                }
+
+                // Only the failure - a server part number that did not survive the move -
+                // is worth a line of its own. Logging the success case too made an
+                // unreconciled folder rename cost hundreds of IPC calls per load from
+                // inside this loop; the count now rides along in Merge summary.
+                if (isMovedFile) {
+                  const partNumberLost = !!pdmData?.part_number && !finalPending?.part_number
+                  if (partNumberLost) {
+                    window.electronAPI?.log('warn', '[LoadFiles] Moved file lost its part number', {
+                      oldPath: pdmData?.file_path,
+                      newPath: localFile.relativePath,
+                      pdmPartNumber: pdmData?.part_number ?? null,
+                      preservedPartNumber: preservedPending?.part_number ?? null,
+                    })
+                  }
+                }
+
+                // Determine localVersion:
+                // - If file is synced (hashes verifiably match), use server version
+                // - If preserved from previous state and >= server version, keep it (prevents stale cache overwrite)
+                // - Otherwise undefined (will be set when downloaded or checked in)
+                //
+                // CRITICAL: We must NOT stamp pdmData.version onto localVersion when there is no
+                // disk evidence (no localHash AND no existingLocalVersion). Doing so makes the file
+                // appear synced at the server's version forever, even though disk content may not
+                // match. Instead, leave localVersion undefined and let the forced background hash
+                // (see filesNeedingHash logic below) resolve the truth from disk.
+                const isSyncedWithServer =
+                  pdmData &&
+                  !finalDiffStatus &&
+                  pdmData.content_hash &&
+                  effectiveLocalHash &&
+                  pdmData.content_hash === effectiveLocalHash
+                const computedLocalVersion =
+                  isSyncedWithServer && pdmData
+                    ? existingLocalVersion !== undefined && existingLocalVersion >= pdmData.version
+                      ? existingLocalVersion
+                      : pdmData.version
+                    : existingLocalVersion
+
+                return {
+                  ...localFile,
+                  pdmData: finalPdmData || undefined,
+                  isSynced: !!pdmData,
+                  diffStatus: finalDiffStatus,
+                  // Preserve rollback state if it exists
+                  localActiveVersion: existingLocalActiveVersion,
+                  // Track actual version on disk
+                  localVersion: computedLocalVersion,
+                  // Preserve localHash from existing file if not computed fresh
+                  localHash: effectiveLocalHash,
+                  // Preserve pendingMetadata so user's unsaved edits survive file refresh
+                  pendingMetadata: finalPending,
+                }
+              },
+              yieldIfSlow,
+            )
 
             // Debug: Log match statistics
             window.electronAPI?.log('info', '[LoadFiles] MATCH STATS', {
@@ -1519,6 +1618,13 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               added: addedCount,
               cloudOnly: cloudCount,
               orphaned: orphanedCount,
+              // Samples rather than the full list: orphans persist across loads now, so
+              // a large batch would otherwise log every path on every load.
+              orphanedSamples: localFiles
+                .filter((f) => !f.isDirectory && f.diffStatus === 'deleted_remote')
+                .slice(0, ORPHAN_LOG_SAMPLE_LIMIT)
+                .map((f) => f.relativePath),
+              orphansEditedSinceServerRowLost: orphansEditedSinceServerRowLost.size,
               ghostFiles: deletedCount,
               // A count that stays high across loads means moves are being re-detected
               // rather than reconciled, which is what made cold loads expensive.
@@ -1538,6 +1644,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                 ino: number
                 localVersion?: number
                 localHash?: string
+                localOnly?: boolean
               }> = []
               for (const f of localFiles) {
                 if (!f.isDirectory && f.ino && f.ino > 0 && f.pdmData) {
@@ -1546,21 +1653,30 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                     ino: f.ino,
                     localVersion: f.localVersion,
                     localHash: f.localHash,
+                    // A moved file sits at a path the server does not have yet.
+                    localOnly: f.diffStatus === 'moved',
                   })
                   if (
                     f.diffStatus === 'moved' &&
                     f.pdmData.file_path &&
                     f.pdmData.file_path.toLowerCase() !== f.relativePath.toLowerCase()
                   ) {
+                    // The old server path, pinned to the same inode so the move stays
+                    // detectable. Not flagged: it is on the server, so the prune leaves
+                    // it alone anyway, and flagging it would make the prune keep skipping
+                    // it after its server row went away, with nothing left to remove it.
                     inodeEntries.push({ path: f.pdmData.file_path, ino: f.ino })
                   }
                 }
               }
 
-              // Chain: create sync index entries first, THEN stamp inodes/versions onto them.
-              // updateInodes now upserts (creates entries if missing), but running after
-              // updateSyncIndexFromServer ensures we don't create entries that should be pruned.
-              updateSyncIndexFromServer(currentVaultId, serverPaths)
+              // Chain: reconcile against the server list first, THEN stamp inodes/versions.
+              // The order does not stop updateInodes from recreating a path the first call
+              // dropped - it upserts, so it did that on every load. The localOnly flags
+              // above are what keeps the two from fighting over the moved-file paths.
+              // localPathSet is what lets the first call tell a file that is still on disk
+              // from one that is gone, which decides tombstone versus delete.
+              updateSyncIndexFromServer(currentVaultId, serverPaths, localPathSet)
                 .then((): Promise<void> | void => {
                   if (inodeEntries.length > 0) {
                     return updateInodes(currentVaultId, inodeEntries)
@@ -2274,6 +2390,10 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
       // Every abort path above returns out of the try, so only a committed merge
       // reaches this. Silent refreshes never discard, which stops a watcher-driven
       // refresh from chaining into another one.
+      //
+      // Batches above AUTO_DISCARD_CONFIRM_THRESHOLD go to the user first. Orphan
+      // classification is durable now, so a backlog that built up while it was not can
+      // surface all at once, and a bulk unannounced delete is worse than the stray rows.
       if (committedMerge && !silent && user && window.electronAPI && !isVaultStale()) {
         const { autoDiscardOrphanedFiles, addToast, files: latestFiles } = usePDMStore.getState()
 
@@ -2281,17 +2401,64 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           ? latestFiles.filter((f) => !f.isDirectory && f.diffStatus === 'deleted_remote')
           : []
 
-        if (orphanedFiles.length > 0) {
+        // An orphan that holds work of the user's own is never discarded automatically.
+        // Keeping it costs them a stray row in the browser and the manual discard is
+        // still there; discarding it costs them the work. Neither signal is complete -
+        // a file edited before its server row disappeared looks untouched from here -
+        // so the batch size check below is what actually bounds the damage.
+        const discardableOrphans = orphanedFiles.filter(
+          (f) =>
+            !orphansEditedSinceServerRowLost.has(f.relativePath.toLowerCase()) &&
+            !(f.pendingMetadata && Object.keys(f.pendingMetadata).length > 0),
+        )
+
+        if (orphanedFiles.length > discardableOrphans.length) {
+          window.electronAPI.log('info', '[AutoDiscard] Keeping orphans that hold local work', {
+            count: orphanedFiles.length - discardableOrphans.length,
+          })
+        }
+
+        // The size check comes first and on its own: every path out of it other than
+        // the confirmation leaves the files where they are.
+        if (discardableOrphans.length > AUTO_DISCARD_CONFIRM_THRESHOLD) {
+          // Once per vault per session: a declined batch must not reappear on the next
+          // refresh, and a second large batch in the same session is left in the browser
+          // rather than discarded on the strength of an answer about a different one.
+          //
+          // The confirm dialog has one slot and one resolver, so opening ours over a
+          // command's would leave that command waiting forever. Leaving the batch for
+          // the next load costs nothing; nothing has been deleted.
+          const dialogIsFree = usePDMStore.getState().pendingCommandConfirm === null
+          if (
+            currentVaultId &&
+            dialogIsFree &&
+            !largeOrphanBatchPromptedVaults.has(currentVaultId)
+          ) {
+            largeOrphanBatchPromptedVaults.add(currentVaultId)
+            window.electronAPI.log('info', '[AutoDiscard] Large orphan batch needs confirmation', {
+              count: discardableOrphans.length,
+              threshold: AUTO_DISCARD_CONFIRM_THRESHOLD,
+              samples: discardableOrphans
+                .slice(0, ORPHAN_LOG_SAMPLE_LIMIT)
+                .map((f) => f.relativePath),
+            })
+            void confirmAndDiscardOrphanBatch(currentVaultId, discardableOrphans).catch((error) => {
+              window.electronAPI?.log('error', '[AutoDiscard] Confirmed discard failed', {
+                error: String(error),
+              })
+            })
+          }
+        } else if (discardableOrphans.length > 0) {
           window.electronAPI.log('info', '[AutoDiscard] Discarding orphaned files', {
-            count: orphanedFiles.length,
-            files: orphanedFiles.map((f) => ({
+            count: discardableOrphans.length,
+            files: discardableOrphans.map((f) => ({
               name: f.name,
               relativePath: f.relativePath,
             })),
           })
 
           try {
-            const result = await executeCommand('discard-orphaned', { files: orphanedFiles })
+            const result = await executeCommand('discard-orphaned', { files: discardableOrphans })
             if (result.succeeded > 0) {
               addToast(
                 'info',
@@ -2601,14 +2768,29 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
         // disk scan found no more than the store already held means entries were
         // duplicated or resurrected, which is how one vault climbed from 27,183 to
         // 27,993 rows on a single press of Refresh.
+        //
+        // It also means the main-process scan cache is behind the disk, because the
+        // store is built from that cache and this folder scan just found more. Drop it
+        // so the next delta load re-walks, instead of leaving the user on Full Refresh.
+        // Once per folder until that folder refreshes cleanly: growth has other causes,
+        // and those must not buy a full vault walk on every press.
+        const healKey = folderPath.toLowerCase()
         if (combinedFiles.length > existingFiles.length) {
+          const alreadyHealed = scanCacheSelfHealedFolders.current.has(healKey)
           window.electronAPI?.log('warn', '[RefreshFolder] Store grew during refresh', {
             folderPath,
             before: existingFiles.length,
             after: combinedFiles.length,
             grewBy: combinedFiles.length - existingFiles.length,
             localCount: localResult.files.length,
+            invalidatedScanCache: !alreadyHealed,
           })
+          if (!alreadyHealed) {
+            scanCacheSelfHealedFolders.current.add(healKey)
+            await window.electronAPI?.invalidateScanCache('refresh-folder-store-grew')
+          }
+        } else {
+          scanCacheSelfHealedFolders.current.delete(healKey)
         }
 
         // Use startTransition to mark this as a non-urgent update

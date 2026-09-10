@@ -13,6 +13,7 @@ export function getSelectionCategories(
   if (selectedPaths.length <= 1) {
     return {
       downloadable: [],
+      cloudOnly: [],
       checkoutable: [],
       checkinable: [],
       uploadable: [],
@@ -23,6 +24,7 @@ export function getSelectionCategories(
   const selectedSet = new Set(selectedPaths)
   const result: SelectionCategories = {
     downloadable: [],
+    cloudOnly: [],
     checkoutable: [],
     checkinable: [],
     uploadable: [],
@@ -37,6 +39,11 @@ export function getSelectionCategories(
     // Downloadable: cloud-only or outdated
     if (diffStatus === 'cloud' || diffStatus === 'outdated') {
       result.downloadable.push(file)
+    }
+
+    // Cloud-only: subset of downloadable, drives the download button specifically
+    if (diffStatus === 'cloud') {
+      result.cloudOnly.push(file)
     }
 
     // Updatable: outdated only

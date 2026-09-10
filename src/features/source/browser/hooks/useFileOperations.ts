@@ -6,9 +6,11 @@
  * for files that can perform each operation.
  *
  * Key exports:
- * - handleDownload, handleCheckout, handleCheckin, handleUpload
+ * - handleDownload (cloud-only), handleGetLatest (outdated-only), handleCheckout, handleCheckin,
+ *   handleUpload
  * - handleDiscard, handleForceRelease, handleSync, handleMoveFiles
- * - selectedDownloadableFiles, selectedCheckoutableFiles, selectedCheckinableFiles, selectedUploadableFiles
+ * - selectedCloudOnlyFiles, selectedUpdatableFiles, selectedCheckoutableFiles,
+ *   selectedCheckinableFiles, selectedUploadableFiles
  *
  * @example
  * const {
@@ -61,7 +63,10 @@ export interface UseFileOperationsOptions {
 }
 
 export interface UseFileOperationsReturn {
+  /** Downloads cloud-only files. Never touches outdated files - see `handleGetLatest`. */
   handleDownload: (e: React.MouseEvent, file: LocalFile) => void
+  /** Updates outdated files to the latest server version. Never touches cloud-only files. */
+  handleGetLatest: (e: React.MouseEvent, file: LocalFile) => void
   handleCheckout: (e: React.MouseEvent, file: LocalFile) => void
   handleCheckin: (e: React.MouseEvent, file: LocalFile) => Promise<void>
   handleUpload: (e: React.MouseEvent, file: LocalFile) => void
@@ -69,7 +74,12 @@ export interface UseFileOperationsReturn {
   handleForceRelease: (files: LocalFile[]) => void
   handleSync: (files: LocalFile[]) => void
   handleMoveFiles: (filesToMove: LocalFile[], targetFolderPath: string) => Promise<void>
+  /** Mixed cloud-only + outdated selection. Kept for backward compatibility - prefer `selectedCloudOnlyFiles`/`selectedUpdatableFiles`. */
   selectedDownloadableFiles: LocalFile[]
+  /** Cloud-only files in a multi-select, for the download button's count/hover state. */
+  selectedCloudOnlyFiles: LocalFile[]
+  /** Outdated files in a multi-select, for the get-latest/sync button's count/hover state. */
+  selectedUpdatableFiles: LocalFile[]
   selectedCheckoutableFiles: LocalFile[]
   selectedCheckinableFiles: LocalFile[]
   selectedUploadableFiles: LocalFile[]
@@ -120,7 +130,9 @@ export function useFileOperations({
   }, [files, selectedFiles, userId])
 
   // Calculate selected files that can be downloaded (for multi-select download feature)
-  // Includes cloud files (to download) and outdated files (to update/sync)
+  // Includes cloud files (to download) and outdated files (to update/sync). Kept for backward
+  // compatibility - the download and get-latest handlers below use the split categories instead
+  // so a single click never fires both commands.
   const selectedDownloadableFiles = useMemo(() => {
     if (selectedFiles.length <= 1) return []
     return files.filter(
@@ -128,6 +140,22 @@ export function useFileOperations({
         selectedFiles.includes(f.path) &&
         !f.isDirectory &&
         (f.diffStatus === 'cloud' || f.diffStatus === 'outdated'),
+    )
+  }, [files, selectedFiles])
+
+  // Cloud-only files in the current multi-select - drives the download button exclusively.
+  const selectedCloudOnlyFiles = useMemo(() => {
+    if (selectedFiles.length <= 1) return []
+    return files.filter(
+      (f) => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus === 'cloud',
+    )
+  }, [files, selectedFiles])
+
+  // Outdated files in the current multi-select - drives the get-latest/sync button exclusively.
+  const selectedUpdatableFiles = useMemo(() => {
+    if (selectedFiles.length <= 1) return []
+    return files.filter(
+      (f) => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus === 'outdated',
     )
   }, [files, selectedFiles])
 
@@ -159,59 +187,46 @@ export function useFileOperations({
     )
   }, [files, selectedFiles])
 
-  // Download files (cloud or outdated)
+  // Download cloud-only files. Never dispatches 'get-latest' - see handleGetLatest for outdated
+  // files. The `download` command's own selection filtering narrows a folder or multi-select
+  // target down to its cloud-only members, so passing the folder/selection through is sufficient.
   const handleDownload = useCallback(
     (e: React.MouseEvent, file: LocalFile) => {
       e.stopPropagation()
 
-      // Check if this is a multi-select download
-      const isMultiSelect =
-        selectedFiles.includes(file.path) && selectedDownloadableFiles.length > 1
+      const isMultiSelect = selectedFiles.includes(file.path) && selectedCloudOnlyFiles.length > 1
+      const targetFiles = isMultiSelect ? selectedCloudOnlyFiles : [file]
 
       logFileAction(
         'Download file',
-        isMultiSelect ? `${selectedDownloadableFiles.length} selected files` : file.relativePath,
+        isMultiSelect ? `${targetFiles.length} selected files` : file.relativePath,
       )
 
-      if (isMultiSelect) {
-        // Multi-select: properly separate outdated and cloud files
-        const outdatedFiles = selectedDownloadableFiles.filter((f) => f.diffStatus === 'outdated')
-        const cloudFiles = selectedDownloadableFiles.filter((f) => f.diffStatus === 'cloud')
-
-        if (outdatedFiles.length > 0) {
-          executeCommand('get-latest', { files: outdatedFiles }, { onRefresh })
-        }
-        if (cloudFiles.length > 0) {
-          executeCommand('download', { files: cloudFiles }, { onRefresh })
-        }
-        resetHoverStates?.()
-        return
-      }
-
-      // Single file/folder handling
-      // For folders, check if they contain outdated files and use appropriate command
-      if (file.isDirectory) {
-        const filesInFolder = files.filter((f) =>
-          f.relativePath.startsWith(file.relativePath + '/'),
-        )
-        const hasOutdated = filesInFolder.some((f) => f.diffStatus === 'outdated')
-        const hasCloud = filesInFolder.some((f) => f.diffStatus === 'cloud')
-
-        if (hasOutdated) {
-          executeCommand('get-latest', { files: [file] }, { onRefresh })
-        }
-        if (hasCloud || file.diffStatus === 'cloud') {
-          executeCommand('download', { files: [file] }, { onRefresh })
-        }
-      } else if (file.diffStatus === 'outdated') {
-        // Use get-latest for outdated files
-        executeCommand('get-latest', { files: [file] }, { onRefresh })
-      } else {
-        executeCommand('download', { files: [file] }, { onRefresh })
-      }
+      executeCommand('download', { files: targetFiles }, { onRefresh })
       resetHoverStates?.()
     },
-    [files, selectedFiles, selectedDownloadableFiles, onRefresh, resetHoverStates],
+    [selectedFiles, selectedCloudOnlyFiles, onRefresh, resetHoverStates],
+  )
+
+  // Update outdated files to the latest server version. Never dispatches 'download' - see
+  // handleDownload for cloud-only files. The `get-latest` command's own selection filtering
+  // narrows a folder or multi-select target down to its outdated members.
+  const handleGetLatest = useCallback(
+    (e: React.MouseEvent, file: LocalFile) => {
+      e.stopPropagation()
+
+      const isMultiSelect = selectedFiles.includes(file.path) && selectedUpdatableFiles.length > 1
+      const targetFiles = isMultiSelect ? selectedUpdatableFiles : [file]
+
+      logFileAction(
+        'Get latest file',
+        isMultiSelect ? `${targetFiles.length} selected files` : file.relativePath,
+      )
+
+      executeCommand('get-latest', { files: targetFiles }, { onRefresh })
+      resetHoverStates?.()
+    },
+    [selectedFiles, selectedUpdatableFiles, onRefresh, resetHoverStates],
   )
 
   // Checkout files
@@ -578,6 +593,7 @@ export function useFileOperations({
 
   return {
     handleDownload,
+    handleGetLatest,
     handleCheckout,
     handleCheckin,
     handleUpload,
@@ -586,6 +602,8 @@ export function useFileOperations({
     handleSync,
     handleMoveFiles,
     selectedDownloadableFiles,
+    selectedCloudOnlyFiles,
+    selectedUpdatableFiles,
     selectedCheckoutableFiles,
     selectedCheckinableFiles,
     selectedUploadableFiles,

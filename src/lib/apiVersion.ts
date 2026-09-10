@@ -18,6 +18,11 @@
  * - Version 2.6.0: 5xx responses carry a request id instead of the server's stack trace
  * - Version 2.7.0: A caller-supplied request id is validated before it is logged or reflected,
  *   and an extension's failed HTTP call is audited with the reason it failed
+ * - Version 2.8.0: undo-checkout clears checked_out_by_machine_id/_name and the new
+ *   checkout path snapshot, and restores file_path/file_name from that snapshot
+ * - Version 2.8.1: restore (POST /trash/:id/restore) and the REST soft-delete
+ *   (DELETE /files/:id) now bump updated_at, so delta sync propagates them to
+ *   other clients
  *
  * When making API changes:
  * 1. Increment version in api/package.json
@@ -29,7 +34,7 @@ import { usePDMStore } from '../stores/pdmStore'
 
 // The API version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_API_VERSION = '2.7.0'
+export const EXPECTED_API_VERSION = '2.8.1'
 
 // Minimum API version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -47,10 +52,11 @@ export const EXPECTED_API_VERSION = '2.7.0'
 //   stack trace. 2.6.0 is the later of the two, so a floor there excludes both defects in one
 //   step - every version below it leaks stack traces on a 500, every version at or above it
 //   does not.
-// - **Why not 2.7.0.** 2.7.0's changes harden the server (request-id validation, extension audit
-//   fix). An API on 2.6.0 is entirely safe for a client to talk to, and refusing it would cost a
-//   user their app over a server-side observability improvement. A compatibility floor is about
-//   safety, not currency.
+// - **Why not 2.7.0 or 2.8.0.** 2.7.0's changes harden the server (request-id validation,
+//   extension audit fix); 2.8.0 fixes undo-checkout leaving stale machine and path-snapshot
+//   columns behind. An API on 2.6.0 is entirely safe for a client to talk to, and refusing it
+//   would cost a user their app over server-side observability and correctness fixes that do not
+//   expose anything. A compatibility floor is about safety, not currency.
 // - **Why it is still 2.0.0.** The deployed API image predates 2.6.0. Raising the floor before the
 //   deployment is known to be at or above it would take every user offline. Raise this only after
 //   confirming the running image, and treat it as a major bump when it happens.
@@ -74,6 +80,10 @@ export const API_VERSION_DESCRIPTIONS: Record<string, string> = {
     "A 500 response no longer returns the server's error message and stack trace to the caller; it carries a requestId that matches the server log instead. CORS always allows the desktop app, so an API deployed with NODE_ENV=production keeps working, and the Swagger UI at /docs has its own ENABLE_DOCS switch",
   '2.7.0':
     'An X-Request-Id supplied by the caller is accepted only if it is short and alphanumeric, so a crafted one can no longer forge log lines or be reflected verbatim in an error response; anything else is replaced by a server-generated id. An extension HTTP call that fails is now audited with the reason it failed instead of an empty error column, and it rejects with the original Error rather than a string, so the stack survives',
+  '2.8.0':
+    'POST /files/:id/undo-checkout was leaving checked_out_by_machine_id and checked_out_by_machine_name set after releasing a lock, and never restored file_path/file_name from the new checkout path snapshot the way the client-side undoCheckout() now does. It clears both machine columns and the snapshot columns, restores the path/name from the snapshot first when one was recorded, and now bumps updated_at on release so delta sync actually sees the change - previously a release through this route was invisible to a client on the delta path and the file could keep showing as checked out. The file response schema gained checked_out_file_path/checked_out_file_name, which were being computed by the checkout_file RPC but silently stripped from the checkout response by Fastify because the schema never declared them',
+  '2.8.1':
+    'POST /trash/:id/restore was clearing deleted_at/deleted_by without bumping updated_at, so a restore was invisible to the watermark-based delta sync (get_vault_files_delta) for any client whose cache had already advanced past the delete - the row stayed a permanent ghost. The restore route now bumps updated_at, matching the desktop restoreFile() implementation. DELETE /files/:id (REST soft delete) had the same omission and now bumps updated_at too, matching the desktop softDeleteFile() implementation',
 }
 
 export interface ApiVersionCheckResult {

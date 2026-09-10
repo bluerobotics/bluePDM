@@ -1,12 +1,15 @@
 // src/features/source/context-menu/items/PDMItems.tsx
 import { ArrowDown, ArrowUp, Undo2, RefreshCw, Network, FileSearch, Package2 } from 'lucide-react'
+import { t } from '@/lib/i18n'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import {
   executeCommand,
   getSyncedFilesFromSelection,
   getGhostFilesFromSelection,
+  getCloudOnlyFilesFromSelection,
 } from '@/lib/commands'
+import { getOutdatedFilesFromSelection } from '@/lib/commands/handlers/getLatest'
 import { checkOperationPermission, getPermissionRequirement } from '@/lib/permissions'
 import { SW_EXTENSIONS, ASSEMBLY_EXTENSIONS } from '../constants'
 import type { DialogName } from '../types'
@@ -71,9 +74,17 @@ export function PDMItems({
   const canCheckin = checkOperationPermission('checkin', hasPermission)
   const canSync = checkOperationPermission('sync', hasPermission)
   const canDownload = checkOperationPermission('download', hasPermission)
+  const canGetLatest = checkOperationPermission('get-latest', hasPermission)
   const canDiscard = checkOperationPermission('discard', hasPermission)
   const canSyncMetadata = checkOperationPermission('sync-metadata', hasPermission)
   const canExtractRefs = checkOperationPermission('extract-references', hasPermission)
+
+  // Cloud-only files drive the Download item; outdated files drive the Get Latest item below.
+  // The two sets never overlap - each file is either 'cloud' or 'outdated', never both.
+  const cloudOnlyFilesInSelection = getCloudOnlyFilesFromSelection(files, contextFiles)
+  const outdatedFilesInSelection = getOutdatedFilesFromSelection(files, contextFiles)
+  const anyOutdated =
+    outdatedFilesInSelection.length > 0 || contextFiles.some((f) => f.diffStatus === 'outdated')
 
   const handleCheckout = () => {
     if (!canCheckout.allowed) {
@@ -110,13 +121,24 @@ export function PDMItems({
     executeCommand('sync', { files: contextFiles }, { onRefresh })
   }
 
+  // Downloads cloud-only files. Never touches outdated files - see `handleGetLatest`.
   const handleDownload = () => {
     if (!canDownload.allowed) {
       addToast('error', canDownload.reason || getPermissionRequirement('download'))
       return
     }
     onClose()
-    executeCommand('download', { files: contextFiles }, { onRefresh })
+    executeCommand('download', { files: cloudOnlyFilesInSelection }, { onRefresh })
+  }
+
+  // Updates outdated files to the latest server version. Never touches cloud-only files.
+  const handleGetLatest = () => {
+    if (!canGetLatest.allowed) {
+      addToast('error', canGetLatest.reason || getPermissionRequirement('get-latest'))
+      return
+    }
+    onClose()
+    executeCommand('get-latest', { files: outdatedFilesInSelection }, { onRefresh })
   }
 
   const handleDiscardCheckout = () => {
@@ -240,6 +262,27 @@ export function PDMItems({
           />
           Download {cloudOnlyCount > 0 ? `${cloudOnlyCount} files` : countLabel}
           {!canDownload.allowed && (
+            <span className="text-xs text-plm-fg-muted ml-auto">(no permission)</span>
+          )}
+        </div>
+      )}
+
+      {/* Get Latest - for outdated files (never mixed with cloud-only Download above) */}
+      {anyOutdated && (
+        <div
+          className={`context-menu-item ${!canGetLatest.allowed ? 'disabled' : ''}`}
+          onClick={handleGetLatest}
+          title={
+            !canGetLatest.allowed ? `Requires ${getPermissionRequirement('get-latest')}` : ''
+          }
+        >
+          <RefreshCw
+            size={14}
+            className={canGetLatest.allowed ? 'text-purple-400' : 'text-plm-fg-muted'}
+          />
+          {t('fileOps.getLatest', 'Get Latest')}{' '}
+          {outdatedFilesInSelection.length > 0 ? `(${outdatedFilesInSelection.length})` : ''}
+          {!canGetLatest.allowed && (
             <span className="text-xs text-plm-fg-muted ml-auto">(no permission)</span>
           )}
         </div>

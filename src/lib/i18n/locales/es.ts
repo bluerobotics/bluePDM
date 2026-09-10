@@ -168,13 +168,15 @@ export const es: TranslationDict = {
       expand: 'Expandir',
       collapse: 'Contraer',
     },
+    configEdit: {
+      checkOutToEdit: 'Extraer el archivo para editar',
+    },
     configCommit: {
       write: 'Escribir en el archivo',
       writeAndSync: 'Escribir y actualizar dibujos',
       writeAndSyncCount: 'Escribir y actualizar dibujos para {{count}} configuraciones',
       pending: 'Aún no se ha escrito en el documento',
-      swOffline:
-        'Inicia el servicio de SolidWorks para escribir los metadatos de configuración',
+      swOffline: 'Inicia el servicio de SolidWorks para escribir los metadatos de configuración',
       summary:
         'Configuraciones escritas: {{configurations}}; dibujos actualizados: {{updated}}, omitidos: {{skipped}}, fallidos: {{failed}}',
     },
@@ -339,10 +341,23 @@ export const es: TranslationDict = {
     dropFilesHere: 'Suelta archivos aquí para subir',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: '¿Eliminar los archivos borrados de la bóveda?',
+      message:
+        'Estos archivos locales ya no están en la bóveda del servidor, por lo que BluePLM normalmente los eliminaría de forma automática. Hay más de lo habitual, así que todavía no se ha eliminado nada. Al eliminarlos, las copias locales se envían a la Papelera de reciclaje. Cancele para conservarlos y revisarlos en el explorador de archivos.',
+      confirm: 'Eliminar archivos',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      'Algunos cambios de nombre no llegaron al servidor, que sigue registrando las rutas anteriores. Los archivos afectados aparecen como movidos; ejecute reconcile-moved-paths para actualizarlos.',
+    cloudRenameFailed: 'No se pudo cambiar el nombre en el servidor',
     checkIn: 'Registrar',
     checkOut: 'Extraer',
     download: 'Descargar',
+    getLatest: 'Obtener la última versión',
     upload: 'Subir',
     delete: 'Eliminar',
     rename: 'Renombrar',
@@ -357,6 +372,15 @@ export const es: TranslationDict = {
     rollback: 'Revertir',
     discard: 'Descartar cambios',
     forceRelease: 'Forzar liberación',
+  },
+
+  syncError: {
+    toast: 'Error de sincronización: {{reason}}',
+    toastWithMore: 'Error de sincronización: {{reason}} (+{{count}} más)',
+    failed: 'Error de sincronización',
+    unknown: 'Error desconocido',
+    pathCaseConflict:
+      'Otro archivo ya ocupa esta ruta en el servidor y solo se diferencia en mayúsculas y minúsculas. Actualiza la lista de archivos para verlo.',
   },
 
   status: {
@@ -424,6 +448,56 @@ export const es: TranslationDict = {
       'Este cambio reinicia el servicio de SOLIDWORKS. Elige la versión en la que abres tus archivos.',
     automatic: 'Automática',
     automaticDescription: 'Usar la versión que Windows registró como predeterminada',
+  },
+
+  reconcileMovedPaths: {
+    offline: 'No se pueden reconciliar las rutas movidas sin conexión',
+    notSignedIn: 'Inicie sesión primero',
+    noOrganization: 'Ninguna organización conectada',
+    noVault: 'Ningún almacén conectado',
+    nothingToReconcile: 'Ningún archivo está esperando que se actualice su ruta en el servidor',
+
+    reportHeading:
+      '{{count}} archivos se movieron o se renombraron en este equipo mientras el servidor seguía registrando sus rutas antiguas.',
+    reportEligible: 'En {{count}} se puede escribir la ruta del servidor ahora.',
+    reportBlocked: '{{count}} están desprotegidos por otras personas y no se escribirán:',
+    reportHolder: '{{count}} en manos de {{user}}',
+    unknownHolder: 'otro usuario',
+    reportConflict: '{{count}} omitidos — otro registro de archivo ya ocupa la nueva ruta:',
+    reportUnverified:
+      '{{count}} omitidos — el contenido del archivo ya no coincide con lo que el servidor registró para él, por lo que el movimiento no se puede verificar:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… y {{count}} más',
+
+    dryRunSummary:
+      'Solo comprobación previa: se pueden escribir {{eligible}} de {{total}} rutas del servidor. No se escribió nada.',
+    dryRunNote: 'Solo informe. No se escribe nada sin --apply.',
+
+    refused:
+      'No se escribió nada: {{count}} de estos archivos están desprotegidos por otras personas ({{holders}}). Pídales que los protejan y vuelva a ejecutarlo, o ejecútelo con --skip-checked-out para reconciliar el resto y dejar los suyos intactos.',
+    nothingEligible:
+      'No se puede escribir nada: {{blocked}} están desprotegidos por otras personas y {{skipped}} se omitieron.',
+    confirmUnavailable:
+      'No se escribió nada: este comando necesita un diálogo de confirmación y no había ninguno disponible.',
+
+    confirmTitle: '¿Actualizar {{count}} rutas del servidor?',
+    confirmMessage:
+      'Se actualizará la ruta del servidor de {{count}} archivos a la ubicación que ahora ocupan en el disco. Esto escribe un registro y anota un movimiento por cada uno, y todos los demás equipos de la organización recibirán las nuevas rutas en su próxima sincronización.',
+    confirmRemainder: '{{count}} más quedan sin cambios ({{detail}}).',
+    confirmText: 'Actualizar {{count}} rutas',
+    declined: 'Cancelado. No se escribió nada.',
+
+    progress: 'Actualizando {{count}} rutas del servidor…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Error desconocido',
+
+    summaryComplete: '{{count}} rutas del servidor reconciliadas.',
+    summaryPartial:
+      '{{succeeded}} de {{total}} rutas del servidor reconciliadas — {{leftovers}}. Vuelva a ejecutarlo para terminar.',
+    summaryFailed: '{{count}} con error',
+    summaryNotAttempted: '{{count}} sin intentar',
+    summaryBlocked: '{{count}} desprotegidos por otros',
+    summarySkipped: '{{count}} omitidos',
   },
 
   hiddenFolders: {

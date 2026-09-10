@@ -228,7 +228,7 @@ export function CustomersWorkspace() {
         {tab === 'overview' && (
           <OverviewTab
             data={analytics.data}
-            roster={roster.visible}
+            accounts={roster.accounts}
             loading={analytics.loading}
             rosterLoading={roster.loading}
             comparisonLabel={analytics.window.comparisonLabel}

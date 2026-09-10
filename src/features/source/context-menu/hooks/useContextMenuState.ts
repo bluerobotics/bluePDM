@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { DialogState, DialogName, ForceCheckinFilesState, OrgUser } from '../types'
 import type { LocalFile } from '@/stores/pdmStore'
+import type { ServerDeletionTarget } from '@/lib/commands'
 import type { ECO } from '@/stores/types'
 import { isWatchingFile, getActiveECOs as fetchActiveECOs, isMachineOnline } from '@/lib/supabase'
 import { getMachineId } from '@/lib/backup'
@@ -20,8 +21,8 @@ interface UseContextMenuStateResult {
   closeDialog: (name: DialogName) => void
 
   // Delete confirm state
-  deleteConfirmFiles: LocalFile[]
-  setDeleteConfirmFiles: (files: LocalFile[]) => void
+  deleteConfirmFiles: ServerDeletionTarget[]
+  setDeleteConfirmFiles: (targets: ServerDeletionTarget[]) => void
   deleteServerKeepLocal: boolean
   setDeleteServerKeepLocal: (value: boolean) => void
 
@@ -114,7 +115,7 @@ export function useContextMenuState({
   const [dialogs, setDialogs] = useState<DialogState>(initialDialogState)
 
   // Delete confirm state
-  const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<LocalFile[]>([])
+  const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<ServerDeletionTarget[]>([])
   const [deleteServerKeepLocal, setDeleteServerKeepLocal] = useState(false)
   const [deleteLocalCheckedOutFiles, setDeleteLocalCheckedOutFiles] = useState<LocalFile[]>([])
 

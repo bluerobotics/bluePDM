@@ -169,13 +169,15 @@ export const fr: TranslationDict = {
       expand: 'Développer',
       collapse: 'Réduire',
     },
+    configEdit: {
+      checkOutToEdit: 'Extraire le fichier pour modifier',
+    },
     configCommit: {
       write: 'Écrire dans le fichier',
       writeAndSync: 'Écrire et mettre à jour les mises en plan',
       writeAndSyncCount: 'Écrire et mettre à jour les mises en plan pour {{count}} configurations',
       pending: 'Pas encore écrit dans le document',
-      swOffline:
-        'Démarrez le service SolidWorks pour écrire les métadonnées de configuration',
+      swOffline: 'Démarrez le service SolidWorks pour écrire les métadonnées de configuration',
       summary:
         'Configurations écrites : {{configurations}} ; mises en plan mises à jour : {{updated}}, ignorées : {{skipped}}, échecs : {{failed}}',
     },
@@ -341,10 +343,23 @@ export const fr: TranslationDict = {
     dropFilesHere: 'Déposez les fichiers ici pour les télécharger',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: 'Supprimer les fichiers retirés du coffre ?',
+      message:
+        "Ces fichiers locaux ne sont plus dans le coffre sur le serveur ; BluePLM les supprimerait donc normalement de façon automatique. Ils sont plus nombreux que d'habitude, aucun n'a donc encore été supprimé. Les supprimer envoie les copies locales à la Corbeille. Annulez pour les conserver et les examiner dans l'explorateur de fichiers.",
+      confirm: 'Supprimer les fichiers',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      'Certains renommages ne sont pas parvenus au serveur, qui enregistre toujours les anciens chemins. Les fichiers concernés apparaissent comme déplacés ; exécutez reconcile-moved-paths pour les mettre à jour.',
+    cloudRenameFailed: 'Impossible de renommer sur le serveur',
     checkIn: 'Archiver',
     checkOut: 'Extraire',
     download: 'Télécharger',
+    getLatest: 'Obtenir la dernière version',
     upload: 'Envoyer',
     delete: 'Supprimer',
     rename: 'Renommer',
@@ -359,6 +374,15 @@ export const fr: TranslationDict = {
     rollback: 'Restaurer',
     discard: 'Annuler les modifications',
     forceRelease: 'Forcer la libération',
+  },
+
+  syncError: {
+    toast: 'Échec de la synchronisation : {{reason}}',
+    toastWithMore: 'Échec de la synchronisation : {{reason}} (+{{count}} autres)',
+    failed: 'Échec de la synchronisation',
+    unknown: 'Erreur inconnue',
+    pathCaseConflict:
+      "Un autre fichier occupe déjà ce chemin sur le serveur et n'en diffère que par la casse. Actualisez la liste des fichiers pour le faire apparaître.",
   },
 
   status: {
@@ -426,6 +450,56 @@ export const fr: TranslationDict = {
       'Ce changement redémarre le service SOLIDWORKS. Choisissez la version dans laquelle vous ouvrez vos fichiers.',
     automatic: 'Automatique',
     automaticDescription: 'Utiliser la version que Windows a enregistrée par défaut',
+  },
+
+  reconcileMovedPaths: {
+    offline: 'Impossible de réconcilier les chemins déplacés hors ligne',
+    notSignedIn: 'Veuillez d’abord vous connecter',
+    noOrganization: 'Aucune organisation connectée',
+    noVault: 'Aucun coffre connecté',
+    nothingToReconcile: 'Aucun fichier n’attend la mise à jour de son chemin serveur',
+
+    reportHeading:
+      '{{count}} fichiers ont été déplacés ou renommés sur cet ordinateur alors que le serveur continuait d’enregistrer leurs anciens chemins.',
+    reportEligible: 'Le chemin serveur de {{count}} d’entre eux peut être écrit maintenant.',
+    reportBlocked: '{{count}} sont extraits par d’autres personnes et ne seront pas écrits :',
+    reportHolder: '{{count}} détenus par {{user}}',
+    unknownHolder: 'un autre utilisateur',
+    reportConflict: '{{count}} ignorés — un autre enregistrement occupe déjà le nouveau chemin :',
+    reportUnverified:
+      '{{count}} ignorés — le contenu du fichier ne correspond plus à ce que le serveur a enregistré pour lui, le déplacement ne peut donc pas être vérifié :',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… et {{count}} de plus',
+
+    dryRunSummary:
+      'Contrôle préalable uniquement : {{eligible}} chemins serveur sur {{total}} peuvent être écrits. Rien n’a été écrit.',
+    dryRunNote: 'Rapport uniquement. Rien n’est écrit sans --apply.',
+
+    refused:
+      'Rien n’a été écrit : {{count}} de ces fichiers sont extraits par d’autres personnes ({{holders}}). Demandez-leur de les archiver puis relancez, ou relancez avec --skip-checked-out pour réconcilier les autres et laisser les leurs intacts.',
+    nothingEligible:
+      'Rien ne peut être écrit : {{blocked}} sont extraits par d’autres personnes et {{skipped}} ont été ignorés.',
+    confirmUnavailable:
+      'Rien n’a été écrit : cette commande nécessite une boîte de dialogue de confirmation et aucune n’était disponible.',
+
+    confirmTitle: 'Mettre à jour {{count}} chemins serveur ?',
+    confirmMessage:
+      'Le chemin serveur de {{count}} fichiers sera mis à jour vers leur emplacement actuel sur le disque. Cela écrit un enregistrement et journalise un déplacement pour chacun, et tous les autres ordinateurs de l’organisation récupéreront les nouveaux chemins à leur prochaine synchronisation.',
+    confirmRemainder: '{{count}} autres restent inchangés ({{detail}}).',
+    confirmText: 'Mettre à jour {{count}} chemins',
+    declined: 'Annulé. Rien n’a été écrit.',
+
+    progress: 'Mise à jour de {{count}} chemins serveur…',
+    failureItem: '{{path}} : {{error}}',
+    unknownError: 'Erreur inconnue',
+
+    summaryComplete: '{{count}} chemins serveur réconciliés.',
+    summaryPartial:
+      '{{succeeded}} chemins serveur sur {{total}} réconciliés — {{leftovers}}. Relancez la commande pour terminer.',
+    summaryFailed: '{{count}} en échec',
+    summaryNotAttempted: '{{count}} non tentés',
+    summaryBlocked: '{{count}} extraits par d’autres',
+    summarySkipped: '{{count}} ignorés',
   },
 
   hiddenFolders: {

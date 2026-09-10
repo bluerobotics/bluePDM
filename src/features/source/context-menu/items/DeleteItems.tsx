@@ -5,8 +5,10 @@ import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import {
   executeCommand,
+  getServerDeletionTargets,
   getSyncedFilesFromSelection,
   getOrphanedFilesFromSelection,
+  type ServerDeletionTarget,
 } from '@/lib/commands'
 import { checkOperationPermission, getPermissionRequirement } from '@/lib/permissions'
 import type { DialogName } from '../types'
@@ -84,7 +86,7 @@ interface DeleteItemsProps {
   onClose: () => void
   onRefresh: (silent?: boolean) => void
   openDialog: (name: DialogName) => void
-  setDeleteConfirmFiles: (files: LocalFile[]) => void
+  setDeleteConfirmFiles: (targets: ServerDeletionTarget[]) => void
   setDeleteServerKeepLocal: (value: boolean) => void
   setDeleteLocalCheckedOutFiles: (files: LocalFile[]) => void
   addIgnorePattern: (vaultId: string, pattern: string) => void
@@ -125,6 +127,8 @@ export function DeleteItems({
   firstFile,
 }: DeleteItemsProps) {
   const { hasPermission } = usePDMStore()
+  const serverFiles = usePDMStore((s) => s.serverFiles)
+  const vaultPath = usePDMStore((s) => s.vaultPath)
 
   // Permission checks
   const canDeleteLocal = checkOperationPermission('delete-local', hasPermission)
@@ -190,26 +194,9 @@ export function DeleteItems({
       addToast('error', canDeleteServer.reason || getPermissionRequirement('delete-server'))
       return
     }
-    // Get all synced files to delete from server (including files inside folders)
-    const allFilesToDelete: LocalFile[] = []
-
-    for (const item of contextFiles) {
-      if (item.isDirectory) {
-        const folderPath = item.relativePath.replace(/\\/g, '/')
-        const filesInFolder = files.filter((f) => {
-          if (f.isDirectory) return false
-          if (!f.pdmData?.id) return false
-          const filePath = f.relativePath.replace(/\\/g, '/')
-          return filePath.startsWith(folderPath + '/')
-        })
-        allFilesToDelete.push(...filesInFolder)
-      } else if (item.pdmData?.id) {
-        allFilesToDelete.push(item)
-      }
-    }
-
-    // Remove duplicates
-    const uniqueFiles = [...new Map(allFilesToDelete.map((f) => [f.path, f])).values()]
+    // Enumerated exactly as the command will, so the dialog counts the records that are
+    // actually about to be deleted rather than the subset with a local row.
+    const uniqueFiles = getServerDeletionTargets(files, serverFiles, contextFiles, vaultPath)
 
     // Check for local-only folders
     const hasLocalFoldersInContext = contextFiles.some(

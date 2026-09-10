@@ -1081,7 +1081,7 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                       }
                       onRefresh={onRefresh}
                       selectedFiles={selectedFiles}
-                      selectedDownloadableFiles={categories.downloadable}
+                      selectedCloudOnlyFiles={categories.cloudOnly}
                       selectedUploadableFiles={categories.uploadable}
                       selectedCheckoutableFiles={categories.checkoutable}
                       selectedCheckinableFiles={categories.checkinable}

@@ -34,7 +34,10 @@ import { moveFileOnServer } from '../../supabase/files/move'
 import { getExtension } from '../../utils/path'
 import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
 import { usePDMStore } from '@/stores/pdmStore'
+
+import { noteServerPathUpdateFailure, type ServerPathUpdateKind } from './serverPathUpdates'
 
 const THUMBNAIL_EXTRACTION_WAIT_MS = 2_000
 const DEFER_MS = 0
@@ -238,8 +241,9 @@ export const renameCommand: Command<RenameParams> = {
         const nestedFiles = getFilesInFolder(ctx.files, file.relativePath)
         for (const nested of nestedFiles) {
           expectedPaths.push(nested.relativePath) // Old nested path
-          // Compute new nested path by replacing the folder prefix
-          const nestedNewPath = nested.relativePath.replace(oldRelPath, newRelPath)
+          // Swap the folder prefix by length, not by matching it: the nested path is spelled
+          // in its own case, which a string replace would not find.
+          const nestedNewPath = newRelPath + nested.relativePath.substring(oldRelPath.length)
           expectedPaths.push(nestedNewPath) // New nested path
         }
         log.debug('[Rename]', 'Registered expected changes for folder rename', {
@@ -254,9 +258,34 @@ export const renameCommand: Command<RenameParams> = {
       if (file.diffStatus === 'cloud' && !file.isDirectory) {
         log.debug('[Rename]', 'Cloud-only file, skipping local rename', { fileName: file.name })
 
-        // Update database path directly
+        // Update database path directly.
+        //
+        // Checked rather than fired and forgotten: updateFilePath resolves with
+        // { success: false } instead of throwing, and a cloud-only file has no local copy,
+        // so load-time `moved` detection can never reconcile a write that did not land.
+        // Renaming in the store anyway would show a name the server does not have.
         if (file.pdmData?.id) {
-          await updateFilePath(file.pdmData.id, newRelPath)
+          const pathResult = await updateFilePath(file.pdmData.id, newRelPath)
+          if (!pathResult.success) {
+            const errorMsg = pathResult.error || 'Failed to rename on the server'
+            log.error('[Rename]', 'Cloud-only file path update failed', {
+              fileId: file.pdmData.id,
+              oldRelPath,
+              newRelPath,
+              error: errorMsg,
+            })
+            ctx.addToast(
+              'error',
+              `${t('fileOps.cloudRenameFailed', 'Could not rename on the server')}: ${errorMsg}`,
+            )
+            return {
+              success: false,
+              message: errorMsg,
+              total: 1,
+              succeeded: 0,
+              failed: 1,
+            }
+          }
           log.info('[Rename]', 'Updated cloud-only file path in database', {
             oldRelPath,
             newRelPath,
@@ -384,31 +413,43 @@ export const renameCommand: Command<RenameParams> = {
       // Server updates are slow for large folders (~2min for 164 files) and
       // must not block the rename UI.
       if (file.pdmData?.id) {
+        const recordId = file.pdmData.id
+        const vaultId = ctx.activeVaultId || undefined
+        const noteFailure = (kind: ServerPathUpdateKind, error: string) =>
+          noteServerPathUpdateFailure(
+            {
+              kind,
+              recordId,
+              vaultId,
+              oldPath: oldRelPath,
+              newPath: newRelPath,
+              error,
+              failedAt: Date.now(),
+            },
+            ctx.addToast,
+          )
+
         if (file.isDirectory) {
-          const folderId = file.pdmData.id
-          const vaultId = ctx.activeVaultId || undefined
           const prev = pendingFolderServerUpdates.get(newRelPath)
           const serverUpdate = (prev ?? Promise.resolve()).then(async () => {
             const folderResult = await updateFolderPath(oldRelPath, newRelPath, vaultId)
-            if (!folderResult.success || folderResult.updated < folderResult.total) {
-              const failCount = (folderResult.total || 0) - folderResult.updated
-              log.warn('[Rename]', 'Some server file paths failed to update', {
-                updated: folderResult.updated,
-                total: folderResult.total,
-                errors: folderResult.errors,
-              })
-              ctx.addToast(
-                'warning',
-                `${failCount} file(s) may not have updated on the server. Try refreshing.`,
+            // A partial count is not observable here: updateFolderPath reports total as
+            // whatever it updated, on both the RPC and the legacy path.
+            if (!folderResult.success) {
+              noteFailure(
+                'folder-contents',
+                folderResult.errors.join('; ') || folderResult.error || 'Unknown error',
               )
             }
             try {
-              await updateFolderServerPath(folderId, newRelPath)
-              log.info('[Rename]', 'Updated folder path on server', { oldRelPath, newRelPath })
+              const folderPathResult = await updateFolderServerPath(recordId, newRelPath)
+              if (folderPathResult.success) {
+                log.info('[Rename]', 'Updated folder path on server', { oldRelPath, newRelPath })
+              } else {
+                noteFailure('folder', folderPathResult.error || 'Unknown error')
+              }
             } catch (error) {
-              log.warn('[Rename]', 'Failed to update folder path on server', {
-                error: error instanceof Error ? error.message : String(error),
-              })
+              noteFailure('folder', error instanceof Error ? error.message : String(error))
             }
           })
           pendingFolderServerUpdates.set(newRelPath, serverUpdate)
@@ -418,11 +459,15 @@ export const renameCommand: Command<RenameParams> = {
             }
           })
         } else {
-          updateFilePath(file.pdmData.id, newRelPath).catch((error) => {
-            log.warn('[Rename]', 'Background file path update failed', {
-              error: error instanceof Error ? error.message : String(error),
+          // updateFilePath resolves with success: false for a refused write, so catching
+          // alone would miss every server-side rejection.
+          updateFilePath(recordId, newRelPath)
+            .then((result) => {
+              if (!result.success) noteFailure('file', result.error || 'Unknown error')
             })
-          })
+            .catch((error) =>
+              noteFailure('file', error instanceof Error ? error.message : String(error)),
+            )
         }
       }
 
@@ -563,8 +608,9 @@ export const moveCommand: Command<MoveParams> = {
         const nestedFiles = getFilesInFolder(ctx.files, file.relativePath)
         for (const nested of nestedFiles) {
           expectedPaths.push(nested.relativePath) // Old nested path
-          // Compute new nested path by replacing the folder prefix
-          const nestedNewPath = nested.relativePath.replace(file.relativePath, newRelPath)
+          // Swap the folder prefix by length, not by matching it: the nested path is spelled
+          // in its own case, which a string replace would not find.
+          const nestedNewPath = newRelPath + nested.relativePath.substring(file.relativePath.length)
           expectedPaths.push(nestedNewPath) // New nested path
         }
         // Count only actual files (not directories) for progress
@@ -748,15 +794,14 @@ export const moveCommand: Command<MoveParams> = {
             // Update database paths for cloud-only files BEFORE local folder move
             for (const cloudFile of cloudOnlyFiles) {
               if (cloudFile.pdmData?.id) {
-                // Compute new path by replacing the moved folder's path prefix
-                const cloudFileNewRelPath = cloudFile.relativePath.replace(
-                  file.relativePath,
-                  newRelPath,
-                )
+                // Swap the moved folder's prefix by length, not by matching it: the cloud
+                // file's path is spelled in its own case.
+                const cloudFileNewRelPath =
+                  newRelPath + cloudFile.relativePath.substring(file.relativePath.length)
                 await updateFilePath(cloudFile.pdmData.id, cloudFileNewRelPath)
 
                 // Update store for this cloud-only file
-                const cloudFileNewPath = cloudFile.path.replace(file.path, newPath)
+                const cloudFileNewPath = newPath + cloudFile.path.substring(file.path.length)
                 ctx.renameFileInStore(cloudFile.path, cloudFileNewPath, cloudFileNewRelPath, true)
 
                 log.debug('[Move]', 'Updated cloud-only file in folder', {
@@ -1184,7 +1229,11 @@ export const copyCommand: Command<CopyParams> = {
           if (srcLower === destLower || destLower.startsWith(srcLower + '/')) {
             continue
           }
-          const nestedDestPath = nested.relativePath.replace(file.relativePath, destRelativePath)
+          // Swap the copied folder's prefix by length, not by matching it: a string replace
+          // misses a nested path spelled in a different case and would leave the destination
+          // equal to the source, which then merges an "added" row onto the source file.
+          const nestedDestPath =
+            destRelativePath + nested.relativePath.substring(file.relativePath.length)
           expectedPaths.push(nestedDestPath)
           nestedWithDest.push({ source: nested, destRelativePath: nestedDestPath })
           if (!nested.isDirectory) nestedFileCount++

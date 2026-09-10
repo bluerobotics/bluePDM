@@ -4,11 +4,58 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [4.3.0] - 2026-09-09
+
+**This release requires a database update to schema release 99.** See **Schema** at the end of
+this entry. Apply the schema _before_ installing 4.3.0 — a 4.3.0 client against an older database
+cannot discard a checkout at all.
+
+### Added
+
+- **Get Latest is now an action of its own, next to Download.** Both context menus gained a **Get Latest** item alongside **Download**, and the two now mean different things everywhere they appear: Download fetches files that exist only in the cloud, Get Latest replaces files you already have with a newer server version. Each has its own count, its own hover state and its own spinner, so a folder holding both kinds of file no longer leaves you guessing which button is going to act on what.
+- **The Customers Overview scatter plots companies, the same accounts the customer table lists.** 3.23.0 rolled a company and its contacts into a single customer wherever the module counts money, but the recency, frequency and value chart was the one place still drawing a bubble per Odoo partner — so an account's orders stayed split across its employees, and a contact's name sat next to their employer's money on the same screen as a table that had already added the two together. Each bubble is now an account: the tooltip names the company, the contact behind it and how many contacts sit underneath, and clicking a bubble opens the account's lead row rather than whichever contact happened to be plotted. **The chart is also something you can steer.** Its legend became buttons that filter the whole workspace by lifecycle segment — dimming what you filtered out, and still listing every buyer segment, because a legend that collapsed to the one segment you had selected would leave nothing to switch back to. Bubble area reads as either a typical order, spend divided by orders, or everything spent inside the selected range, with a key showing what a given circle is worth; and the size scale stops at the 98th percentile, so one outsized account no longer takes the whole range and leaves everybody else at indistinguishable minimum size. Dashed reference lines mark the at-risk and churned thresholds, so the bands the colours stand for can be read without hovering anything.
+
+- **A new `reconcile-moved-paths` command tells the server where files actually are.** Moving or renaming files updates the server in the background, and where that update did not land the file has been sitting at a path the server does not know about — reported as _moved_ on your machine and at its old path for everyone else. One vault had 455 files in that state. The command finds them and writes their real paths to the server. **It reports by default and changes nothing until you ask it to**: run it to see the list, run it with `apply` to commit. It refuses any file another user has checked out, tells you which ones and why, and can be run again after the holders check in — it picks up where it left off rather than starting over.
+
+### Changed
+
+- **Removing a large batch of files the vault no longer has now asks first.** Files deleted from the vault by someone else are removed from your disk automatically, which is right for the one or two files that is normally about. It is not right for a hundred: that means a folder was deleted on the server, or that the app has classified a whole group of files wrongly, and the files are multi-megabyte CAD documents that may hold work never checked in. Batches above ten are now put to you with the list before anything is deleted, once per vault per session, and declining leaves everything where it is. Smaller batches behave exactly as before, and orphans holding unsaved edits of yours are never removed automatically at all. If you have auto-discard turned off, none of this applies — nothing was being deleted in the first place.
+- **The cloud-download button and the update button do one thing each.** Selecting a folder that contained both cloud-only files and outdated files and pressing either button fired _both_ operations from the single click — two queued jobs, two progress toasts, and a download spinner that flickered while the update ran. Each button now dispatches only its own category, and a queued Get Latest is tracked as a sync rather than as a download, so the spinner appears on the control you actually pressed.
+- **Deleting a folder from the server now removes every record in it, which is more than it used to remove.** The delete only reached server records that happened to have a matching file on your own disk, so anything another machine had uploaded, or anything you had since deleted locally, was skipped and left orphaned on the server — in one reported case a folder delete removed 5 records out of 53. It now removes the folder's contents in full. Administrators should read this as the delete becoming more thorough: the same action on the same folder can now delete records it previously left behind. The confirmation dialog counts the same set the delete will act on, so the number you approve is the number that goes. And a record the server refuses to delete because another user has it checked out is now reported to you as an error — that refusal used to be discarded silently, leaving you to believe the delete had succeeded.
+- **Asking the API for a folder's files now returns that folder's files and nothing else.** `GET /files?folder=Parts` matched every path that merely began with those letters, so it answered with the contents of `PartsOld` and `Parts-Archive` too, and a folder name containing `_` or `%` was read as a pattern rather than as a name, so `folder=Part_Files` also returned everything under `PartXFiles`. The filter now stops at a folder boundary and treats those characters as the ordinary characters they are. **Integrators should read this as a change in what the endpoint returns rather than only as a correction**: a caller that has been relying on the loose match to sweep up a folder and its similarly named neighbours in a single request will now get fewer files back, and needs one request per folder. The app's own folder listing matched the same way and changed with it.
+
+### Fixed
+
+- **Discarding a checkout now puts the file back where it was, under the name it had.** Renaming or moving a file while it is checked out pushes the new path to the server immediately — that is deliberate, and it is what made discard unable to undo it: by the time you discarded, both your disk and the server agreed on the new name, so discard downloaded the server's content to the renamed path, released the lock, and the rename survived an operation whose entire purpose is to throw local changes away. Checking a file out now records where the file lived at the instant the lock was taken, and discard restores that name and folder — creating the original parent directory if the file was moved out of it — before it downloads the server copy, then undoes the rename on the server too. An older lock taken before this release has no such record and discards exactly as it did before. If something already occupies the path a file needs to be restored to, that one file fails with an explicit error and the rest of the batch proceeds; nothing is overwritten.
+- **Undoing a checkout always releases the lock, even where the server cannot give the file its old name back.** If another file's record has come to hold the name being restored, the server has no room for it — a standoff no amount of retrying resolves, because it lasts until somebody moves the other file. Releasing the lock is the part that matters: a lock that cannot be released is a file nobody can work on, including you. The lock now always comes off and it is only the old name and folder that are left as they are, in the app and through the API alike. **Releasing a checkout through the API had two further faults of its own**: it left the machine that had held the lock recorded against the file, and it did not mark the file as changed, so colleagues whose vault had already caught up went on being told the file was checked out to you until their cache expired days later.
+- **A configuration's description and numbers can be edited on a file you have never checked in.** The configuration rows demanded a checkout, which a local file that has never been checked in cannot have, so those inputs sat disabled on exactly the files most likely to need them — with no explanation of why. Editing a configuration now follows the same rule as every other editing surface in the app: it is available on a file you have checked out and on a file that is still local-only. Where a row genuinely is not editable, the inputs say **Check out file to edit** instead of being silently dead.
+- **Restoring a file from trash no longer leaves it missing for other people.** Restore cleared the deletion mark without touching the file's modification time, so a client that had already synced past the original deletion never saw the restore come back: the file stayed absent from that machine until its cache expired, up to seven days later. Restore now bumps the modification time so the change propagates, and the app additionally compares its cached file count against the server's true count on load and rebuilds the cache once if the two disagree — so a vault that has already drifted repairs itself rather than waiting out the cache.
+- **Restoring a large number of files at once no longer crashes the window.** Each restored file was committed to the file list separately, and each commit rebuilt the folder tree and re-rendered the whole pane — work that grows with the size of the vault, repeated once per file. Restoring a few hundred files was enough to exhaust the renderer's memory and take the window down. A batch restore is now a single commit.
+- **Two spellings of one folder are no longer two folders.** The server allowed `RADCAM` and `Radcam` to exist side by side as separate folder records, while every part of the app that reads them treats a folder path as case-insensitive — which on Windows, this product's only target, is the only correct reading. One production vault had accumulated twenty such pairs and reported 2,015 folders on a load that then resolved to 1,995. The database now enforces one active record per folder regardless of case, and applying this release's schema clears the existing duplicates once, keeping the spelling your files already use and preserving every removed record in full (see **Schema**).
+- **Deleting a folder no longer reaches folders that merely resemble it, and no longer misses the folder it was aimed at.** The three operations that walk a folder's contents — deleting a folder locally, deleting it from the server, and renaming or moving it — matched paths case-sensitively, so a folder whose spelling on your disk differed from the server's matched nothing at all and the delete silently did nothing. Worse, they fed the folder name straight into a pattern match without escaping it, and `_` is a wildcard there as well as an ordinary character in a Windows folder name: deleting `Part_Files` also reached the contents of `PartXFiles`. All three now match case-insensitively against an escaped path, and a folder rename rewrites its children's paths by position rather than by searching for the old name inside them — which previously could rewrite the wrong segment of a path that repeated a folder name.
+- **A folder spelled one way and its contents spelled another are now one folder to every operation, not just to the delete.** `RADCAM` and `Radcam` are the same folder on Windows, but every operation that walks a folder's contents compared paths letter for letter, so a folder whose stored spelling differed from its files' could look empty to any of them — and an operation with nothing to act on finishes quietly and reports no error, which is why this went unnoticed. Copying, moving and renaming a folder, getting the latest version of one, discarding the checkouts inside it, clearing out the records whose files are gone, and the check that stops you acting on a folder somebody else has files checked out in were all affected. **Merging one folder into another is the one worth knowing about**: the files already sitting in the destination were not found, so every incoming file was taken to clash with nothing and merged in unasked, where the entire purpose of that step is to stop and ask what should happen to a file that is already there. All of them now share one rule for what counts as being inside a folder — capitalisation ignored, stopping at a folder boundary so `Fixed Lens` never reaches `Fixed Lens Models`, and treating `_` and `%` as the ordinary characters they are in a folder name rather than as wildcards. That last part is the escaping the folder delete needed, now applied everywhere a folder name is handed to the server.
+- **A file's first check-in no longer fails for good because the server already holds that path in a different capitalisation.** The check for a record at that path compared it letter for letter, while the server's rule against two files sharing a path ignores capitalisation — so a file whose path was already held as, say, `Parts/BRACKET.SLDPRT` looked new, was refused the moment it was written, and failed identically on every retry, because retrying changes neither the path nor the record. The check-in now finds the record that is really there and updates it, which is what it would have done had it recognised it in the first place.
+- **A sync that fails now says what went wrong.** A failed first check-in reported _Synced 0/1 files_ and nothing else, reported exactly that again on every retry, and left the reason in the session log where nobody would think to look for it — sync was the last operation whose failure message dropped the error on the floor. It now gives the reason the way every other operation does, naming the first failure and how many others there were. And where a failure does come back saying the path is already taken by a file that differs from yours only in capitalisation, that is now put in those words along with the remedy — refresh the file list, which is what brings the other file into view — rather than arriving as a database complaint about a duplicate key. Retrying, which is the natural thing to try, could never have cleared it, and nothing on screen used to say so.
+- **Copying a folder into the vault no longer makes the copied files disappear.** The main process keeps a cached listing of the vault, and a copy writes files behind the file watcher's back, so the cache never learned they existed — every background refresh then removed them from the view again. The folder flickered between showing everything, one item and nothing: one user pressed Refresh ten times in 49 seconds watching a folder alternate between 0, 1 and 20 items, and only **Full Refresh** or restarting the app actually fixed it. Copies and moves now drop that cached listing, including when they fail partway through, and a folder refresh that turns up files the app was not holding drops it too — so a vault that has already gone stale repairs itself rather than needing Full Refresh.
+- **A file written over a path that used to hold something else is no longer described by the file that used to be there.** The app kept the entry it already had and discarded the newly written one, so files that were on disk went on being shown as server-only. Sixty-six of one paste's seventy-two files rendered that way. The new write is now the authority on everything the filesystem knows — size, timestamp, hash, which version is on disk and the resulting status badge — while the file's history and any edits of yours that had not been saved yet are carried over from the entry being replaced.
+- **SOLIDWORKS' own temporary files no longer appear as files you never made.** SOLIDWORKS writes a `~$`-prefixed lock file next to every document it has open and deletes it on close. The file watcher knew to ignore them; the scan that builds the file list did not, so they arrived in the browser as local-only files that appeared and vanished as documents were opened and closed. The scan and the watcher now share one rule for what is not a vault file, so the two can no longer disagree.
+- **A file deleted from the vault while it sits on your disk is still recognised as deleted tomorrow.** The app knew a local file had once been synced only for as long as the server still listed its path — the moment the server record went away, so did the evidence, and the file was recognised as deleted from the vault on exactly one load. Miss that load, by having the app closed when a colleague deleted the folder, and the same file was thereafter read as one you had just created: it turned up as a local-only file, indefinitely, in a folder you may never have touched. This is the cause of the mysterious local-only files reported across several machines. The record now outlives the server row — for as long as the file is on disk, and for at most thirty days — so the answer no longer depends on being running at the right moment. **Files already in that state stay as they are.** The evidence for them was destroyed before this release existed and cannot be reconstructed; they remain listed as local files for you to check in or delete as you see fit, and they are not deleted for you.
+- **A rename the server refused to record no longer passes silently.** Renaming or moving files updates the server in the background, and where that update was rejected — most often because another user holds the file checked out — the refusal was discarded without a word: your disk moved on, the server kept the old path, and the only sign was the file quietly reporting itself as _moved_ from then on. Failures are now collected and reported in a single message rather than one per file, and they are written down, so closing the app does not lose the list. The new `reconcile-moved-paths` command clears them once the holders have checked in. **Renaming a file you have not downloaded** — one that exists only in the cloud — could fail the same way and still show you the new name, which the server did not have; that now reports the error and leaves the name alone.
+- **Moving files no longer makes the app forget it had ever seen them.** Each load rebuilt its record of local files from the server's list, which meant a file you had just moved — and whose move the server did not know about yet — had its entry deleted and recreated on every single refresh. The entry is what identifies a file across a rename, so the churn worked against the very detection that would have resolved the move.
+- **Deleting a folder now clears all of its contents from the view, not just the entries at the top level.** Files further down the tree were left behind as rows describing files that were no longer on disk, which a later copy into the same folder then collided with.
+
+### Schema
+
+- Bumped to schema version **99** (`EXPECTED_SCHEMA_VERSION`). Apply the latest `supabase/core.sql` together with `modules/10-source-files.sql`. This delivers releases 98 and 99 in one pass: 98 is the checkout path snapshot behind rename-aware discard, 99 is the cache row-count reconciliation and the folders case-collision fix.
+- **Apply the schema before installing 4.3.0.** A 4.3.0 client against schema 97 fails every discard, because it writes columns the older database does not have. The reverse order is safe: a 4.2.2 client against schema 99 shows one dismissible "App update available" notice and otherwise works normally.
+- Applying `modules/10-source-files.sql` runs a one-time remediation that clears existing case-colliding folder records before the new unique index is built. It prints a `WARNING: REMEDIATION case_colliding_folders acted on N row(s)` naming every row it touched — that is the receipt, not an error, and a database with no collisions prints nothing. Nothing is hard-deleted: every removed record is copied verbatim into `schema_remediation_log` alongside the record that survived in its place, and a second run does nothing.
+- This release expects **API 2.8.1**: redeploy the API _after_ the schema. API 2.8.1 requires schema 98 or later. Leaving the API on 2.7.0 for a while costs no functionality — the desktop app does not route checkout, check-in or discard through it — but if your organization has an API URL configured, clients will show an API version notice until 2.8.1 is deployed.
+
 ## [4.2.2] - 2026-08-24
 
 ### Fixed
 
-- **A new user could finish signing in belonging to no organization, and nothing anywhere said so.** They saw the org name, the vault, their files; the administrator saw them in the online-presence indicator in the top right. They were simply absent from Settings → Members & Teams, so there was no way to give them a role, a team or module access — and no way to work out why. The account had signed up, matched the organization by email domain, and then failed to join it: v95 of the schema pinned `users.org_id` so that an account cannot move itself between organizations, which is right, but the app still set that column with a direct `PATCH` whenever the email domain matched. The database refused the write, **the refusal was logged as a warning and otherwise ignored**, and the organization was handed back regardless. What made it invisible is that the session row written moments later *is* something an account may write for itself — the policy on that table only checks that the row is yours, not that the organization named in it is — so presence, which reads sessions, showed them as members while every query that reads real membership correctly did not. The administrator could not repair it either: the admin update policy is gated on `org_id IN (...)`, and `NULL IN (...)` is `NULL`, so the row was unreachable from the app entirely. Because the domain match returned as soon as it had an organization, such a user also never reached the org-code path at all, which is the one that would have joined them properly and put them in the default team — so this equally affected anyone who had been sent an organization code and dutifully used it. **The app no longer writes `users.org_id`, `users.role` or an invitation's `claimed_at` from the client at all.** Every route into an organization now goes through the two database functions permitted to make that decision, which also enforce blocked users, the email-domain restriction, and default team membership — none of which the direct write ever did. `ensure_user_org_id()` resolves a pending invitation first and an email-domain match second for any account still carrying no organization, so an account already stranded is repaired the next time it signs in. And the app reads the column back before reporting an organization: a link that does not persist now fails visibly at sign-in instead of producing a session that looks entirely healthy from the inside. Requires schema v97.
+- **A new user could finish signing in belonging to no organization, and nothing anywhere said so.** They saw the org name, the vault, their files; the administrator saw them in the online-presence indicator in the top right. They were simply absent from Settings → Members & Teams, so there was no way to give them a role, a team or module access — and no way to work out why. The account had signed up, matched the organization by email domain, and then failed to join it: v95 of the schema pinned `users.org_id` so that an account cannot move itself between organizations, which is right, but the app still set that column with a direct `PATCH` whenever the email domain matched. The database refused the write, **the refusal was logged as a warning and otherwise ignored**, and the organization was handed back regardless. What made it invisible is that the session row written moments later _is_ something an account may write for itself — the policy on that table only checks that the row is yours, not that the organization named in it is — so presence, which reads sessions, showed them as members while every query that reads real membership correctly did not. The administrator could not repair it either: the admin update policy is gated on `org_id IN (...)`, and `NULL IN (...)` is `NULL`, so the row was unreachable from the app entirely. Because the domain match returned as soon as it had an organization, such a user also never reached the org-code path at all, which is the one that would have joined them properly and put them in the default team — so this equally affected anyone who had been sent an organization code and dutifully used it. **The app no longer writes `users.org_id`, `users.role` or an invitation's `claimed_at` from the client at all.** Every route into an organization now goes through the two database functions permitted to make that decision, which also enforce blocked users, the email-domain restriction, and default team membership — none of which the direct write ever did. `ensure_user_org_id()` resolves a pending invitation first and an email-domain match second for any account still carrying no organization, so an account already stranded is repaired the next time it signs in. And the app reads the column back before reporting an organization: a link that does not persist now fails visibly at sign-in instead of producing a session that looks entirely healthy from the inside. Requires schema v97.
 - **The window turning solid blue is a renderer crash, and BluePLM now recovers from it instead of sitting there.** That navy blue is the window's own background colour, which is all that is left when the process drawing the interface dies — the app is still running, still holding its file watchers and its SolidWorks connection, with nothing on top to draw with. The crash handler discarded everything Electron reports about it and wrote a single line, `Renderer process crashed!`, so a session log covering the failure could not say whether the process had run out of memory, been killed by the system, or hit an internal error. It now records the reason, the exit code, how long the session had been running, and the renderer's memory at the last sample, reports the crash for tracking, and **reloads the window** — twice per crash-free stretch, after which it stops rather than reloading in a loop, and with the reload budget returned once a renderer has run five minutes without dying. The reloaded window says what happened rather than reappearing at its start state with no explanation. A renderer that is wedged but alive is logged separately from one that has died, because from the outside the two look identical and only one of them can be reloaded.
 - **Renderer memory is now measured where the numbers are real.** Every performance warning carried a heap reading taken from `performance.memory`, which is deliberately quantised and reported the same 23 MB for an entire session — including the minutes leading into a crash. A renderer that died of memory exhaustion and one that died idle produced identical telemetry. The main process now samples the renderer's actual working set every 30 seconds into the same log, so a crash has a memory curve in front of it, and the misleading heap fields are gone.
 - **Refreshing a folder no longer invents files.** Refresh reconciles the store against the disk; it should never grow it. But it treated every server record with no local file at that path as a file waiting to be downloaded, which is exactly what a moved file looks like from the old path — and unlike a full load, refresh did not know the move had already been resolved somewhere else. One vault with 466 unreconciled moves gained **810 phantom rows and 58 phantom folders on every press of Refresh**, resurrecting a folder tree that had been renamed away, and every subsequent load then merged the larger store. Refresh now reads the resolutions the full load already recorded and suppresses the ghost at the old path, keeps the moved-file marking instead of quietly reclassifying a move as synced, and logs a warning if the store ever grows during a refresh at all.
@@ -39,7 +86,7 @@ All notable changes to BluePLM will be documented in this file.
 
 ### Added
 
-- **A configuration's drawings and eBOM are now sections you open on the configuration itself.** Expanding an assembly configuration gives two labelled groups — **Drawings** and **eBOM** — each with its count, its own expand state and an explicit *no drawings reference this configuration* / *no components in this configuration* row, so an empty group is distinguishable from one that has not loaded. A part configuration keeps its drawings inline, because there is no eBOM to separate them from. **Which drawings belong to a configuration is now confirmed against the document rather than taken from the reference table alone.** A reference row that records no configuration used to be invisible under every configuration; such a row is now shown as unconfirmed and a live Document Manager read decides whether it belongs, with a successful read also repairing the drawing's stored reference set. A read that fails is treated as *not known* — existing rows stay visible and unconfirmed rather than disappearing — and drawings sitting beside the model that were never synced are considered too.
+- **A configuration's drawings and eBOM are now sections you open on the configuration itself.** Expanding an assembly configuration gives two labelled groups — **Drawings** and **eBOM** — each with its count, its own expand state and an explicit _no drawings reference this configuration_ / _no components in this configuration_ row, so an empty group is distinguishable from one that has not loaded. A part configuration keeps its drawings inline, because there is no eBOM to separate them from. **Which drawings belong to a configuration is now confirmed against the document rather than taken from the reference table alone.** A reference row that records no configuration used to be invisible under every configuration; such a row is now shown as unconfirmed and a live Document Manager read decides whether it belongs, with a successful read also repairing the drawing's stored reference set. A read that fails is treated as _not known_ — existing rows stay visible and unconfirmed rather than disappearing — and drawings sitting beside the model that were never synced are considered too.
 - **A configuration's pending edits can be written into the model, and the drawings that reference it updated in the same action.** Configuration tab numbers and descriptions edited in the browser were held as pending values with no way to commit them from the row; there is now **Write to file**, and **Write and update drawings** where drawings reference the configuration. The write is the verified metadata write used elsewhere — each address is read back — and the drawing sync only runs if every selected configuration was written, because pushing a projection of values the model does not have would be worse than not running. The action requires the SolidWorks service and says so when it is not running, and it reports what happened as counts of configurations written, drawings updated, skipped and failed.
 - **Drawings that are not yours are named before anything is written, not refused afterwards.** Updating a drawing means writing to it, so the drawings referencing a configuration are sorted before the run into the ones you already hold, the ones available to check out, the ones **another user is holding** and the ones **not in this vault**. Checking out and updating covers the first two; **Write model only** is offered for the rest and states plainly that it leaves those drawings unchanged.
 - **Renderer freeze diagnostics now identify the blocking work.** Long animation frames, stalled timer drift, slow Zustand mutations, persistence writes, React commits, and the delete-server tail are threshold-gated and include operation, store-size, heap, and phase context. Stable renderer builds preserve function names for Long Animation Frame attribution.
@@ -62,12 +109,12 @@ All notable changes to BluePLM will be documented in this file.
 
 - **Schema installs now record a verified release automatically — schema 96.** Every schema file asks try_stamp_schema() after it creates its objects, but only verify_and_stamp_schema() can write schema_version, and it writes only after the whole release manifest and security checks pass. The last file in a normal install therefore records the version without a separate verification step; a partial install remains visibly unstamped, and modules guard the call so they can still be applied over an older core.
 
-- **Vault Audit now says what to do about each mismatch, not just what is wrong with it.** Every disagreement between BluePLM and a SOLIDWORKS document resolves as one of two writes — the file's value into BluePLM, or BluePLM's value into the file — and the page named neither. It sorted values into buckets describing the *evidence* ("The file still has it", "Not BluePLM's to hold") and left the reader to work out which way the fix ran, or whether one existed. Each finding now carries a **To resolve** column naming the write in words, with an arrow drawn between the BluePLM and File columns showing its direction, and the category cards are titled by the action rather than the state. Three of the categories admit no write at all and now say so: a value lost from both sides has nothing to copy in either direction, a value the file holds that BluePLM never owned should be left alone, and a conflict over a **drawing's** part number or description belongs on the parent model, because the drawing's copy is a projection and overwriting either copy leaves the model untouched. In the same table a conflict over a **drawing's revision** no longer asks you to choose: the drawing states its own revision, so the ownership rules already answer it.
-- **The Vault Audit's findings table now has the buttons, and the separate repair section underneath it is gone.** The page shipped as a read-only list of everything wrong with the vault, plus a repair panel below it with tick boxes — over a *subset* of the same values, with nothing on screen explaining how the two lists related. Choosing what is wrong and fixing it are one task, so they are now one section: pick a category, tick rows in the table, press the button that performs that category's direction. **Neither write is new.** Copying a file's value into BluePLM is the same `repair_config_maps` merge as before, still `computed || existing` inside a `SECURITY DEFINER` function, still able to add a configuration entry and nothing else. Copying BluePLM's values into a document is the existing **Sync Metadata** command — the one the file browser's context menu runs — which rebuilds every BluePLM-owned property at file scope and in every configuration and verifies each write by reading it back. The audit works out which files need it and hands them over; it does not open a document itself. **Two things follow from that and are stated above the button rather than discovered after it.** The document write is per *file*, not per value, so ticking one description selects the whole document — a category that writes files counts its selection in files. And Sync Metadata will only touch a file that is checked out by you or not yet in BluePLM, which on a vault-wide audit is usually a small fraction of what you ticked; the eligible count is shown before you press anything, because a run that quietly processed an eighth of the selection and reported success would leave the vault looking finished. Rows with no writer keep their place in the table and say which of the three reasons applies, so the count on the category card and the count in the table still agree.
+- **Vault Audit now says what to do about each mismatch, not just what is wrong with it.** Every disagreement between BluePLM and a SOLIDWORKS document resolves as one of two writes — the file's value into BluePLM, or BluePLM's value into the file — and the page named neither. It sorted values into buckets describing the _evidence_ ("The file still has it", "Not BluePLM's to hold") and left the reader to work out which way the fix ran, or whether one existed. Each finding now carries a **To resolve** column naming the write in words, with an arrow drawn between the BluePLM and File columns showing its direction, and the category cards are titled by the action rather than the state. Three of the categories admit no write at all and now say so: a value lost from both sides has nothing to copy in either direction, a value the file holds that BluePLM never owned should be left alone, and a conflict over a **drawing's** part number or description belongs on the parent model, because the drawing's copy is a projection and overwriting either copy leaves the model untouched. In the same table a conflict over a **drawing's revision** no longer asks you to choose: the drawing states its own revision, so the ownership rules already answer it.
+- **The Vault Audit's findings table now has the buttons, and the separate repair section underneath it is gone.** The page shipped as a read-only list of everything wrong with the vault, plus a repair panel below it with tick boxes — over a _subset_ of the same values, with nothing on screen explaining how the two lists related. Choosing what is wrong and fixing it are one task, so they are now one section: pick a category, tick rows in the table, press the button that performs that category's direction. **Neither write is new.** Copying a file's value into BluePLM is the same `repair_config_maps` merge as before, still `computed || existing` inside a `SECURITY DEFINER` function, still able to add a configuration entry and nothing else. Copying BluePLM's values into a document is the existing **Sync Metadata** command — the one the file browser's context menu runs — which rebuilds every BluePLM-owned property at file scope and in every configuration and verifies each write by reading it back. The audit works out which files need it and hands them over; it does not open a document itself. **Two things follow from that and are stated above the button rather than discovered after it.** The document write is per _file_, not per value, so ticking one description selects the whole document — a category that writes files counts its selection in files. And Sync Metadata will only touch a file that is checked out by you or not yet in BluePLM, which on a vault-wide audit is usually a small fraction of what you ticked; the eligible count is shown before you press anything, because a run that quietly processed an eighth of the selection and reported success would leave the vault looking finished. Rows with no writer keep their place in the table and say which of the three reasons applies, so the count on the category card and the count in the table still agree.
 - **The Vault Audit will not offer to write a document somebody else has checked out, and it says who has it.** Sync Metadata already refused those files, so nothing unsafe was reachable — but the refusal arrived as a number after the click, and the count lumped together two situations that need opposite responses. A file that is merely **checked in** is one you can have: check it out and the write becomes available. A file **another user is holding** is not yours to take, and writing underneath them would be overwritten by their check-in anyway. Those rows now have no tick box at all, with the colleague's name on the row where BluePLM knows it, and the two counts are reported separately above the button. The database side is deliberately not blocked the same way: restoring a configuration entry is an additive merge into the record that cannot overwrite anything and never opens the document, so a colleague's checkout is no reason to withhold it — and withholding it would stall the recovery on every file anyone happened to have out.
-- **The Vault Audit no longer expects a part or an assembly to carry a revision, and the audit's writes no longer put one there.** BluePLM's ownership table makes revision the record's for anything that is not a drawing, so on a vault where the *drawing* drives the revision — the model states nothing, deliberately — every model in the database reported as a document standing behind its record. That was the largest category on the page and every row of it was noise. Models are now assumed not to carry a revision, with a checkbox to say otherwise for a shop that revises models, and the number of comparisons the rule excluded is printed next to it so the filter is never silent. Drawings are untouched under either setting; a drawing has always owned its own revision and still does. **The second half matters more than the first.** Sync Metadata writes what BluePLM holds into the whole document, so a model ticked in the audit to fix its *description* would also have had `Revision` stamped into its property bag and into every one of its configurations — a property the page had just finished saying this vault does not put on models, written by a button on that page. The audit now runs the sync with the revision withheld whenever the rule is on. Nothing outside the audit changes: the context menus, the service tab and the datacard write exactly what they wrote before, and the option is off unless a caller asks for it. Changing the setting re-reads the scan you already have rather than running another one.
-- **Vault Audit conflicts were unreadable, which made the one category that needs a human decision impossible to make one about.** Both value columns truncated from the start of the string, so two descriptions sharing their first thirty characters rendered as two identical cells above a prompt asking which one was right. The columns are now built around the *difference* rather than around the start: the shared ends are trimmed to a little context, the differing span is highlighted, and a value whose only difference is at character 180 shows character 180. Differences that are **only capitalisation or only spacing** are now labelled as such — the scanner counts those as real divergence on purpose, because `BR-100` and `br-100` are not the same part number, but a vault-wide scan turns that correctness into dozens of rows nobody can tell apart, and naming them lets them be cleared as a group instead of opened one at a time.
-- **Vault Audit reports values BluePLM holds that the file does not, which it used to count as agreement.** The scan was built to measure what the database had lost, so a document missing a description the record carries was classified `intact` and shown nowhere — the number was only reachable as a `file-empty` column in the per-field table. It is now its own category, *Copy BluePLM's value into the file*, with the direction stated. This is the commonest finding in a vault whose metadata was only ever entered in BluePLM, and it is not damage: the record is right and the documents are behind it. The divergence artifact's schema version is 4; a version 3 report cannot express the distinction.
+- **The Vault Audit no longer expects a part or an assembly to carry a revision, and the audit's writes no longer put one there.** BluePLM's ownership table makes revision the record's for anything that is not a drawing, so on a vault where the _drawing_ drives the revision — the model states nothing, deliberately — every model in the database reported as a document standing behind its record. That was the largest category on the page and every row of it was noise. Models are now assumed not to carry a revision, with a checkbox to say otherwise for a shop that revises models, and the number of comparisons the rule excluded is printed next to it so the filter is never silent. Drawings are untouched under either setting; a drawing has always owned its own revision and still does. **The second half matters more than the first.** Sync Metadata writes what BluePLM holds into the whole document, so a model ticked in the audit to fix its _description_ would also have had `Revision` stamped into its property bag and into every one of its configurations — a property the page had just finished saying this vault does not put on models, written by a button on that page. The audit now runs the sync with the revision withheld whenever the rule is on. Nothing outside the audit changes: the context menus, the service tab and the datacard write exactly what they wrote before, and the option is off unless a caller asks for it. Changing the setting re-reads the scan you already have rather than running another one.
+- **Vault Audit conflicts were unreadable, which made the one category that needs a human decision impossible to make one about.** Both value columns truncated from the start of the string, so two descriptions sharing their first thirty characters rendered as two identical cells above a prompt asking which one was right. The columns are now built around the _difference_ rather than around the start: the shared ends are trimmed to a little context, the differing span is highlighted, and a value whose only difference is at character 180 shows character 180. Differences that are **only capitalisation or only spacing** are now labelled as such — the scanner counts those as real divergence on purpose, because `BR-100` and `br-100` are not the same part number, but a vault-wide scan turns that correctness into dozens of rows nobody can tell apart, and naming them lets them be cleared as a group instead of opened one at a time.
+- **Vault Audit reports values BluePLM holds that the file does not, which it used to count as agreement.** The scan was built to measure what the database had lost, so a document missing a description the record carries was classified `intact` and shown nowhere — the number was only reachable as a `file-empty` column in the per-field table. It is now its own category, _Copy BluePLM's value into the file_, with the direction stated. This is the commonest finding in a vault whose metadata was only ever entered in BluePLM, and it is not damage: the record is right and the documents are behind it. The divergence artifact's schema version is 4; a version 3 report cannot express the distinction.
 
 ### Fixed
 
@@ -85,11 +132,12 @@ All notable changes to BluePLM will be documented in this file.
 
 > **Applying schema 95 will change data as well as objects, and it will tell you exactly what it changed.** Two of the holes earlier releases closed handed something out while they were open, and closing a hole does not take back what it produced. Applying `10-source-files.sql` now deactivates any share link pointing at a file in an organization other than the one the link was minted for, and redacts any `workflow_history` row that names another organization's workflow, state or transition. Every row is copied verbatim into a new `schema_remediation_log` table before it is touched. Rows are deactivated or redacted rather than deleted wherever the table allows it; the one exception is a cross-tenant workflow assignment, which is removed, because the table has no way to express an inactive assignment and a tombstone would block the reassignment the remediation exists to enable. Both actions print how many rows they touched and which ones. On a database that never had these problems both report `0` and the log stays empty. `verify-schema.sql` then refuses to stamp for as long as any such row is still live, so a remediation cannot be skipped and then forgotten.
 
-> **Verification may print an advisory item and stamp anyway. That is the correct outcome, not a partial failure.** An advisory is something real that your project's `postgres` role is not permitted to change — on Supabase, the default-privilege entry owned by `supabase_admin`, and any function `CREATE EXTENSION` put in `public` under that owner. It is listed in full, by name, every run. What separates it from a blocking item is only who is allowed to fix it: anything you *can* fix still withholds the stamp until you do. A verifier that refuses for a condition you cannot clear is not stricter, it is broken, and that is what the previous two releases each did in a different place.
+> **Verification may print an advisory item and stamp anyway. That is the correct outcome, not a partial failure.** An advisory is something real that your project's `postgres` role is not permitted to change — on Supabase, the default-privilege entry owned by `supabase_admin`, and any function `CREATE EXTENSION` put in `public` under that owner. It is listed in full, by name, every run. What separates it from a blocking item is only who is allowed to fix it: anything you _can_ fix still withholds the stamp until you do. A verifier that refuses for a condition you cannot clear is not stricter, it is broken, and that is what the previous two releases each did in a different place.
 
 > **Two permission changes take effect the moment you apply the schema, and your team will notice both on day one.** **Moving a file to the trash now requires Explorer → Delete instead of Explorer → Edit** — if you deliberately granted Edit and withheld Delete, those users lose the ability to trash files, so grant them Explorer → Delete before you upgrade if you want that to keep working. **Approving a workflow gate that names no assignee now requires being one of the gate's reviewers** — previously any member of the organization could approve it, even though the "My Reviews" list only ever offered it to the gate's reviewers. Both are described in full under Changed below. Neither is reversible from the app; they are properties of the schema.
 
 ### Security
+
 - **Any signed-in user could make themselves an administrator of any organization** (schema 95). The row-level policy that let a user edit their own profile checked which row was being written and not what was being written into it, so a single request could set `org_id` and `role` to anything. `users.org_id` and `users.role` are what every authorization check in the schema resolves against — `is_org_admin`, `require_org_member` and every membership subquery — so this defeated all of them, including every gate schemas 89–94 added. Both policies on the user table now state explicitly what they permit and are scoped to signed-in users: the self policy pins `role` and `org_id` to their pre-update values, and the administrator policy is left able to manage a member's role, which is the one thing it exists for. **This defect has been live since 1 January 2026 and is present on any database running schema 94 or earlier.** Apply schema 95.
 - **A member of one organization could create a working share link for another organization's file** over the table API, and the anonymous validation endpoint would honour it. `create_file_share_link` was fixed in v91 by deriving the organization from the file; the table path kept the defect, constraining `org_id` while leaving `file_id` free. The link's file must now belong to the same organization as the link and the caller, and the link must record whoever actually created it.
 - **The holder of a share link could repoint it at another organization's file, or re-activate a link that had been revoked**, because the update policy constrained only who owned the row and not what the row became — a weaker rule than the insert path it imitates, reachable by a viewer. The only update a share link now admits is its own revocation. Nothing in BluePLM updates this table, so no user-facing flow changes; this closes a route that was open to anyone holding the publishable key.
@@ -97,24 +145,24 @@ All notable changes to BluePLM will be documented in this file.
 - **API: a caller-supplied `X-Request-Id` is validated before it is used.** The header was copied verbatim onto every log line for the request and returned in 5xx bodies, so a caller could put newlines into the log stream to forge log entries, or an arbitrarily long payload onto every line of it. The header is now accepted only when it is at most 128 characters of `[A-Za-z0-9._-]`; anything else is replaced with a server-generated id and a warning that records only the rejected value's length. API version 2.7.0.
 - **SOLIDWORKS service: the regression fixture guard no longer authorizes the production vault.** `BLUEPLM_FIXTURE_ROOT=C:\BluePLM\br-vault` satisfied every rule the guard applied and authorized a write to every document in the vault. The minimum root depth is raised, and the vault is now named explicitly so that no folder inside it except the regression fixture root can be a fixture root at all — a depth floor cannot express that, because a production folder in the vault is exactly as deep as a legitimate throwaway sandbox.
 - **SOLIDWORKS service: the fixture guard now refuses a hard link.** A hard link sets no reparse point and reads back as an ordinary file, so a link planted inside the fixture root passed every check while the bytes behind it were a production document with a second directory entry elsewhere on the volume. The guard now asks the volume how many names a file has and refuses anything above one. This is the fourth bypass of this guard; the previous three were closed in `afbd8b8`.
-- **Every release until this one was tested only on a database with no history, and on the upgrade path a fix left the hole's output working** — installing schema 90, attacking it, and then applying 92 over the same database is what the owner's database actually does, and nobody had ever done it. Doing it leaves a share link that one organization's member minted against another organization's file still answering `is_valid: true` to an unauthenticated caller, still returning the victim's file id and organization id, and still spending downloads — and `verify_and_stamp_schema()` reports the schema clean over it. It survives *because* of the fix: v92 made `validate_share_link` resolve the organization from the file instead of trusting the link, and the file genuinely is in that organization, so the link now reads as a correct one. A fresh install cannot show this, because a fresh install has no history for a fix to fail to undo. **Two things changed.** Applying the schema now revokes what the closed holes produced, in the same file that closes them: cross-tenant share links are deactivated, `workflow_history` rows naming another tenant's workflow are redacted, both are idempotent, both print the rows they acted on by name, and both copy every row verbatim into `schema_remediation_log` before touching it, so nothing an audit might want is destroyed. The history rows are *redacted rather than deleted* deliberately — the disclosure already happened and deleting the evidence undoes none of it, while leaving the names in place lets it keep happening every time the page is opened. `check_release_residue()` withholds the stamp while any such row is live, which is the durable half: a release that closes a hole and forgets its output can no longer be stamped. And the harness gained a second lane, `harness/upgrade.ps1`, which installs the previous release, runs the full attack suite so the database carries real damage, applies the release under test in place with no teardown, and re-runs everything. A release now has to pass both lanes. Measured on this one, from a schema 81 baseline: **14 of 20 attacks succeed before the upgrade; after it, 0 of 20 succeed and none of the 13 enforced positive controls broke** — which is the half that matters, because a database that refuses everything would also score 0. The residue report is empty, the 103 columns still defaulting to `uuid_generate_v4()` are moved to `gen_random_uuid()`, and verification stamps 95.
+- **Every release until this one was tested only on a database with no history, and on the upgrade path a fix left the hole's output working** — installing schema 90, attacking it, and then applying 92 over the same database is what the owner's database actually does, and nobody had ever done it. Doing it leaves a share link that one organization's member minted against another organization's file still answering `is_valid: true` to an unauthenticated caller, still returning the victim's file id and organization id, and still spending downloads — and `verify_and_stamp_schema()` reports the schema clean over it. It survives _because_ of the fix: v92 made `validate_share_link` resolve the organization from the file instead of trusting the link, and the file genuinely is in that organization, so the link now reads as a correct one. A fresh install cannot show this, because a fresh install has no history for a fix to fail to undo. **Two things changed.** Applying the schema now revokes what the closed holes produced, in the same file that closes them: cross-tenant share links are deactivated, `workflow_history` rows naming another tenant's workflow are redacted, both are idempotent, both print the rows they acted on by name, and both copy every row verbatim into `schema_remediation_log` before touching it, so nothing an audit might want is destroyed. The history rows are _redacted rather than deleted_ deliberately — the disclosure already happened and deleting the evidence undoes none of it, while leaving the names in place lets it keep happening every time the page is opened. `check_release_residue()` withholds the stamp while any such row is live, which is the durable half: a release that closes a hole and forgets its output can no longer be stamped. And the harness gained a second lane, `harness/upgrade.ps1`, which installs the previous release, runs the full attack suite so the database carries real damage, applies the release under test in place with no teardown, and re-runs everything. A release now has to pass both lanes. Measured on this one, from a schema 81 baseline: **14 of 20 attacks succeed before the upgrade; after it, 0 of 20 succeed and none of the 13 enforced positive controls broke** — which is the half that matters, because a database that refuses everything would also score 0. The residue report is empty, the 103 columns still defaulting to `uuid_generate_v4()` are moved to `gen_random_uuid()`, and verification stamps 95.
 - **`consume_share_link` spent a download on a file `validate_share_link` refused** — with `require_auth = false` and the file soft-deleted after the link was minted, validation answered `is_valid: false, "Link not found"` while consumption answered `true` and incremented the counter. The `deleted_at IS NULL` test existed in only one of the two functions and, in that one, only inside the `require_auth` branch. **Both functions now call a single `share_link_admission()` and neither restates a condition**, because two hand-written lists of conditions that must agree will not stay in agreement — the previous release tried to hold them together by requiring the same words in both and that is exactly what passed while they disagreed. The posture check that was supposed to catch it compared the two on `require_auth` alone; it now walks a matrix of link states (good, expired, deactivated, allowance exhausted, file deleted, token unknown) against each class of caller (anonymous, another organization's member, the owner) and requires the two answers to be identical in all 27, which they are. Nothing in the app calls any share-link function, but all three are reachable over PostgREST by anyone holding the publishable key.
 - **`seed_customer_categories` was callable over PostgREST by anyone signed in, against any organization, and the check written to catch exactly that had been told not to look at it** (schema 95). The function is `SECURITY DEFINER` and inserts 48 taxonomy rows into whatever organization its `p_org_id` argument names, with no membership test — deliberately, because it runs from an `AFTER INSERT` trigger on `organizations` at an instant when the new organization has no members, so a membership test would make creating an organization impossible. The intended protection was withdrawing it as an endpoint, and the line that did so read `REVOKE ALL ON FUNCTION seed_customer_categories(UUID) FROM PUBLIC` under a comment asserting the grant was gone. **It was not, and the reason is not a stale `GRANT` anywhere in this repository.** Supabase's bootstrap runs `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role`, so every function `postgres` creates is born with an explicit `authenticated=X/postgres` entry in its ACL, and revoking `PUBLIC` strips a different entry and leaves that one untouched. A **fresh install** of this release had the identical exposure to an upgrade; the two sibling functions in `core.sql` name the roles and were never affected. Executed over real HTTP against a container with `postgres` genuinely demoted: a user who administers one organization and belongs to no other, and a user who belongs to no organization at all, both `POST`ed `/rpc/seed_customer_categories` with a third organization's id and got `204`, taking that organization's `customer_categories` from 44 rows to 48. **What that is worth to an attacker is small and it is stated plainly rather than inflated**: the insert is `ON CONFLICT DO NOTHING` over 48 constant rows and returns nothing, so it discloses no data and corrupts none. It resurrects taxonomy rows an administrator deliberately deleted, and the foreign-key error on an id that does not exist makes it an existence oracle for organization ids. It is a tenancy break, not an emergency. The `REVOKE` now names `PUBLIC, anon, authenticated`, and the comment above it no longer claims something untrue. **No membership check was added to the body, and that is a decision rather than an omission** — the trigger path has no member to check against, so any test strong enough to stop this would stop organizations being created, and the alternative of excusing organizations that have no members yet is a hole with a race in it. The ACL is the whole defence, which is precisely why the next entry stops the ACL being defended by a comment.
-- **The verifier kept a list of three functions it would not check, and nobody was auditing the list** (schema 95). This is the finding; the entry above is the instance of it. `check_org_gates()` calls every `SECURITY DEFINER` function taking a `p_org_id` with an organization id the caller has nothing to do with and requires a refusal — except for three names hard-coded in an array called `c_trigger_only`, on the grounds that they run only from triggers. `seed_customer_categories` was on it. **Skipping left no trace**: an excluded function and a function that did not exist produced the same output, which is none, so there was nothing in the report to notice, and the manifest passed it as `ok` because the manifest asks only whether the object is present. Two of the three entries turn out to have been telling the truth — `create_default_job_titles` and `create_default_permission_teams` have ACLs of `{postgres=X,service_role=X}` and were refused `403 permission denied` for both hostile callers over HTTP — but the list had no way to know that and would have said the same thing either way. **The list is gone.** An exclusion is now computed per database by `org_gate_exclusion_reason()`, which reads the ACL in front of it: `withdrawn` means neither `anon` nor `authenticated` may execute the function, and it is printed *with the ACL that justifies it*, so the excuse can be read and disagreed with; `predicate` means the function is one of the gates the others are gated by, matched on full signature so a later overload is probed rather than inheriting the excuse. An excuse now expires the moment the ACL does. **The other half is the verdict that used to mean nothing.** A reachable function the probe could not judge either way was reported as `inconclusive` and then ignored by the stamper, which selected only `ungated` — the same silence the name list provided, arrived at by a different route. That case is now `unverifiable` and withholds the stamp, split from the genuinely harmless one on whether any PostgREST role can reach the function at all and whether the failure was a missing table from a module that is not installed, so a partial install stays verifiable. Which verdicts block lives in one named place, `org_gate_status_blocks()`, because the stamper and the script that prints the report have to agree and there is no other way to pin the agreement — `requires` is matched against source with string literals removed, so a manifest row cannot pin on the word appearing in a `WHERE` clause. `NC18` in the harness reproduces the exposure the way it actually happened — one `GRANT EXECUTE ... TO authenticated`, function unchanged, module file unchanged — and requires the stamp to be withheld by name; with the old list in place that grant is invisible and the database stamps clean. **The whole `SECURITY DEFINER` surface was then swept the same way rather than reasoned about**: all 108 such routines, of which `authenticated` can execute 101, every one that takes an organization id or an entity id called over PostgREST by both hostile callers against a live Acme fixture, with the state read from the database either side of every call. One reached across the boundary, and it is the one above.
-- **Release 95 would have installed two functions that let any signed-in user delete every organization's audit logs, and no check in the schema could have caught them** (schema 95). `cleanup_extension_http_logs` and `cleanup_extension_secret_access_logs` are `SECURITY DEFINER` and each issues a single `DELETE` qualified by age alone — no organization appears anywhere in either statement, which is correct for an operator maintenance sweep and catastrophic for anything a tenant can call. Both were reachable: neither ever had a `GRANT` in this repository, and that is precisely why they looked safe, because on Supabase an absent `GRANT` means the `ALTER DEFAULT PRIVILEGES` entry stands rather than that nobody holds the privilege. Measured on a throwaway database at this release, a signed-in user belonging to **no organization at all** called `cleanup_extension_http_logs` with a retention window of zero days and took another tenant's `extension_http_log` from one row to none; the same held for the secret-access log. That is destruction of audit evidence by an unrelated tenant, and it is the most serious defect in this release. **Nobody was ever exposed to it.** Neither function exists on schema 85, which is what production runs; they were introduced somewhere between 86 and 95 and have never been applied anywhere. This is a hole that applying release 95 *would have installed*, found before it shipped rather than after. **Both are now withdrawn as endpoints** — `REVOKE ALL … FROM PUBLIC, anon, authenticated`, with `postgres` and `service_role` keeping execute so the sweep can still be run deliberately. Withdrawal rather than organization scoping is the fix because nothing signed-in is supposed to call them: there is no caller anywhere in the renderer, the API, the Electron main process or any script, no `pg_cron` schedule and no scheduled job, and the retention path the application actually uses is `cleanupHttpLogs()` in `api/src/extensions/http-logger.ts`, which deletes from the table filtered by `org_id` and `extension_id` under row-level security. Adding a membership test would have gated a door with nobody behind it while leaving the sweep unable to do the one job it exists for. The two were found by sweeping every `SECURITY DEFINER` routine that mutates an organization-scoped table without naming `org_id`; the sweep returned five, and the other three are accounted for — `consume_share_link` is deliberately anonymous and gated by an unguessable token, and the two remaining are trigger functions that PostgREST refuses to route to at all, which was confirmed over HTTP rather than assumed.
-- **Nothing in the verifier could express "this function is only safe because nobody may call it", so `check_withdrawn_execute()` was added** (schema 95). `check_org_gates()` hands every `SECURITY DEFINER` function taking a `p_org_id` an organization the caller has nothing to do with and requires a refusal. A function that takes no organization argument has no foreign id to be handed and no refusal to require, so the probe returns no row for it — correctly, and uselessly. For five functions in this schema the absence of an execute grant *is* the entire protection: the two log sweeps above, and the three seeders that run from the organization-creation trigger before the new organization has any members. Those five are now named in `withdrawn_execute_manifest()`, and verification asserts their ACLs directly, printing the ACL that is doing the work and withholding the stamp if `anon` or `authenticated` can reach any of them. It is a separate check rather than a widening of `check_org_gates()` on purpose: that function decides a verdict for every `SECURITY DEFINER` routine in the schema, and changing how it reaches one changes what the stamp means everywhere, whereas this asks one closed question about five named functions.
-- **`check_org_gates()` credited `auth.uid()` as an authorization check, so a function with no authorization at all scored gated** — a function whose only authorization-shaped line was `DECLARE v_actor UUID := auth.uid();`, a stamp of who asked, passed the check, the database stamped, and another tenant read Acme's parts over HTTP. `auth.uid()`, `current_actor_id()` and `is_org_admin()` say who is calling or what they may do in their own organization; none of them says the caller may act on the organization *named in the argument*, which is the only question this check exists to ask. A gate is now credited only for a call that binds the caller to that organization — `require_org_member`, `is_org_member`, `require_same_org_user`, `require_*_access`. Ten RPCs across `core.sql`, `40-integrations.sql` and `50-extensions.sql` that hand-wrote the membership test out of `auth.uid()` now call those helpers instead; each was correct, and hand-written correctness is what the next edit loses. The probe also stopped being easy to refuse for the wrong reason: it filled text arguments with `'blueplm_gate_probe'`, which no argument validation accepts, so a function could raise before its authorization ever ran and be credited for it. It now reads the accepted values out of the function's own source, so a validation error is no longer a free pass.
+- **The verifier kept a list of three functions it would not check, and nobody was auditing the list** (schema 95). This is the finding; the entry above is the instance of it. `check_org_gates()` calls every `SECURITY DEFINER` function taking a `p_org_id` with an organization id the caller has nothing to do with and requires a refusal — except for three names hard-coded in an array called `c_trigger_only`, on the grounds that they run only from triggers. `seed_customer_categories` was on it. **Skipping left no trace**: an excluded function and a function that did not exist produced the same output, which is none, so there was nothing in the report to notice, and the manifest passed it as `ok` because the manifest asks only whether the object is present. Two of the three entries turn out to have been telling the truth — `create_default_job_titles` and `create_default_permission_teams` have ACLs of `{postgres=X,service_role=X}` and were refused `403 permission denied` for both hostile callers over HTTP — but the list had no way to know that and would have said the same thing either way. **The list is gone.** An exclusion is now computed per database by `org_gate_exclusion_reason()`, which reads the ACL in front of it: `withdrawn` means neither `anon` nor `authenticated` may execute the function, and it is printed _with the ACL that justifies it_, so the excuse can be read and disagreed with; `predicate` means the function is one of the gates the others are gated by, matched on full signature so a later overload is probed rather than inheriting the excuse. An excuse now expires the moment the ACL does. **The other half is the verdict that used to mean nothing.** A reachable function the probe could not judge either way was reported as `inconclusive` and then ignored by the stamper, which selected only `ungated` — the same silence the name list provided, arrived at by a different route. That case is now `unverifiable` and withholds the stamp, split from the genuinely harmless one on whether any PostgREST role can reach the function at all and whether the failure was a missing table from a module that is not installed, so a partial install stays verifiable. Which verdicts block lives in one named place, `org_gate_status_blocks()`, because the stamper and the script that prints the report have to agree and there is no other way to pin the agreement — `requires` is matched against source with string literals removed, so a manifest row cannot pin on the word appearing in a `WHERE` clause. `NC18` in the harness reproduces the exposure the way it actually happened — one `GRANT EXECUTE ... TO authenticated`, function unchanged, module file unchanged — and requires the stamp to be withheld by name; with the old list in place that grant is invisible and the database stamps clean. **The whole `SECURITY DEFINER` surface was then swept the same way rather than reasoned about**: all 108 such routines, of which `authenticated` can execute 101, every one that takes an organization id or an entity id called over PostgREST by both hostile callers against a live Acme fixture, with the state read from the database either side of every call. One reached across the boundary, and it is the one above.
+- **Release 95 would have installed two functions that let any signed-in user delete every organization's audit logs, and no check in the schema could have caught them** (schema 95). `cleanup_extension_http_logs` and `cleanup_extension_secret_access_logs` are `SECURITY DEFINER` and each issues a single `DELETE` qualified by age alone — no organization appears anywhere in either statement, which is correct for an operator maintenance sweep and catastrophic for anything a tenant can call. Both were reachable: neither ever had a `GRANT` in this repository, and that is precisely why they looked safe, because on Supabase an absent `GRANT` means the `ALTER DEFAULT PRIVILEGES` entry stands rather than that nobody holds the privilege. Measured on a throwaway database at this release, a signed-in user belonging to **no organization at all** called `cleanup_extension_http_logs` with a retention window of zero days and took another tenant's `extension_http_log` from one row to none; the same held for the secret-access log. That is destruction of audit evidence by an unrelated tenant, and it is the most serious defect in this release. **Nobody was ever exposed to it.** Neither function exists on schema 85, which is what production runs; they were introduced somewhere between 86 and 95 and have never been applied anywhere. This is a hole that applying release 95 _would have installed_, found before it shipped rather than after. **Both are now withdrawn as endpoints** — `REVOKE ALL … FROM PUBLIC, anon, authenticated`, with `postgres` and `service_role` keeping execute so the sweep can still be run deliberately. Withdrawal rather than organization scoping is the fix because nothing signed-in is supposed to call them: there is no caller anywhere in the renderer, the API, the Electron main process or any script, no `pg_cron` schedule and no scheduled job, and the retention path the application actually uses is `cleanupHttpLogs()` in `api/src/extensions/http-logger.ts`, which deletes from the table filtered by `org_id` and `extension_id` under row-level security. Adding a membership test would have gated a door with nobody behind it while leaving the sweep unable to do the one job it exists for. The two were found by sweeping every `SECURITY DEFINER` routine that mutates an organization-scoped table without naming `org_id`; the sweep returned five, and the other three are accounted for — `consume_share_link` is deliberately anonymous and gated by an unguessable token, and the two remaining are trigger functions that PostgREST refuses to route to at all, which was confirmed over HTTP rather than assumed.
+- **Nothing in the verifier could express "this function is only safe because nobody may call it", so `check_withdrawn_execute()` was added** (schema 95). `check_org_gates()` hands every `SECURITY DEFINER` function taking a `p_org_id` an organization the caller has nothing to do with and requires a refusal. A function that takes no organization argument has no foreign id to be handed and no refusal to require, so the probe returns no row for it — correctly, and uselessly. For five functions in this schema the absence of an execute grant _is_ the entire protection: the two log sweeps above, and the three seeders that run from the organization-creation trigger before the new organization has any members. Those five are now named in `withdrawn_execute_manifest()`, and verification asserts their ACLs directly, printing the ACL that is doing the work and withholding the stamp if `anon` or `authenticated` can reach any of them. It is a separate check rather than a widening of `check_org_gates()` on purpose: that function decides a verdict for every `SECURITY DEFINER` routine in the schema, and changing how it reaches one changes what the stamp means everywhere, whereas this asks one closed question about five named functions.
+- **`check_org_gates()` credited `auth.uid()` as an authorization check, so a function with no authorization at all scored gated** — a function whose only authorization-shaped line was `DECLARE v_actor UUID := auth.uid();`, a stamp of who asked, passed the check, the database stamped, and another tenant read Acme's parts over HTTP. `auth.uid()`, `current_actor_id()` and `is_org_admin()` say who is calling or what they may do in their own organization; none of them says the caller may act on the organization _named in the argument_, which is the only question this check exists to ask. A gate is now credited only for a call that binds the caller to that organization — `require_org_member`, `is_org_member`, `require_same_org_user`, `require_*_access`. Ten RPCs across `core.sql`, `40-integrations.sql` and `50-extensions.sql` that hand-wrote the membership test out of `auth.uid()` now call those helpers instead; each was correct, and hand-written correctness is what the next edit loses. The probe also stopped being easy to refuse for the wrong reason: it filled text arguments with `'blueplm_gate_probe'`, which no argument validation accepts, so a function could raise before its authorization ever ran and be credited for it. It now reads the accepted values out of the function's own source, so a validation error is no longer a free pass.
 - **The anon sweep could not see three shapes, all of which read over HTTP while it reported the schema clean** — a **partitioned table**, because the sweep filtered `relkind = 'r'` and a partitioned parent is `'p'`: its leaves are covered until row-level security is enabled on a leaf, at which point the leaf drops out and the unprotected parent serves every row. A table with **row-level security enabled and a policy `TO anon USING (true)`**, because `relrowsecurity = true` was taken as safety; enabling row-level security and excluding `anon` are two different acts, and the check now reads the policies rather than the flag. And a **view with a column-level grant**, because `has_table_privilege(…, 'SELECT')` is false for one — `GRANT SELECT (part_number)` was invisible, and the check and the remedy both use `has_any_column_privilege` now, so what is reported is what the sweep can clear. None of the three exists in BluePLM today; this is the same argument as adding materialized views last release, so the first one cannot arrive quietly. Each has a negative control that creates it and requires the stamp to be withheld by name.
-- **Assessed and deliberately not changed: `anon` holds `SELECT`, `INSERT`, `UPDATE` and `DELETE` on 100 of 101 tables in `public`**, through Supabase's schema default, and every one of those tables rests on row-level security alone. Revoking the grants was proven safe *in the harness* — every attack still refused, every positive control still worked — and is still not being shipped, because the harness does not run the REST API and the REST API's `/health` endpoint reads `organizations` with the anonymous key. Revoking `SELECT` on that one table would turn a healthy deployment into a failing health check on Render and Railway, which is precisely the kind of silent breakage a sweeping grant change causes. The honest answer for now is the check rather than the revoke: `check_anon_reach()` reads the policies of every table and reports one that admits `anon`, which is the property that actually matters, and it is enforced on every table rather than on the list somebody remembered. `harness/sql/anon-table-grants-experiment.sql` is committed so the experiment can be repeated, and the change is a phased one for a release that can also change the API's health check.
+- **Assessed and deliberately not changed: `anon` holds `SELECT`, `INSERT`, `UPDATE` and `DELETE` on 100 of 101 tables in `public`**, through Supabase's schema default, and every one of those tables rests on row-level security alone. Revoking the grants was proven safe _in the harness_ — every attack still refused, every positive control still worked — and is still not being shipped, because the harness does not run the REST API and the REST API's `/health` endpoint reads `organizations` with the anonymous key. Revoking `SELECT` on that one table would turn a healthy deployment into a failing health check on Render and Railway, which is precisely the kind of silent breakage a sweeping grant change causes. The honest answer for now is the check rather than the revoke: `check_anon_reach()` reads the policies of every table and reports one that admits `anon`, which is the property that actually matters, and it is enforced on every table rather than on the list somebody remembered. `harness/sql/anon-table-grants-experiment.sql` is committed so the experiment can be repeated, and the change is a phased one for a release that can also change the API's health check.
 - **The previous release moved the "no way out" defect instead of fixing it, and there were two more doors into the same room** — schema 91 corrected the one condition that could never be cleared and left the mechanism that produced it in place. Its anon sweep, `enforce_anon_execute_posture()`, only looked at functions, while the check that grades the result looked at every routine. So a **`PROCEDURE`** in `public` was reported as reachable by `anon` and blocking, the sweep it told you to run reported "0 objects changed", and the stamp was withheld for ever — the same shape as v90, one object kind to the left. The second door needs no migration at all: **any function in `public` owned by `supabase_admin`**, which is exactly what `CREATE EXTENSION` produces there, because Supabase runs privileged extension installs as that role. `postgres` cannot revoke it — Postgres answers `WARNING: no privileges could be revoked` and returns success — and the check graded it blocking. Reproduced both ways in a container with `postgres` genuinely demoted. **Three changes, and the third is the one that matters.** The sweep now covers every kind of routine, procedures and aggregates included, using `REVOKE ... ON ROUTINE`, so what it fixes and what the check measures are the same set. An object that **nobody with your privileges is permitted to revoke** is now reported as advisory rather than blocking, on the same principle that already applied to the default-privilege entry: the test is whether the current role is a member of the role that granted it, so this cannot quietly excuse something you could have fixed, and every such object is still listed by name, in full, every run. And `core.sql` **no longer creates any extension**. Line 28 ran `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"` with no `SCHEMA` clause, which on a project where it is not preinstalled lands it in `public` under `supabase_admin` and bricks verification permanently — the crash you would have hit. All 93 columns that defaulted to `uuid_generate_v4()` now use the built-in `gen_random_uuid()`, which has been core Postgres since 13 and needs no extension, and `core.sql` rewrites the defaults on any database that already has the old ones, so the dependency is gone from new and existing projects alike rather than merely being pointed somewhere safer. A verifier that can be made unwinnable is worse than no verifier, because the app reads its answer: the harness now reintroduces both conditions deliberately and requires the stamp to come back after running the remedy the verifier prints, with the procedure still there.
-- **A member of one organization could apply another tenant's workflow transition to her own file, and read that tenant's process out of her own history** — `apply_workflow_transition` proved you had access to the *file* and then loaded the transition id you supplied with an existence check and nothing else. Proven over HTTP with a real signed token: an Acme member applied an Umbrella transition to an Acme file, her file's `workflow_state_id` came to point at a state in another tenant, and Umbrella's workflow name, state name and transition name appeared in her `workflow_history`, which she can read. The transition is now resolved through the file's own organization, so a foreign one is "Transition not found" — the same answer as one that does not exist, which is what keeps this from becoming a way to test ids. `execute_workflow_transition` had the same signature shape and was already correct; it was checked by execution rather than by reading, and the same binding was made explicit there so the two cannot drift. **The more important half is why the check written to prevent exactly this did not see it.** v91 added `check_unbound_entity_args()` after `create_file_share_link` was found gating one argument while a second chose the row — and scoped it to functions taking a `p_org_id`, which is the shape of the example rather than the shape of the fault. A function that gates on an *entity* was invisible to it, and that is most of the ones that do real work. The filter is gone: the check now looks at every security-definer function that selects rows by more than one id and requires each of those ids to have an organization check that is not already spoken for by a different one. Seven functions in this release have that shape; six were fine, and this was the seventh.
+- **A member of one organization could apply another tenant's workflow transition to her own file, and read that tenant's process out of her own history** — `apply_workflow_transition` proved you had access to the _file_ and then loaded the transition id you supplied with an existence check and nothing else. Proven over HTTP with a real signed token: an Acme member applied an Umbrella transition to an Acme file, her file's `workflow_state_id` came to point at a state in another tenant, and Umbrella's workflow name, state name and transition name appeared in her `workflow_history`, which she can read. The transition is now resolved through the file's own organization, so a foreign one is "Transition not found" — the same answer as one that does not exist, which is what keeps this from becoming a way to test ids. `execute_workflow_transition` had the same signature shape and was already correct; it was checked by execution rather than by reading, and the same binding was made explicit there so the two cannot drift. **The more important half is why the check written to prevent exactly this did not see it.** v91 added `check_unbound_entity_args()` after `create_file_share_link` was found gating one argument while a second chose the row — and scoped it to functions taking a `p_org_id`, which is the shape of the example rather than the shape of the fault. A function that gates on an _entity_ was invisible to it, and that is most of the ones that do real work. The filter is gone: the check now looks at every security-definer function that selects rows by more than one id and requires each of those ids to have an organization check that is not already spoken for by a different one. Seven functions in this release have that shape; six were fine, and this was the seventh.
 - **`require_auth` on a share link meant "has a Supabase account", which since signing up is free restricted nobody** — v91's entry says the flag is now honoured, and it is, but honoured as a test that `auth.uid()` is not null. Executed against a link minted with `require_auth = true`: anon was correctly refused, a member of **another tenant** got `is_valid: true` with the file id and the owning organization's id, and so did an account belonging to **no organization at all**. It now means a member of the organization that owns the file, which is the only reading under which the flag is a control rather than a formality, and the organization is resolved from the file before the flag is tested so the two cannot disagree. `consume_share_link` was changed in the same pass and for the same reason: it enforced `max_downloads` by reading a count it never compared, so the limit was decoration. Both functions stay reachable before login, because that is what a share link is for. **Note that a link's usefulness does not depend on either of them** — the download is a Supabase Storage signed URL held by the recipient, as the entry on removing the revoke and download-limit controls explains — so this closes an information disclosure through an RPC that anyone may call, not a hole in file access. The reason it shipped uncaught is worth recording: the harness scored the two attacks covering it as refusals because the setup step they hung off had itself been fixed and minted no token, so the headline fix went out with zero executed coverage in its own suite. Those attacks now mint their own links legitimately and try them from each class of caller, which works in every state of the code.
-- **Three checks certified more than they verified, so the next fault of each shape would have passed** — none of these is an open door today; all three are the mechanism by which one would be reintroduced without anybody noticing. **`check_org_gates()` scored completely ungated functions as gated.** It called each function with `NULL` in every argument but the organization id and accepted any raised exception, or any returned `"success": false`, as evidence of a refusal — so a function that validates a different argument first was certified without its organization gate ever being reached, and a function with no authorization of any kind at all was certified too. Two such functions were built to confirm it: both scored `gated`, the database stamped, and an account with no organization then read another tenant's data through them. The probe now fills arguments with values shaped to get *past* that first validation, and it credits a refusal only when it can attribute it to an authorization check the function actually contains. **Materialized views were invisible**: the `security_invoker` sweep filtered on `relkind = 'v'`, and a matview is `'m'`. A matview cannot be `security_invoker` and carries no row-level security, which makes it strictly worse than the plain view that leaked every organization's parts and prices in the entry above, and it produced no row at all — not a warning, nothing. There are none today. **And the NULL-unsafe membership test was matched in one spelling.** All nine sites are genuinely gone, but the check was a literal search for `not in (select org_id from users`, which an alias, a schema-qualified `public.users`, the `<> ALL` form, or writing the function in `LANGUAGE sql` would each have walked straight past. The commit said the shape was banned outright; one spelling of it was. Every form is caught now, in SQL functions and procedures as well as PL/pgSQL. Each of these has a negative control that puts the fault back and requires verification to withhold the stamp and name it, then repairs the *function* rather than dropping it, so a check that reacts to an object's existence instead of to its gate fails the repair.
+- **Three checks certified more than they verified, so the next fault of each shape would have passed** — none of these is an open door today; all three are the mechanism by which one would be reintroduced without anybody noticing. **`check_org_gates()` scored completely ungated functions as gated.** It called each function with `NULL` in every argument but the organization id and accepted any raised exception, or any returned `"success": false`, as evidence of a refusal — so a function that validates a different argument first was certified without its organization gate ever being reached, and a function with no authorization of any kind at all was certified too. Two such functions were built to confirm it: both scored `gated`, the database stamped, and an account with no organization then read another tenant's data through them. The probe now fills arguments with values shaped to get _past_ that first validation, and it credits a refusal only when it can attribute it to an authorization check the function actually contains. **Materialized views were invisible**: the `security_invoker` sweep filtered on `relkind = 'v'`, and a matview is `'m'`. A matview cannot be `security_invoker` and carries no row-level security, which makes it strictly worse than the plain view that leaked every organization's parts and prices in the entry above, and it produced no row at all — not a warning, nothing. There are none today. **And the NULL-unsafe membership test was matched in one spelling.** All nine sites are genuinely gone, but the check was a literal search for `not in (select org_id from users`, which an alias, a schema-qualified `public.users`, the `<> ALL` form, or writing the function in `LANGUAGE sql` would each have walked straight past. The commit said the shape was banned outright; one spelling of it was. Every form is caught now, in SQL functions and procedures as well as PL/pgSQL. Each of these has a negative control that puts the fault back and requires verification to withhold the stamp and name it, then repairs the _function_ rather than dropping it, so a check that reacts to an object's existence instead of to its gate fails the repair.
 - **A function created after the sweep is now born unreachable by `anon`, which the previous release had concluded was impossible** — v90 withdrew the default privilege `IN SCHEMA public` and recorded that this cannot work, because Postgres has a hard-wired grant of `EXECUTE` on new functions to `PUBLIC` that lives at the global level and a schema-scoped entry merges with it rather than replacing it. The conclusion was right about the schema-scoped form and wrong about the general case: `ALTER DEFAULT PRIVILEGES FOR ROLE postgres REVOKE EXECUTE ON ROUTINES FROM PUBLIC, anon` **without** `IN SCHEMA` replaces the built-in default, and the next routine created comes out unreachable by `anon` while `authenticated` keeps it. That is now applied, and it is a better answer than sweeping afterwards for the same reason a constructor is better than a cleanup pass: it removes the interval in which the object is open. The sweep stays, because it is what fixes objects created by a role or a tool this entry does not control, and because a posture assertion that nothing enforces is how the last two releases got their claims wrong. `rename_folder_files` also escapes LIKE metacharacters now — a folder called `100%` used to rename every file in the vault whose path started with `100`, confined to the caller's own organization and vault, and pre-existing rather than introduced by any of this.
 
 - **The published API returned its own stack traces to anyone who asked, because "nobody set a variable" meant "this is a developer's laptop"** — a `500` came back as `{"error":"INTERNAL_ERROR","message":"Cannot read properties of undefined (reading 'length')","stack":"TypeError: …\n    at truncateId (/middleware/auth.ts:20:13)\n    at Object.authenticate (/middleware/auth.ts:75:78)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"}` to an unauthenticated caller holding nothing but a made-up bearer token. That is the file layout inside the container, the internal call structure, and the Node build it is running on, handed over on request. The switch was `process.env.NODE_ENV !== 'production'`, and `api/Dockerfile` deliberately sets no `NODE_ENV` while neither Railway nor Render sets one for a prebuilt image — so the deployment path the documentation actually recommends produced a server that considered itself a development machine. **A 5xx no longer carries the server's message or stack in any configuration, and there is no setting that turns it back on**, because a switch is what leaked it: the response is now `{"error":"INTERNAL_ERROR","message":"Internal server error","requestId":"…"}` and the full error, with its stack, goes to the log under that same id. Nothing is lost, it is only addressed to the right party — quote the id and an operator finds the exact line. Supply your own `X-Request-Id` and it is used verbatim, so a caller can match a failure to a trace it already has. Client errors are untouched: a 4xx still explains itself, in every mode, because its message is the only way a caller learns what to correct.
 
-  **The deeper defect was that one variable decided three unrelated things**, so there was no way to fix one without moving the other two, and the safest setting for one was the wrong setting for another. They are now three decisions. *Error detail* is not configurable at all, as above. *The documentation* has `ENABLE_DOCS`, defaulting to on — hiding the Swagger UI is a documentation choice and not a security control, the whole endpoint surface is already published in `api/README.md`, and three separate documents send integrators to `/docs` to read it; an operator who wants a smaller public surface sets `ENABLE_DOCS=false` and nothing else changes. *CORS* denies by default with a permanent exception for the desktop app, and `CORS_ORIGINS` **adds** to that allowlist rather than replacing it, so an operator following the old advice to "set `CORS_ORIGINS` to your ERP domains" can no longer lock the product out of its own API. `CORS_ORIGINS=*` — which this repository shipped in `render.yaml`, and which really did let any website read the API's responses — is ignored with a warning naming it, rather than refused outright, so a deployment picking up a new image keeps running instead of crash-looping on a value we put there ourselves. The effective allowlist is logged at boot either way, because a CORS refusal looks like a network error in the browser and leaves nothing on the server to find.
+  **The deeper defect was that one variable decided three unrelated things**, so there was no way to fix one without moving the other two, and the safest setting for one was the wrong setting for another. They are now three decisions. _Error detail_ is not configurable at all, as above. _The documentation_ has `ENABLE_DOCS`, defaulting to on — hiding the Swagger UI is a documentation choice and not a security control, the whole endpoint surface is already published in `api/README.md`, and three separate documents send integrators to `/docs` to read it; an operator who wants a smaller public surface sets `ENABLE_DOCS=false` and nothing else changes. _CORS_ denies by default with a permanent exception for the desktop app, and `CORS_ORIGINS` **adds** to that allowlist rather than replacing it, so an operator following the old advice to "set `CORS_ORIGINS` to your ERP domains" can no longer lock the product out of its own API. `CORS_ORIGINS=*` — which this repository shipped in `render.yaml`, and which really did let any website read the API's responses — is ignored with a warning naming it, rather than refused outright, so a deployment picking up a new image keeps running instead of crash-looping on a value we put there ourselves. The effective allowlist is logged at boot either way, because a CORS refusal looks like a network error in the browser and leaves nothing on the server to find.
 
   **`NODE_ENV` itself now defaults to `production`.** In a file where every secret is required and fails closed, a value whose default was the least safe option was the odd one out. It decides only developer conveniences now — log format and level, the request-debug hook, and whether the Vite dev server is an allowed origin — and development is opted into explicitly by `npm run api`, which is a small script rather than an inline `NODE_ENV=development …` because that spelling is POSIX shell syntax and npm runs scripts through cmd.exe on Windows. In the same pass, the two remaining raw reads of `process.env.NODE_ENV` are gone. Fastify's request logger read the validated `env.NODE_ENV` and the standalone logger read the raw one, and with the variable unset they disagreed: one emitted pretty-printed debug lines and the other JSON at info, interleaved on the same stream, so neither format could be parsed. Both are now built by the same function from the same input.
 
@@ -122,29 +170,31 @@ All notable changes to BluePLM will be documented in this file.
 
   Verified by building both images and asking them, not by reading the source. The same request that returned the trace above returns `{"error":"INTERNAL_ERROR","message":"Internal server error","requestId":"…"}` from the new image with nothing configured **and** with `NODE_ENV=development`, while the log line under that id still carries the whole stack. Across five configurations of the new image — nothing set, `NODE_ENV=development`, `ENABLE_DOCS=false`, `CORS_ORIGINS=*`, and `CORS_ORIGINS=https://odoo.example.com` — `Origin: null` is allowed in all five, `https://evil.example` is refused in all five (the preflight returns 204 with no `access-control-allow-origin`, which is the refusal), the ERP origin is allowed only where it is configured, and `/docs` answers 200 or 404 strictly according to `ENABLE_DOCS` and nothing else, including under `NODE_ENV=development`, which is the whole point of separating them. `ENABLE_DOCS=flase` refuses to start and says which values are accepted, rather than reading as "on". Nothing else moved: the OpenAPI documents from the old and new images are byte-identical once the version number is normalised — all 73 routes across twelve route modules and thirteen tags, and all eleven `@fastify/helmet` headers. **The API version goes to 2.6.0** rather than staying put: unlike the build change that preceded it, this one is observable on the wire — a 500 body loses two fields and gains one, and CORS headers change — so the number that means "the contract moved" should move, and every deployment ought to be told to pick this up. It is a minor bump because no status code, endpoint or success payload changed, and nothing has ever read the `stack` field.
 
-- **A request to an extension endpoint was refused with 401 and then carried out anyway** — the catch-all serving `/extensions/{id}/{path}` authenticated callers itself, inside a `try`/`catch`, instead of through the guard every other protected route uses. That guard sends the 401 *and* throws, and the throw is what stops the request; the `catch` was empty and swallowed it. Because the reply had already gone out, nothing further reached the caller and the only trace was a single `Promise errored, but reply.sent = true was set` line in the server log. Everything after the `catch` then ran on a request that had just been refused: the organization was read from an `X-Org-Id` header the caller had written, and with no authenticated user there was no user-scoped database client, so it built one from the publishable key. This was reproduced against the running image with the database pointed at a recorder rather than deduced from the source, because from outside there is nothing to see. One anonymous `GET /extensions/foo/bar` carrying `X-Org-Id: victim-org-…` returned 401 to the client and sent `GET /rest/v1/org_installed_extensions?select=*&org_id=eq.victim-org-…&enabled=eq.true` to the database, with the publishable key as both `apikey` and bearer; a control `GET /vaults` in the same run made no database call at all, and took 1 ms against the extension route's 21 ms. On a deployment where that row comes back it carries the extension's manifest, its handler source and its allowed domains, and a handler marked `public` would have been executed in the sandbox on the strength of it — the response thrown away, the side effects kept, which is a write primitive that returns nothing and so shows up nowhere. **The route now sits behind the same `preHandler` guard as every other protected endpoint**, which is the actual repair: Fastify does not reach a handler once a `preHandler` has refused the request, so "refused" and "did not run" are one event rather than two that have to agree, and no `catch` can put them back out of step. The organization comes from the authenticated user, and `X-Org-Id` is no longer read anywhere. The loader cache, which was keyed on that header and never evicted or bounded, is now keyed on an authenticated organization and holds at most 100. The rest of the API was checked for the same shape — a guard invoked by hand inside a handler rather than as a hook — and there is none; every other route registers it as a `preHandler`. Verified against a rebuilt image: the same request returns the same 401, and the recorder sees nothing at all.
-- **Schema 90 could never be recorded on a real Supabase project, so the app would have said "database out of date" for ever** — everything installed, all 35 objects the manifest asks for reported present, every organization gate passed, and then the stamp was withheld and the script told you to run a function that had just failed to do anything. The cause: Supabase's bootstrap creates a default-privilege entry owned by `supabase_admin` that grants `EXECUTE` on new functions to `anon`, the `postgres` role your SQL editor runs as is not a member of `supabase_admin` and cannot alter it, and the check treated that as fatal. The release contradicted itself about the same condition — the lockdown script hit it, printed `COULD NOT CHANGE`, and still said `PASS`. It is now advisory in both places, with the same wording. It has no effect on anything that exists, because everything shipped is revoked from `anon` by name; its only real consequence is that a function created by some *later* migration is born reachable, and that is still caught by name and still blocks the stamp. This was not visible in the previous release's own testing because the container it was verified in ran `postgres` as a superuser — Postgres 16 and later silently refuse `ALTER ROLE postgres NOSUPERUSER`, so the demotion Supabase performs never happened and every privilege check answered yes for the wrong reason.
+- **A request to an extension endpoint was refused with 401 and then carried out anyway** — the catch-all serving `/extensions/{id}/{path}` authenticated callers itself, inside a `try`/`catch`, instead of through the guard every other protected route uses. That guard sends the 401 _and_ throws, and the throw is what stops the request; the `catch` was empty and swallowed it. Because the reply had already gone out, nothing further reached the caller and the only trace was a single `Promise errored, but reply.sent = true was set` line in the server log. Everything after the `catch` then ran on a request that had just been refused: the organization was read from an `X-Org-Id` header the caller had written, and with no authenticated user there was no user-scoped database client, so it built one from the publishable key. This was reproduced against the running image with the database pointed at a recorder rather than deduced from the source, because from outside there is nothing to see. One anonymous `GET /extensions/foo/bar` carrying `X-Org-Id: victim-org-…` returned 401 to the client and sent `GET /rest/v1/org_installed_extensions?select=*&org_id=eq.victim-org-…&enabled=eq.true` to the database, with the publishable key as both `apikey` and bearer; a control `GET /vaults` in the same run made no database call at all, and took 1 ms against the extension route's 21 ms. On a deployment where that row comes back it carries the extension's manifest, its handler source and its allowed domains, and a handler marked `public` would have been executed in the sandbox on the strength of it — the response thrown away, the side effects kept, which is a write primitive that returns nothing and so shows up nowhere. **The route now sits behind the same `preHandler` guard as every other protected endpoint**, which is the actual repair: Fastify does not reach a handler once a `preHandler` has refused the request, so "refused" and "did not run" are one event rather than two that have to agree, and no `catch` can put them back out of step. The organization comes from the authenticated user, and `X-Org-Id` is no longer read anywhere. The loader cache, which was keyed on that header and never evicted or bounded, is now keyed on an authenticated organization and holds at most 100. The rest of the API was checked for the same shape — a guard invoked by hand inside a handler rather than as a hook — and there is none; every other route registers it as a `preHandler`. Verified against a rebuilt image: the same request returns the same 401, and the recorder sees nothing at all.
+- **Schema 90 could never be recorded on a real Supabase project, so the app would have said "database out of date" for ever** — everything installed, all 35 objects the manifest asks for reported present, every organization gate passed, and then the stamp was withheld and the script told you to run a function that had just failed to do anything. The cause: Supabase's bootstrap creates a default-privilege entry owned by `supabase_admin` that grants `EXECUTE` on new functions to `anon`, the `postgres` role your SQL editor runs as is not a member of `supabase_admin` and cannot alter it, and the check treated that as fatal. The release contradicted itself about the same condition — the lockdown script hit it, printed `COULD NOT CHANGE`, and still said `PASS`. It is now advisory in both places, with the same wording. It has no effect on anything that exists, because everything shipped is revoked from `anon` by name; its only real consequence is that a function created by some _later_ migration is born reachable, and that is still caught by name and still blocks the stamp. This was not visible in the previous release's own testing because the container it was verified in ran `postgres` as a superuser — Postgres 16 and later silently refuse `ALTER ROLE postgres NOSUPERUSER`, so the demotion Supabase performs never happened and every privilege check answered yes for the wrong reason.
 - **`parts_with_pricing` returned every organization's parts and prices to anyone with the publishable key and no login** — file ids, part numbers, descriptions, paths, revisions, states, preferred supplier, supplier code and unit price, over a plain `GET /rest/v1/parts_with_pricing`. Two things had to be true at once and both were. A view has no row-level security of its own, and this one was not `security_invoker`, so it read its underlying tables as its owner and their policies did not apply either. And nothing in the release could see it: the anon check filtered on ordinary tables and skipped views entirely. The view is now `security_invoker` and granted only to signed-in roles, so a member of one organization sees their own parts through it and nothing else; every view and materialized view in `public` is now swept by the schema, by the lockdown script and by verification. Reproduced before and after against a container built from Supabase's own bootstrap with `postgres` genuinely demoted: before, an anonymous `GET` returned another tenant's ITAR-marked part with its unit price; after, `permission denied for view parts_with_pricing`, while a signed-in member of that organization still reads their own rows.
 - **Anyone with an account could create a working share link for any other organization's file** — `create_file_share_link` took an organization id and a file id, checked that you belonged to the organization, and then inserted the file id without ever asking whose file it was. Passing your own organization id with a foreign file id minted a real token; redeeming it anonymously returned `is_valid = true` and the file, and it did so even with `require_auth = true`, which the validation function ignored completely. The organization id it handed back was the link's rather than the file's, so anything downstream looked in the wrong tenant. It now derives the organization from the file and ignores the argument, `require_auth` is honoured, and the same review found the same shape — a check on one argument while a second argument chooses the row — in `set_item_designation_assignment`, which is fixed too. Verification gained a check for that shape specifically, because neither existing check could see it: calling the function with nulls produced a refusal, and the roles allowed to execute it were correct.
 - **A newly signed-up account with no organization could read and change other organizations' data** — nine membership tests were written as `p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())`. For an account whose `users.org_id` is still `NULL` — which is every account between signing up and joining — the subquery returns one `NULL` row, `NOT IN` evaluates to `NULL` rather than true, the `IF` is not taken and the function runs against whatever organization was named. From such an account it was possible to read another organization's Odoo configuration including its instance URL and database name, read its integration status, read its item designations and their assignments, and overwrite and then delete rows in its `item_images`. The API was never the way in — it refuses users with no organization — but PostgREST is reachable directly with the publishable key. All nine are gone, including the four that happened to be covered by an adjacent admin check, because a gate whose correctness depends on a neighbouring condition is not a gate. Verification now scans for the shape and refuses to certify a database containing it anywhere.
 - **A share link could be spent without anything being downloaded** — asking whether a link was still valid counted as a download, so a ten-download link was dead after twelve calls from anyone holding the token, and its owner had no way to tell what had happened. Validating and downloading are now separate, and only the download counts. In the same pass, share tokens are 128 bits from the database's cryptographic random source rather than twelve characters from `random()`, which is a pseudorandom sequence and not a secret; and `get_org_auth_providers` now renders an organization that exists and one that does not through the same code path, because they previously differed in key order and in the spaces around the colons — enough to enumerate which organization slugs are real, and then to read which single sign-on providers each of them uses, without an account.
 - **Anyone who knew your project's address could lock, rename and read your files without an account, and the fix in the entry below did not work** — that entry describes withdrawing `EXECUTE` from `PUBLIC` on the functions it had gated. On Supabase that removes nothing. Supabase's own bootstrap runs `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role`, so every function is created carrying an **explicit** grant to `anon` — the role a caller gets when they present the publishable key and no login — and revoking from `PUBLIC` strips the separate world grant while leaving the `anon` one untouched. All 159 functions stayed callable by anyone. The check written to confirm otherwise asked `has_function_privilege('public', ...)`, which is a question about the world grant rather than about `anon`, so it answered "nothing to do" and the verification script printed an all-clear over a completely open database. Both were verified by execution against a container carrying Supabase's real bootstrap; the absence of that bootstrap from the earlier test is what hid all of this. **The roles are now named.** `EXECUTE` is withdrawn from `anon` by name, from every function in `public` except two that genuinely run before you log in — `get_org_auth_providers`, which the sign-in screen asks which methods your organization allows, and `validate_share_link`, which is how a share link works for someone who has no account. Those two are declared in one list in `core.sql` that the verifier reads, so the exception is stated in one place rather than implied by an absence. The default privilege that recreates the grant is withdrawn too, so a function added next month is not born open. Signing in, accepting an invitation, joining by organization code and resetting a password are unaffected: the desktop app and the renderer authenticate with the publishable key but carry your user token, which makes them `authenticated` and not `anon`, and the API reserves its service-role client for invitations, the credential store and customer sync. `supabase/tools/emergency-lockdown.sql` applies exactly this closure to a running database on its own, without any of the rest of this release, for the interval between reading this and finding time to upgrade.
-- **Thirteen more functions took an organization's file or ECO and asked nobody's permission** — the entry below gated the functions that take an organization id as an argument. It did not gate the ones that take a *file* id, or a vault id, or an ECO id, and then reach the organization through it, which is most of the ones that do real work: checking a file out and in, moving and renaming it, running it through a workflow, reading someone's permissions and vault access, instantiating a change-control process. Proven end to end as an unauthenticated caller: `checkout_file` on another organization's file returned `{"success": true}` with the whole row — part number, description, storage path — and then `move_file` renamed it. Each of these now resolves the organization from the entity it was handed and checks membership against that, and a file that belongs to someone else is refused with the same "File not found" as a file that does not exist, so this is not a way to discover which ids are real. **They also stopped believing the caller about who they are.** The acting user was an argument, `p_user_id`, which meant the audit trail, the checked-out-by marker and the version history recorded whatever the caller typed there — someone else's name, on an action they did not take. It now comes from the signed token. The argument remains in every signature so that nothing calling these needs to change, and is ignored. Three functions that run only from triggers, where there is no caller to identify, were withdrawn from every role instead of being gated. A separate class turned up in the same sweep and is fixed with it: six SOLIDWORKS licence functions asked whether you were an admin without asking *of what*, so an admin of any organization could assign, revoke, activate and deactivate any other organization's licences.
+- **Thirteen more functions took an organization's file or ECO and asked nobody's permission** — the entry below gated the functions that take an organization id as an argument. It did not gate the ones that take a _file_ id, or a vault id, or an ECO id, and then reach the organization through it, which is most of the ones that do real work: checking a file out and in, moving and renaming it, running it through a workflow, reading someone's permissions and vault access, instantiating a change-control process. Proven end to end as an unauthenticated caller: `checkout_file` on another organization's file returned `{"success": true}` with the whole row — part number, description, storage path — and then `move_file` renamed it. Each of these now resolves the organization from the entity it was handed and checks membership against that, and a file that belongs to someone else is refused with the same "File not found" as a file that does not exist, so this is not a way to discover which ids are real. **They also stopped believing the caller about who they are.** The acting user was an argument, `p_user_id`, which meant the audit trail, the checked-out-by marker and the version history recorded whatever the caller typed there — someone else's name, on an action they did not take. It now comes from the signed token. The argument remains in every signature so that nothing calling these needs to change, and is ignored. Three functions that run only from triggers, where there is no caller to identify, were withdrawn from every role instead of being gated. A separate class turned up in the same sweep and is fixed with it: six SOLIDWORKS licence functions asked whether you were an admin without asking _of what_, so an admin of any organization could assign, revoke, activate and deactivate any other organization's licences.
 - **The verification script could certify a database that was 62 tables short, and did** — `verify-schema.sql` is what this release asks you to run at the end of an upgrade, and what records the version the app then trusts. A database with only `core.sql` applied — no files table, no workflows, no inspection, 62 of 76 tables absent — was stamped as fully verified at version 89. Each required module was probed by asking whether one of its own tables existed, and a missing table was read as "this module is not installed, skip it" rather than "this module is missing", which is a distinction the manifest could not express for a module that is not optional. Required modules now have no such escape. Three further defects came out of the same review and are fixed together. The check that a function contains its authorization check read the function's source for the words, so a check inside a comment or inside `IF false THEN` satisfied it, and both were accepted; comments and string literals are now stripped, and — the part that actually settles it — verification now **calls** each org-scoped function with an organization id the caller has nothing to do with and requires it to refuse, inside a transaction that is always rolled back. A dead-branch check that still passes the text test is caught by that. Modules drop their functions by exact signature, so a previous release's copy with a different argument list survived an upgrade and sat beside the current one, reachable over the API by naming its arguments; leftover overloads are now detected by name and reported with the `DROP` that removes them. And the four checks that would have caught any of this were all `RAISE NOTICE`, printed beside a stamp that consulted only the manifest, so the script could tell you the database was wide open and pronounce it verified in the same run — they now withhold the stamp and end the script with an error.
 - **Stamping the schema version reported success to callers who had not written anything** — `schema_version` is protected by row-level security and only the service role may update it, so for anyone else the update matched no row and succeeded quietly. Nothing checked how many rows had changed, so the function returned `{"stamped": true}` with the recorded version untouched, and both `anon` and `authenticated` could get that answer. It now fails, saying which role could not write and where to run it from. A comment claiming only the schema owner could reach the function was wrong in both halves and is gone; the function is now withdrawn from `anon` and `authenticated` by name, which is what makes the claim true.
 - **A database function that took an organization id would act on any organization you named** — the RPCs that hand out RFQ numbers, hand out serial numbers, read an organization's settings and list a vault's files all run with row-level security switched off, because that is what `SECURITY DEFINER` means, and they took the organization id in their arguments as fact. None of them looked at who was calling. Worse, PostgreSQL grants `EXECUTE` on a new function to everyone, so the `GRANT EXECUTE ... TO authenticated` written beside each one read as a restriction while granting a privilege the world already had — the functions were reachable **without signing in at all**. Verified in a container: an anonymous caller asking `generate_rfq_number` for another organization's id got back `RFQ-2026-0003`, which told them that organization had raised two RFQs this year, created a counter row for it seeded from RFQ rows they could not otherwise read, and burned a number out of its sequence. The same caller got every part number and description in another organization's vault out of `get_vault_files_fast`. Thirteen functions now begin by proving the caller belongs to the organization they named, and the whole class has had `EXECUTE` withdrawn from `PUBLIC` so the grants mean what they say. Three functions that create an organization's default teams, job titles and customer categories keep no membership check, because they run from a trigger at the instant an organization is created and it has no members yet; they were withdrawn from `PUBLIC` instead, which removes them as endpoints entirely. `supabase/tools/verify-schema.sql` now fails if any org-scoped function of this kind stops consulting the caller, so the sweep is a standing rule rather than a one-off. Naming an organization that does not exist, or none at all, now returns a plain authorization or "organization is required" error instead of leaking a raw foreign-key violation.
 
 ### Added
+
 - **Vault Audit — find out whether BluePLM and your SOLIDWORKS files still agree, from Settings rather than from a terminal** — the divergence scan shipped in 3.24.0 and could only be started with `npm run scan:divergence`, which put the one person who needs its answer behind a command line. It is now **Settings → Organization → Vault Audit**, visible to admins only. Pick a scope, press Run, and watch a progress bar: a full vault is around eight thousand documents at roughly twenty milliseconds each, so about three minutes, and it can be cancelled after the file in flight. The default scope is the files BluePLM already records per-configuration metadata for, which is where a configuration record can have lost something and is roughly a fifth of the work; whole-vault and single-folder are the other two. The result leads with how many files have any finding at all, then sorts the individual values into four buckets ordered by how little can be done about each: **lost from both sides**, which nothing can bring back; **the two disagree**, where both copies survive and a person has to choose; **the file still has it**, which is real damage with a known-good source; and **not BluePLM's to hold**, which is not damage at all and would be an invention to "fix". Every value drills down to the file, the configuration and both sides' values, with a jump straight to the file in the browser. **Configurations are compared by name and never by count**, which is not a detail: one part in this vault carries twenty-six configuration entries against fifteen real configurations, and by count that record looks eleven entries short when in fact it describes every configuration the file has plus eleven keys for configurations that were since deleted. Those are reported as stale entries — housekeeping — and never added to anything called a loss. **The audit reads and reports; it repairs nothing**, writes nothing to the database and touches no file in the vault. Reads go through a new Document-Manager-only path rather than the ordinary property read, which asks whether SOLIDWORKS has the file open and reads through the live session when it does; documents SOLIDWORKS is currently holding are skipped and reported as unread, so an audit cannot disturb a session in progress. Results are recomputed each time rather than stored, because a saved audit stops being true the moment anyone checks a file in and does so silently; the JSON artifact the scan already writes to the log directory remains the durable copy, and it carries the timestamp that makes its age obvious.
 - **The Vault Audit needs SOLIDWORKS service 1.21.0, and on an older one it now says so before it starts rather than failing on the first file** — the audit's Document-Manager-only read is a new service command, `getPropertiesDocumentManager`, which is what lets a vault-wide walk read eight thousand documents without routing a single COM call through the SOLIDWORKS you have open. It shipped without a version, and that is the whole of this entry: the service on your computer was built before the command existed, the app's version check compared two numbers that were still equal and reported "Service is up to date", and the audit would have walked for three minutes and then failed on every file with an error that read like a vault full of unreadable documents. **The service is 1.21.0 and the app expects 1.21.0**, so a machine that has not rebuilt is now told it has not rebuilt. Rebuild with `npm run build-sw-service` and restart the service. Until you do, the Vault Audit page shows the same "Service rebuild required" notice the Service tab has always shown — the same words, from the same check, because a second wording invented at the point of failure is how "up to date" and "this cannot run" end up on screen together — and the Run button is inactive rather than starting something that cannot finish. Nothing else in the release needs the new service; this is additive, so the minimum compatible version is unchanged and every other feature keeps working on the service you have. **The version check is now the second line of defence rather than the only one.** A version gate is a claim about the service made somewhere other than the service, and it can drift again exactly as it just did, so the service itself now answers an action it does not implement with `errorCode: "UNKNOWN_ACTION"` and the name of the action, instead of prose that any failed read could also have produced. The audit recognises that answer, stops on the first file, and reports that the service is missing a command — rather than recording eight thousand files as unreadable, which is the report that would have sent someone looking at their vault.
-- **A repair for the configuration entries the old check-in erased — as SQL you read before you run it, not a button** — `jsonb ||` is a top-level merge, so the pre-fix `checkin_file` patching `custom_properties._config_tabs` with only the configurations you had edited replaced the whole map with those few, and an empty-but-present pending map replaced it with nothing at all. Both were fixed in schema 87, but nothing rewrites the rows that were already truncated and nothing else in the codebase writes these maps, so there is no self-healing: those rows stay short until something puts the entries back. The values themselves were never lost — the wipe destroyed the database's copy and not the file's, and the SOLIDWORKS documents still hold them. `npm run repair:config-maps` reads two files you produce yourself, a shape export from the SQL editor and the Document Manager census, and prints what it would fill. With `--emit-sql` it writes a `.sql` file for whoever owns the database to read and run; **there is no database client anywhere in its import graph, so the tool cannot apply anything even if you ask it to**, and it does not open the vault either. **Losing data is not something this can express**, which is a stronger claim than it being careful: every proposal is an entry for a configuration key that is *absent* from the row, filtered on key presence before any value is looked at, and every generated statement writes `computed || existing` with the live row on the right — so an entry the row already holds wins on every shared key, the key set only ever grows, and the right-hand side is read when you run it rather than when the plan was made, which means a stale plan degrades to a smaller repair and never to an overwrite. There is no `DELETE` and no way to remove a key. Keys naming configurations that no longer exist are reported so you can see them and left exactly where they are. A row whose map is absent entirely is skipped rather than created: the database never described that file's configurations, so the document's values were never BluePLM's to lose, and adopting them would invent database state rather than restore it — the same judgement the Vault Audit calls "not BluePLM's to hold". Values are read only from the keys BluePLM's own writers produce, taken from the divergence module's field specs rather than restated, so the tool tracks that list instead of becoming a sixth copy of it. Deriving a configuration's tab by splitting its `Number` is possible, off by default and always labelled as derived, because that produces a value the database never distinctly held.
-- **That repair is now a button, and the guarantee moved into the database rather than being dropped — schema 95** — the entry above earns its safety from a fact about the tool: no database client appears anywhere in its import graph, so it cannot write, and you can confirm that by reading its imports. A button cannot be defended that way, because the whole point of a button is that it writes. So rather than give the guarantee up in exchange for convenience, it moved into `repair_config_maps()`, where it is *stronger* than it was: the script's property held for one caller, and this one holds for every caller there will ever be, including any future screen, any script, and anyone with the publishable key and a signed-in token. **Three things are structural rather than conventional, and none of them depends on the argument.** The merge is written in the function body as `computed || existing` with the row on the right, so an entry BluePLM already holds wins on every shared key and the key set can only grow — there is no `DELETE`, no `jsonb - key`, and no path that reads a value out of the row and writes it back, which means no request exists that turns this into an overwrite or a deletion. The keys it writes come from a constant in the body and not from the request, so a request naming `part_number` or `_secret` is not so much refused as unseen: nothing reads it, and every other key under `custom_properties` is carried through untouched. And a map the row does not already have is not created, because a file whose configurations the database never described lost nothing, and filling it would invent database state rather than restore it. The row is read *inside* the `UPDATE`, so a request built against a snapshot that has since gained entries degrades to a smaller repair rather than to an overwrite, and the receipt reports the entries that actually landed rather than the entries asked for, so that degradation is visible instead of silent. Keys naming configurations that no longer exist are carried through untouched for the same reason as everything else: removing one is a deletion, and a deletion is unrepresentable here. Reachable only by an organization admin who is a member of the organization named — the two are checked independently, because a gate whose correctness depends on the neighbouring condition is not a gate — unreachable by `anon`, and every applied repair writes an `activity` row recording what it changed. **Proven by execution rather than by argument**, which matters because every claim above would also be true of a function that did nothing at all: `harness/sql/repair-config-maps-proof.sql` plants a row value that *disagrees* with what the request proposes for the same configuration, plants eleven keys naming configurations that were since deleted, and requires all of them to survive intact; it carries a sentinel case that fails if the merge is ever written the other way round, so the suite can tell a working function from an inert one. 23 of 23 cases pass on PostgreSQL 17.6 against the full schema and seed.
+- **A repair for the configuration entries the old check-in erased — as SQL you read before you run it, not a button** — `jsonb ||` is a top-level merge, so the pre-fix `checkin_file` patching `custom_properties._config_tabs` with only the configurations you had edited replaced the whole map with those few, and an empty-but-present pending map replaced it with nothing at all. Both were fixed in schema 87, but nothing rewrites the rows that were already truncated and nothing else in the codebase writes these maps, so there is no self-healing: those rows stay short until something puts the entries back. The values themselves were never lost — the wipe destroyed the database's copy and not the file's, and the SOLIDWORKS documents still hold them. `npm run repair:config-maps` reads two files you produce yourself, a shape export from the SQL editor and the Document Manager census, and prints what it would fill. With `--emit-sql` it writes a `.sql` file for whoever owns the database to read and run; **there is no database client anywhere in its import graph, so the tool cannot apply anything even if you ask it to**, and it does not open the vault either. **Losing data is not something this can express**, which is a stronger claim than it being careful: every proposal is an entry for a configuration key that is _absent_ from the row, filtered on key presence before any value is looked at, and every generated statement writes `computed || existing` with the live row on the right — so an entry the row already holds wins on every shared key, the key set only ever grows, and the right-hand side is read when you run it rather than when the plan was made, which means a stale plan degrades to a smaller repair and never to an overwrite. There is no `DELETE` and no way to remove a key. Keys naming configurations that no longer exist are reported so you can see them and left exactly where they are. A row whose map is absent entirely is skipped rather than created: the database never described that file's configurations, so the document's values were never BluePLM's to lose, and adopting them would invent database state rather than restore it — the same judgement the Vault Audit calls "not BluePLM's to hold". Values are read only from the keys BluePLM's own writers produce, taken from the divergence module's field specs rather than restated, so the tool tracks that list instead of becoming a sixth copy of it. Deriving a configuration's tab by splitting its `Number` is possible, off by default and always labelled as derived, because that produces a value the database never distinctly held.
+- **That repair is now a button, and the guarantee moved into the database rather than being dropped — schema 95** — the entry above earns its safety from a fact about the tool: no database client appears anywhere in its import graph, so it cannot write, and you can confirm that by reading its imports. A button cannot be defended that way, because the whole point of a button is that it writes. So rather than give the guarantee up in exchange for convenience, it moved into `repair_config_maps()`, where it is _stronger_ than it was: the script's property held for one caller, and this one holds for every caller there will ever be, including any future screen, any script, and anyone with the publishable key and a signed-in token. **Three things are structural rather than conventional, and none of them depends on the argument.** The merge is written in the function body as `computed || existing` with the row on the right, so an entry BluePLM already holds wins on every shared key and the key set can only grow — there is no `DELETE`, no `jsonb - key`, and no path that reads a value out of the row and writes it back, which means no request exists that turns this into an overwrite or a deletion. The keys it writes come from a constant in the body and not from the request, so a request naming `part_number` or `_secret` is not so much refused as unseen: nothing reads it, and every other key under `custom_properties` is carried through untouched. And a map the row does not already have is not created, because a file whose configurations the database never described lost nothing, and filling it would invent database state rather than restore it. The row is read _inside_ the `UPDATE`, so a request built against a snapshot that has since gained entries degrades to a smaller repair rather than to an overwrite, and the receipt reports the entries that actually landed rather than the entries asked for, so that degradation is visible instead of silent. Keys naming configurations that no longer exist are carried through untouched for the same reason as everything else: removing one is a deletion, and a deletion is unrepresentable here. Reachable only by an organization admin who is a member of the organization named — the two are checked independently, because a gate whose correctness depends on the neighbouring condition is not a gate — unreachable by `anon`, and every applied repair writes an `activity` row recording what it changed. **Proven by execution rather than by argument**, which matters because every claim above would also be true of a function that did nothing at all: `harness/sql/repair-config-maps-proof.sql` plants a row value that _disagrees_ with what the request proposes for the same configuration, plants eleven keys naming configurations that were since deleted, and requires all of them to survive intact; it carries a sentinel case that fails if the merge is ever written the other way round, so the suite can tell a working function from an inert one. 23 of 23 cases pass on PostgreSQL 17.6 against the full schema and seed.
 - **Every pull request and every push to `main` now has to pass the typecheck and the tests before anyone looks at it** — this repository had three GitHub Actions workflows and none of them ran a check. They build installers on a tag, publish the API image, deploy the docs; nothing verified a change before it landed. The `catch` block above that reported `extensionId is not defined` on every failed extension install is exactly what that costs: a one-line compiler error, in a file the authoritative gate did not cover, that reached users because the gate was something a person had to remember to run. A new `CI` workflow runs `npm ci`, `npm run typecheck` and `npm test` on both triggers — a fresh install from the lockfile, so a dependency that is only present because it is already on someone's disk fails here rather than in a release. A full run takes about a minute of compute. Linting runs beside it and is deliberately **not** blocking: `npm run lint` currently reports 136 errors and 539 warnings across 172 files, all of them pre-existing, and a gate that is red the day it is installed gets switched off before anybody fixes anything. It reports the count so it can be driven down, and it can be made blocking once it reaches zero. The workflow runs on Node 22 rather than the Node 20 the release build uses, because on Node 20 the test run is not merely slower or noisier but wrong: `src/lib/network.ts` reads `navigator.onLine` when it is imported, `navigator` is a global that arrived in Node 21, and on 20 two suites fail to import and 25 tests silently do not run. Node 22 is also what Electron 39 embeds, so it is the closer match to what this code runs on in the first place. The C# tests under `solidworks-service/` are not wired in: they target .NET Framework 4.8 and the Document Manager tests need a licensed SOLIDWORKS installation, neither of which a hosted runner has.
 
 - **The REST API is now typechecked by that same gate, and the reason it was not is worth writing down** — the gate covered the desktop app and the Electron main process but skipped `api/`, because `npm run typecheck:api` failed and a gate that is red on the day it is installed gets switched off. It failed on two errors that both read as something serious: `@fastify/helmet` could not be found, and `FastifyReply` was an unknown name. Neither meant what it looked like, and **no deployed API was ever affected by either** — `@fastify/helmet` has been listed in `api/package.json` and pinned in `api/package-lock.json` since v3.18.0, added in the very same commit as the import that uses it, and the published image is built by installing from exactly those two files. What was missing was an install, not a dependency: `api/` is a separate deployable with its own manifest and lockfile, the root `npm ci` does not touch either of them, and so a typecheck run from the repository root resolved the API against whatever the desktop app happened to have hoisted into the shared `node_modules` — a different set of packages, at potentially different versions, from the ones that actually ship. The gate now installs `api/`'s own lockfile before typechecking it, so the API is checked against the versions its image is genuinely built from rather than against the desktop app's coincidental neighbours. The second error had the same root and a more instructive shape: `api/types.ts` names `FastifyReply` inside a `declare module 'fastify'` block without importing it, and names in such a block resolve against the ambient type graph rather than the file's own imports — so it compiled only as a side effect of `@fastify/helmet` being installed and pulling Fastify's types into scope. Deleting nothing but helmet reproduced both errors together. The type is now imported explicitly and the hook it describes given a name of its own, so a file that defines the API's own types no longer needs an unrelated security package present in order to mean anything.
 
 ### Changed
-- **Moving a file to the trash now requires the Delete permission on Explorer, not Edit.** Deleting a file in BluePLM is a soft delete, and it was authorized under `edit` while the permanent delete beside it correctly required `delete`. An organization that deliberately granted Edit and withheld Delete had still granted the ability to move its entire vault to the trash. If your team relies on Edit-only users being able to trash files, grant them Explorer → Delete before upgrading. Restoring a file from the trash still needs only Edit. Attempting it without the permission now explains that, rather than showing the raw database message *"JSON object requested, multiple (or no) rows returned"*.
+
+- **Moving a file to the trash now requires the Delete permission on Explorer, not Edit.** Deleting a file in BluePLM is a soft delete, and it was authorized under `edit` while the permanent delete beside it correctly required `delete`. An organization that deliberately granted Edit and withheld Delete had still granted the ability to move its entire vault to the trash. If your team relies on Edit-only users being able to trash files, grant them Explorer → Delete before upgrading. Restoring a file from the trash still needs only Edit. Attempting it without the permission now explains that, rather than showing the raw database message _"JSON object requested, multiple (or no) rows returned"_.
 - **Approving an unassigned workflow gate now requires being one of the gate's reviewers.** Previously any member of the organization could approve a review that named no assignee, even though the "My Reviews" list only ever offered it to the gate's configured reviewers. The two now use the same rule. A gate that names no reviewers at all is open to anyone holding Reviews → Edit, where before it was open to everyone.
 - **Sync Metadata now refuses to write when it cannot read a file's configurations, instead of writing the document properties and reporting success.** Previously, if the SOLIDWORKS service was not running, Document Manager was unlicensed, or the document could not be opened, BluePLM wrote the file's own property bag, confirmed that one scope honestly, and reported "PUSH complete — confirmed in the file" — while every configuration in the document kept its old part number. Nothing is written at all now, and the message says why. The same refusal already applied at check-in; the two paths now agree.
 - **Sharing a file now fails for users without permission to share it, instead of quietly producing a working link.** The download URL used to be created before the share was recorded, and the failure to record it was discarded — so a viewer whose share was refused still walked away with a working seven-day public download and left no audit trail. The permission check now happens first, and no URL is created if it fails.
@@ -166,17 +216,18 @@ All notable changes to BluePLM will be documented in this file.
 
 - **Work you did not ask for can no longer open a SOLIDWORKS window** — every request BluePLM makes of SOLIDWORKS now says who asked for it. A request you triggered — expanding a drawing, running a command — is allowed to jump the queue and, if nothing else can answer it, to open the document. A request the file watcher triggered is not: it is answered without SOLIDWORKS or it is not answered, and it waits behind anything on screen. The saves that caused this were ordinary — 88 drawings changed in one folder, each read as its own job at the same priority as the click you had just made — and the result was three minutes of drawings flashing open and closed in front of someone who had asked for none of it. A watcher batch is now a single job that reads one drawing at a time, and a newer batch replaces the running one and discards the reads it had queued rather than draining answers that describe a state of the disk that has already changed. The log line that announces a batch now names a few of the changed paths and the folder they share, so an unexplained one is diagnosable after the fact instead of being a bare count. **The rule above is now structural rather than a matter of timing.** As first written it was a check placed in front of the one step that opens a document, and one step earlier — the cheap read of a document SOLIDWORKS already has open, which every request including a watcher's is allowed to make — called the same routine the gated step did. That routine opens the file when the handle is not there, and starts SOLIDWORKS to open it, so the only thing keeping a watcher away from a window was an "is it open?" answer taken microseconds earlier, and a document closed in that gap would have been reopened by BluePLM. The cheap read now goes through code that has no route to opening anything: it asks the running SOLIDWORKS for the document, and if there is no running SOLIDWORKS or it is not holding the file, it says so and the watcher's request ends there. This is asserted by walking the compiled call graph of that routine and everything it reaches, so a future edit that reintroduces the reachability fails the build rather than waiting for another incident.
 
-- **The guard that stops a metadata field being read behind the overlay now asks the type checker, because a name is not what the bug has in common** — an item number, description or revision has two sides: what the server holds and what you have typed and not checked in. Reading either one directly is how a renumber came to be ignored by a PDF filename and a title block, and one shared overlay is what decides between them. The guard against a new direct read has been three things. It began as two regexes looking for the reversed pair, which caught one of the ten ways there are to write it. It became a scan of the syntax tree, which caught all ten and was then shown nine more that got past it — a parameter destructured under another name, array destructuring, the row carried on an object property, the row returned from a helper, `file['pdmData']`, a computed field name, a reassignment rather than a declaration, and a row that never passes through a name like `pdmData` at all, which is what a query result is. Every rule it had was rooted at a name, and there is always another spelling. What all nineteen have in common is a type, so the scan now builds a real program from the project's own `tsconfig.json` and asks the compiler which interface each property it reads was declared on. All twenty-one shapes are compiled and run against it in the test, along with three that must come back clean, and each records whether the previous scan caught it, so the widening is measured rather than claimed. **The anti-vacuity test was hollow and is not any more**: the three tests asserting that no call site decides for itself all passed with the scan's two main rules deleted, because the test file was inside its own scan and matched itself four times on an unrelated rule while the one test meant to prove otherwise asserted only that *something* had been found. Test files are no longer scanned, and the guard is now that every written-down exemption must still name a real read — delete a rule and the exemptions go stale in a heap. Verified by doing it: removing the property rule fails 19 tests including all three, and removing the reserved-key rule fails 3. **Exemptions are scoped to a function rather than a file.** A whole-file allowance covered `useConfigHandlers.ts` at 978 lines, so a new direct read anywhere inside it was invisible; three entries had gone stale and were exempting nothing at all. The reasons the previous work recorded are kept, because they are worth more than the list — the SOLIDWORKS panel asks whether the file disagrees with the database, a deviation records a checked-in state, the `metadata` command prints both sides on purpose. The honest count, derived rather than inherited and true as of this commit: **162 direct reads in 21 files out of 955 scanned**, exempted by 33 named functions plus the overlay module itself. Eight of those 21 files were invisible to the previous scan entirely, among them the whole write-planning layer. Its limits are written down beside it: a value typed `any` or `unknown` carries no symbol, which is why the two reserved configuration-map keys inside the untyped `custom_properties` column are still matched by name; and a row whose columns land in an anonymous type rather than in `PDMFile` — an RFQ line, a review row — is deliberately out of scope, because no local file stands beside it and there is no pending edit to overlay. The structural fix that would retire this scan is a `PDMFile` whose three governed fields only `overlay.ts` can unwrap, which would make a direct read fail to compile; it is a change to the row type, the overlay, the Supabase mappers and all 21 files at once, so it is not a rider on a test.
+- **The guard that stops a metadata field being read behind the overlay now asks the type checker, because a name is not what the bug has in common** — an item number, description or revision has two sides: what the server holds and what you have typed and not checked in. Reading either one directly is how a renumber came to be ignored by a PDF filename and a title block, and one shared overlay is what decides between them. The guard against a new direct read has been three things. It began as two regexes looking for the reversed pair, which caught one of the ten ways there are to write it. It became a scan of the syntax tree, which caught all ten and was then shown nine more that got past it — a parameter destructured under another name, array destructuring, the row carried on an object property, the row returned from a helper, `file['pdmData']`, a computed field name, a reassignment rather than a declaration, and a row that never passes through a name like `pdmData` at all, which is what a query result is. Every rule it had was rooted at a name, and there is always another spelling. What all nineteen have in common is a type, so the scan now builds a real program from the project's own `tsconfig.json` and asks the compiler which interface each property it reads was declared on. All twenty-one shapes are compiled and run against it in the test, along with three that must come back clean, and each records whether the previous scan caught it, so the widening is measured rather than claimed. **The anti-vacuity test was hollow and is not any more**: the three tests asserting that no call site decides for itself all passed with the scan's two main rules deleted, because the test file was inside its own scan and matched itself four times on an unrelated rule while the one test meant to prove otherwise asserted only that _something_ had been found. Test files are no longer scanned, and the guard is now that every written-down exemption must still name a real read — delete a rule and the exemptions go stale in a heap. Verified by doing it: removing the property rule fails 19 tests including all three, and removing the reserved-key rule fails 3. **Exemptions are scoped to a function rather than a file.** A whole-file allowance covered `useConfigHandlers.ts` at 978 lines, so a new direct read anywhere inside it was invisible; three entries had gone stale and were exempting nothing at all. The reasons the previous work recorded are kept, because they are worth more than the list — the SOLIDWORKS panel asks whether the file disagrees with the database, a deviation records a checked-in state, the `metadata` command prints both sides on purpose. The honest count, derived rather than inherited and true as of this commit: **162 direct reads in 21 files out of 955 scanned**, exempted by 33 named functions plus the overlay module itself. Eight of those 21 files were invisible to the previous scan entirely, among them the whole write-planning layer. Its limits are written down beside it: a value typed `any` or `unknown` carries no symbol, which is why the two reserved configuration-map keys inside the untyped `custom_properties` column are still matched by name; and a row whose columns land in an anonymous type rather than in `PDMFile` — an RFQ line, a review row — is deliberately out of scope, because no local file stands beside it and there is no pending edit to overlay. The structural fix that would retire this scan is a `PDMFile` whose three governed fields only `overlay.ts` can unwrap, which would make a direct read fail to compile; it is a change to the row type, the overlay, the Supabase mappers and all 21 files at once, so it is not a rider on a test.
 
 - **A persisted map keyed by file path can no longer be added without the rename knowing about it, whatever it is called** — these maps hang off a file's absolute path rather than off the file, so renaming a file is a data migration and every one of them has to move. The registry that lists them is checked against the state in both directions; the direction that mattered was checked by a regular expression over one file, which required exactly two spaces of indentation, a name of letters only, a literal colon and the literal word `Record`. It was tested by adding an unregistered map, and it failed correctly. Then four more spellings of the same map passed it: an optional `?` before the colon, an inline `{ [path: string]: string }` instead of `Record`, a type alias, and a digit in the name. A map declared in a different slice file was invisible to it entirely. It is now a type — the `persisted*` keys of the store state whose values are keyed by string, minus the ones the registry names, which must be empty — so an unregistered map stops the build with the compiler naming the key, and it does so wherever the map is declared and however it is spelled. All five spellings plus the other-file case are in the test as data, compiled and checked through the same operator the build uses, along with the boundaries: a persisted value that is not keyed by path is not the registry's business, and a path-keyed map that is not named `persisted*` is not seen, which is the one gap and is written down rather than presumed closed. Verified by doing it: adding `persistedProbe2?: { [path: string]: string }` to the files slice fails the typecheck with the key in the error message, and fails the test.
 
 ### Fixed
+
 - **A database stamped with schema 95 described a release that never existed.** `schema_release_description()` is what lands in `schema_version.description`, and it had drifted from the app's own text for the same version: it carried the opening of 95 followed by the tail of 93 — share-link admission and the anon sweep seeing partitioned tables — and none of the later work in 95 at all. Two hand-written copies of one paragraph, with nothing comparing them and nothing failing when they disagreed. The database-side text is now generated from the app-side entry by `scripts/emit-release-description-sql.mjs`, so the two start identical, and a unit test reads the literal back out of `supabase/core.sql` and fails if they ever diverge — including the specific way this broke, where the SQL ends on the text of an earlier release.
 - **"Write to SW File" followed by "Sync from SolidWorks" no longer reverts the edit you just pushed.** The write set `Base Item Number` and not `Number`, while the sync back reads `Number` first — so using the two buttons in the obvious order read the stale value out of the file and wrote it to the database, bypassing check-in. Both now go through the shared write planner.
 - **Clearing a field now reaches the file as a blank rather than being skipped.** Several write paths could not distinguish a value you deleted from one that was never set, so clearing an item number left the old one sitting in the document while the database moved on. Cleared values are written as empty properties, never removed, so a title block linked with `$PRP:"Number"` renders blank rather than breaking.
 - **A configuration export no longer resurrects a description or tab you had just cleared.** The exported filename and title block fell back to the value read out of the document whenever BluePLM's own value was empty, which is right for a value nobody ever set and wrong for one you deleted.
 - **The item number is now pushed into every configuration whenever it is edited**, rather than only when the file's configuration row happened to be expanded in the browser.
-- **Vault Audit no longer reports "Every value compared agrees" over files it did not compare.** A scan limited to files with a configuration record skips roughly six models in seven, and said nothing about them. The count is now shown, described as *not compared* rather than as a problem, and the all-clear is withheld until the run has covered everything its scope named.
+- **Vault Audit no longer reports "Every value compared agrees" over files it did not compare.** A scan limited to files with a configuration record skips roughly six models in seven, and said nothing about them. The count is now shown, described as _not compared_ rather than as a problem, and the all-clear is withheld until the run has covered everything its scope named.
 - **The configuration-map repair receipt now separates entries that were already in the database from entries that were dropped**, rather than describing all of them as already present. Entries belonging to a file whose row could not be found are called out as lost. Underneath it, the receipt reported a shortfall of zero when entries were dropped: a file that could not be resolved was counted in `files_requested` but its entries were not counted in `entries_requested`, so the one subtraction that answers "did anything get missed" said no for precisely the batch that missed the most.
 - **BluePLM no longer reports "not installed yet" for the configuration-map repair when a different database function is missing.** A partially applied schema told administrators to wait for a release that had already shipped.
 - **A backup whose snapshot listing fails now reports the error** instead of showing a configured backup with no snapshots and nothing wrong.
@@ -188,9 +239,9 @@ All notable changes to BluePLM will be documented in this file.
 - **SOLIDWORKS service: a reply that reports two failed engines now names one of them.** When Document Manager and Pack and Go both failed to duplicate a drawing, the reply's prose led with Document Manager's message while its error code came from Pack and Go, so a caller branching on the code told the user about a different failure than the one the message described.
 - **Six authorization helper functions were named by eleven release-manifest entries without being manifest entries themselves**, so a weakened helper left all eleven reporting a verified schema. They are checked in their own right now.
 - **Schema verification now looks at the storage bucket at all.** It confirms row-level security is enabled on `storage.objects` and prints the installed policies, which it previously never mentioned. See the known issue below.
-- **A client that hit the rate limit was told the server had broken, and in production was not told why** — exceeding the limit produced `HTTP 500` with `{"error":"INTERNAL_ERROR"}`, next to a perfectly correct `retry-after: 59` header, and under `NODE_ENV=production` the message became "Internal server error" so even the reason was gone. The limiter plugin *throws* whatever its `errorResponseBuilder` returns and the error handler reads the status off the thrown value; the builder here returned a plain `{ error, message }` object with no `statusCode`, so the handler's `429` branch never matched and it fell through to `error.statusCode || 500`. The `RATE_LIMIT_EXCEEDED` code the API documents was dead for the global limiter — nothing could produce it. The practical cost is the opposite of what a rate limit is for: a client implementing standard 429 backoff sees a 500, treats it as a server fault, and retries immediately into a server already saying stop. The builder now returns an `Error` carrying `context.statusCode`, which is what the plugin's own default does, and takes the status from the context rather than hardcoding it so a ban threshold's 403 would stay a 403. **The error handler was the other half and is the reason the message vanished.** Anything that was not a validation error or an exact 429 was relabelled `INTERNAL_ERROR`, and in production had its message replaced — including every 4xx, whose message is the only way a caller can learn what to correct and which by definition cannot contain server internals. Client errors now keep their status, are reported under the same code vocabulary `sendError` uses, keep their message in production, and are logged at warn rather than error. Observed on a rebuilt image, in both modes: `HTTP/1.1 429`, `retry-after`, and `{"error":"RATE_LIMIT_EXCEEDED","message":"Rate limit exceeded. Max 3 requests per 60s. Retry in 1 minute."}`.
+- **A client that hit the rate limit was told the server had broken, and in production was not told why** — exceeding the limit produced `HTTP 500` with `{"error":"INTERNAL_ERROR"}`, next to a perfectly correct `retry-after: 59` header, and under `NODE_ENV=production` the message became "Internal server error" so even the reason was gone. The limiter plugin _throws_ whatever its `errorResponseBuilder` returns and the error handler reads the status off the thrown value; the builder here returned a plain `{ error, message }` object with no `statusCode`, so the handler's `429` branch never matched and it fell through to `error.statusCode || 500`. The `RATE_LIMIT_EXCEEDED` code the API documents was dead for the global limiter — nothing could produce it. The practical cost is the opposite of what a rate limit is for: a client implementing standard 429 backoff sees a 500, treats it as a server fault, and retries immediately into a server already saying stop. The builder now returns an `Error` carrying `context.statusCode`, which is what the plugin's own default does, and takes the status from the context rather than hardcoding it so a ban threshold's 403 would stay a 403. **The error handler was the other half and is the reason the message vanished.** Anything that was not a validation error or an exact 429 was relabelled `INTERNAL_ERROR`, and in production had its message replaced — including every 4xx, whose message is the only way a caller can learn what to correct and which by definition cannot contain server internals. Client errors now keep their status, are reported under the same code vocabulary `sendError` uses, keep their message in production, and are logged at warn rather than error. Observed on a rebuilt image, in both modes: `HTTP/1.1 429`, `retry-after`, and `{"error":"RATE_LIMIT_EXCEEDED","message":"Rate limit exceeded. Max 3 requests per 60s. Retry in 1 minute."}`.
 
-- **A request that never finished arriving was never cut off** — Fastify defaults `requestTimeout` and `connectionTimeout` to 0, and 0 means no limit, so how long a single client could hold a connection was decided by whatever proxy happened to sit in front of the service. Measured against the running image rather than inferred: a POST that declared a body and then sent one byte per second was still connected and untroubled after 90 seconds, with nothing in the stack that would ever have closed it. `requestTimeout` is now 15 minutes and a dribbling request ends in a 408. **The number is deliberate and the reasoning is written beside it**, because the same knob decides how long an attacker may stall *and* how long a legitimate upload may take — it is a hard ceiling on the whole transfer, not an idle timer, and a 90 KB body sent evenly over 45 seconds was observed being cut off at 16 seconds under a 15-second ceiling. `POST /files/sync` carries a whole file base64-encoded in its JSON body up to the 100 MB body limit, and 15 minutes is 100 MB sustained at about 1 Mbit, below any link an integration host would be on; a tighter bound would mean killing large syncs that were going to succeed, which is an outage we would have caused ourselves. Two related findings are recorded in the same place. Node will not enforce a request deadline shorter than its own 60-second headers timeout, which Fastify does not expose, so values under a minute do nothing on their own — while a 90-second setting was observed ending a dribbling request at exactly 90 seconds. And **`connectionTimeout` is deliberately left unlimited**: it is an inactivity timer on the socket and cannot tell an idle attacker from a handler that is working, and a customer sync is a single HTTP request that runs for many minutes with nothing on the wire — setting it to 5 seconds was observed killing an 8-second handler mid-flight. The one case it would have covered, a client that connects and sends nothing, is already closed after 60 seconds by Node's headers timeout, which was also observed. `keepAliveTimeout` and `pluginTimeout` are now stated rather than inherited: the first has to stay above the 60-second idle timeout of the platform proxies, or the proxy dispatches onto a socket the server is closing and the caller gets a sporadic 502 with no matching server log; the second is raised to 30 seconds because a miss there is a crash loop rather than a slow start.
+- **A request that never finished arriving was never cut off** — Fastify defaults `requestTimeout` and `connectionTimeout` to 0, and 0 means no limit, so how long a single client could hold a connection was decided by whatever proxy happened to sit in front of the service. Measured against the running image rather than inferred: a POST that declared a body and then sent one byte per second was still connected and untroubled after 90 seconds, with nothing in the stack that would ever have closed it. `requestTimeout` is now 15 minutes and a dribbling request ends in a 408. **The number is deliberate and the reasoning is written beside it**, because the same knob decides how long an attacker may stall _and_ how long a legitimate upload may take — it is a hard ceiling on the whole transfer, not an idle timer, and a 90 KB body sent evenly over 45 seconds was observed being cut off at 16 seconds under a 15-second ceiling. `POST /files/sync` carries a whole file base64-encoded in its JSON body up to the 100 MB body limit, and 15 minutes is 100 MB sustained at about 1 Mbit, below any link an integration host would be on; a tighter bound would mean killing large syncs that were going to succeed, which is an outage we would have caused ourselves. Two related findings are recorded in the same place. Node will not enforce a request deadline shorter than its own 60-second headers timeout, which Fastify does not expose, so values under a minute do nothing on their own — while a 90-second setting was observed ending a dribbling request at exactly 90 seconds. And **`connectionTimeout` is deliberately left unlimited**: it is an inactivity timer on the socket and cannot tell an idle attacker from a handler that is working, and a customer sync is a single HTTP request that runs for many minutes with nothing on the wire — setting it to 5 seconds was observed killing an 8-second handler mid-flight. The one case it would have covered, a client that connects and sends nothing, is already closed after 60 seconds by Node's headers timeout, which was also observed. `keepAliveTimeout` and `pluginTimeout` are now stated rather than inherited: the first has to stay above the 60-second idle timeout of the platform proxies, or the proxy dispatches onto a socket the server is closing and the caller gets a sporadic 502 with no matching server log; the second is raised to 30 seconds because a miss there is a crash loop rather than a slow start.
 
 - **The Render blueprint could not have deployed the API, and still carried the defect the image had just had removed** — `render.yaml` built with `npm install` and started with `npx tsx api/server.ts`. All three parts were wrong at once. `api/` is a separate deployable with its own manifest and lockfile, so a root install never installs the API's dependencies and the service would have started with nothing to run. `npx tsx` is the same registry fetch at boot that the previous entry removed from the image — a devDependency pulled from the network on every cold start, at whatever version the registry currently serves. It now builds with `npm ci --prefix api && npm run build --prefix api` and starts with `node --enable-source-maps api/dist/server.js`, matching `api/Dockerfile` and `api/railway.json`, so all three deployment targets install from the same lockfile and run the same compiled JavaScript. It also pins `NODE_VERSION` to 22 rather than inheriting whatever default the platform had when the service was created, which is what the image and CI use. Verified by running the blueprint's exact two commands in a clean `node:22-alpine` container: the build emits `api/dist/server.js`, the start command listens, and `/health` answers. `CORS_ORIGINS` is still `"*"` in the blueprint and is left for a separate decision.
 
@@ -208,7 +259,7 @@ All notable changes to BluePLM will be documented in this file.
 
 - **Retitling a part that has configurations wrote the new title into its configurations and not into the part itself, and called that confirmed** — this is the ordinary case, not an edge one: any part or assembly with more than the one default configuration, edited from the datacard or settled during check-in. The write planner built one group per configuration and none for the document's own property bag, and the file-level fields were redirected into the base configuration to be checked there. The read-back duly found them there and reported `verified`, which is the one outcome that stops a retry and that check-in then forgets. Reproduced end to end on a three-configuration part: retitle it and clear its revision, and afterwards the configuration holds `Description: "Viton o-ring", Revision: ""` while the document's own bag still holds `Description: "Original o-ring", Revision: "A"` — no mark, no retry, and a title block reading `$PRP:"Description"` showing the old text for ever. It also put two parts of BluePLM into open disagreement, because Scan for Divergence reads a file-level field from the document's own bag unconditionally and would report as divergent what the write had just reported as confirmed. The planner now writes the document's own bag first and confirms each field where it was written, and the redirection mechanism is gone entirely rather than corrected — it was the only way two parts of the app could hold different beliefs about where a value lives. Configuration-only edits are unaffected and still open the document once: an inline tab or description edit says which one address it is establishing, so the number it carries along to rebuild `Number` is no longer mistaken for a file-level edit.
 
-- **Check-in could send a value to BluePLM that it had never confirmed was in the file** — before promoting your pending edits to the database, check-in writes whatever the datacard could not and then asks, address by address, which of them the file now holds. Two functions a dozen lines apart disagreed about what "no record for this address" meant: the one that decides what still needs writing read it as *owed*, and the one that decides what may be promoted read it as *confirmed*. The second runs last, so the value went to the database and the pending edit was cleared, with nothing anywhere saying the file had not taken it — in direct contradiction of the rule the module states about itself. Four routes reached it, all reproduced and all now covered: a document whose configuration list could not be read at all (a failed read and an empty list were the same value, so check-in planned a file-level write off a failure and confirmed it); a pending edit naming a configuration the document no longer has; editing the file-level Description together with the base configuration's own; and a file-level tab number on a multi-configuration document, which produced no write at all and is reachable from Sync Metadata. An absent record is now unconfirmed, and — the actual repair — every address check-in set out to write is now guaranteed to come back with either a real verdict or an explicit "not attempted", so absence is no longer a state the promotion step can encounter.
+- **Check-in could send a value to BluePLM that it had never confirmed was in the file** — before promoting your pending edits to the database, check-in writes whatever the datacard could not and then asks, address by address, which of them the file now holds. Two functions a dozen lines apart disagreed about what "no record for this address" meant: the one that decides what still needs writing read it as _owed_, and the one that decides what may be promoted read it as _confirmed_. The second runs last, so the value went to the database and the pending edit was cleared, with nothing anywhere saying the file had not taken it — in direct contradiction of the rule the module states about itself. Four routes reached it, all reproduced and all now covered: a document whose configuration list could not be read at all (a failed read and an empty list were the same value, so check-in planned a file-level write off a failure and confirmed it); a pending edit naming a configuration the document no longer has; editing the file-level Description together with the base configuration's own; and a file-level tab number on a multi-configuration document, which produced no write at all and is reachable from Sync Metadata. An absent record is now unconfirmed, and — the actual repair — every address check-in set out to write is now guaranteed to come back with either a real verdict or an explicit "not attempted", so absence is no longer a state the promotion step can encounter.
 
 - **A write that skipped a configuration reported every configuration as confirmed** — writing several configurations goes to SOLIDWORKS as one batch, and the service could name a configuration it had failed to enter in a prose list of errors while still returning overall success. BluePLM counted such a configuration as unaccounted for, logged a warning, and then let the read-back settle it — and the read-back cannot, because a configuration falls back to the document's values when it holds none of its own, so a configuration that was never written reads back exactly like one that was. Proven with two configurations and one skipped: both reported confirmed. Tightening the comparison was not available, because a property that is genuinely absent is a real state for a file last touched by an older service or by SOLIDWORKS itself. The durable fix is in the service: both write paths now report acceptance **per configuration**, naming the ones they could not enter, so BluePLM no longer has to infer it. Anything left unaccounted for is now marked unconfirmed and will be retried instead of being read back into a false confirmation. In the same function, a write that named no address at all — the shape Sync Metadata uses for the document's own bag — could fail with `the file is read-only` and contribute no verdict whatsoever, so the push logged "confirmed in the file" over a file it had not written; such a failure is now carried and reported. **This raises the required SOLIDWORKS service version to 1.20.0**; update it from Settings if you are prompted.
 
@@ -239,13 +290,14 @@ All notable changes to BluePLM will be documented in this file.
 - **The drift scan called values recoverable that BluePLM never owned, and read a total wipe as no loss at all** — `scan-divergence` arrived in the last release to measure how far the database and your SOLIDWORKS files have drifted before anything sets about repairing them, and the repair step it feeds is still to come. Nobody has run it against a real vault yet, which is lucky, because several of its judgements were wrong in the direction that turns into bad writes later. The first: a configuration whose file carries a `Description` — which SOLIDWORKS configurations routinely do, for reasons that have nothing to do with BluePLM — was reported as a value the database had lost and the file still held, on every file, including files that have never used BluePLM's per-configuration descriptions at all; `Suffix` and `Tab` did the same for the per-configuration tab. A repair acting on that bucket would have copied the file's own properties into BluePLM's records and called it a restoration. A value is now called recoverable only when the row demonstrably once recorded that field **and** the file holds the value under the key BluePLM itself writes, and everything else the file has that the database does not is reported in a new section of its own, as needing a decision, with the reason it could not be attributed — on most vaults that will be the large number, and it is not a repair queue. The second was the opposite failure: a check-in that sent an empty set of configuration edits left the row carrying an empty configuration map, which is the complete version of the erasure described below, and the scan read an empty map as a file that had never used configurations — so it reported no loss and kept the file out of the wipe count, meaning the more thoroughly a file had been wiped the more likely it was to be reported as untouched. Whether the map is there is now what counts, not how much is in it, so a map that exists and holds nothing is a file that lost everything. The third would have put the wrong string in the right place: an item number lives in a SOLIDWORKS file twice, as the base and as the base with the configuration's tab appended, and the scan recorded the second where a repair would read the first, so `BR-100-265` would have been written into the field that holds `BR-100`. Every finding now carries the value a repair may actually write, separately from what the file reads as, and says so plainly when there is no such value rather than offering the nearest thing. Four smaller corrections came out of the same pass. A row and a file holding the identical text under an unexpected property name were reported as disagreeing with one another. The count of missing configuration entries included every configuration of every file that has no configuration map, which on a vault that has never used the feature is every configuration in it; those files are now counted and named as excluded instead. A drawing's own item number, which is a copy of its parent model's, was eligible to be promoted into the database as though the drawing were where it came from. And an item number or description that is in the file and not in the database is no longer called recoverable for parts and assemblies either — BluePLM is where those are allocated and authored, so a value only the file has is someone's SOLIDWORKS-side edit, which is your decision and not a repair. The scan is unchanged in the one respect that matters most: it still cannot write. It reads the database, opens documents read-only, and its only output is the report. The report's version number has gone up, so the repair step will refuse one produced before this fix.
 - **Checking in one edited configuration erased every configuration you had not touched** — a part with 68 configurations kept its per-configuration tab numbers and descriptions in a single map on the file's row. Check-in sent only the configurations you had edited during that checkout, and the database merged the incoming properties one level deep, so "here is configuration `AS568-014`" was read as "here are all the configurations" and the other 67 were dropped from the row. It was silent, it happened on the success path, and the only reason it is recoverable is that the wipe destroyed the database's copy and not the SOLIDWORKS file's. Two things changed so that neither half can cause it alone: check-in now sends the complete map — everything already recorded, with your edits laid over it — and the database now merges the per-configuration maps entry by entry rather than replacing them. A new client is therefore safe against a database that has not been updated yet, and an old client is safe against one that has. **This release does not repair rows that have already lost configurations**; run `npm run scan:divergence` to see how many there are, and a later release will repair them.
 - **"Sync Metadata" called a part-written file a success** — writing BluePLM's item number and description into a part with many configurations reports, per configuration and per property, what actually landed. None of it was read. A write that reached 12 of 68 configurations was reported as done, and so was one where the configurations could not be opened at all after the file-level properties had been written. Both now report the failure, name the configurations that refused the write, and say how many there were.
-- **Exports used the item number you had just replaced** — three places read the value the server has before the edit you had made, so between renumbering or retitling a file and checking it in, they produced the old one: exporting a drawing to PDF or DXF, which put the stale number in both the filename and whatever the title block was built from; exporting a single configuration, which built the full item number on the old base so the tab was appended to the wrong root; and the metadata table CSV, whose whole content is those values. All three are things you hand to someone else, so the wrong number left the building. The same three read the per-configuration tab map by taking the configurations you had edited *instead of* the ones already recorded rather than laying the first over the second, so exporting a part after changing one configuration's tab looked the tab up in a map that contained only that configuration. None of this was visible, because editing metadata also wrote the value into the app's in-memory copy of the server row, which made reading either one give the same answer. That copy is being removed in a later release; these are corrected first so that removing it cannot turn them live.
+- **Exports used the item number you had just replaced** — three places read the value the server has before the edit you had made, so between renumbering or retitling a file and checking it in, they produced the old one: exporting a drawing to PDF or DXF, which put the stale number in both the filename and whatever the title block was built from; exporting a single configuration, which built the full item number on the old base so the tab was appended to the wrong root; and the metadata table CSV, whose whole content is those values. All three are things you hand to someone else, so the wrong number left the building. The same three read the per-configuration tab map by taking the configurations you had edited _instead of_ the ones already recorded rather than laying the first over the second, so exporting a part after changing one configuration's tab looked the tab up in a map that contained only that configuration. None of this was visible, because editing metadata also wrote the value into the app's in-memory copy of the server row, which made reading either one give the same answer. That copy is being removed in a later release; these are corrected first so that removing it cannot turn them live.
 - **A field you cleared no longer comes back** — clearing an item number, description or revision and then looking at almost anything other than the cell you cleared it in would show you the old value again. Roughly thirty places each decided for themselves how to combine your edit with the server's value, five different ways, and three of those five could not tell "the user deleted this" apart from "the user has not touched this" — so they fell back to the value you had just deleted. There is now one rule, in one place: a field you edited wins, including a field you edited to nothing. A cleared field reads as empty everywhere, and an empty server value reads as absent rather than as something you chose.
 - **Search, sorting and filtering ignored your unsaved edits** — searching the file list, the command palette and the browser's own filter all matched against the server's item number and description, and sorting the Item Number, Description and Revision columns ranked rows by the server's values while the cells beside them displayed yours. Renaming a part and then searching for the new name found nothing. All of them now read the same value the cell shows. This also covers the details and right-hand panels and the assembly BOM resolver, which displayed server values next to cells showing edited ones.
 - **Following the database install guide produced a database where check-in could never succeed** — `supabase/README.md` gave the module order as 10 → 20 → 30 → 40 → 60 and described everything after 10 as optional. It left out `15-inspection.sql`, which creates the two tables `checkin_file()` reads and writes on every single check-in regardless of file type, and left out `50-extensions.sql` altogether. Nothing objected at install time, because PostgreSQL does not resolve table names inside a function body until the function actually runs, so a fresh install looked complete and then failed every check-in with `relation "inspection_characteristics" does not exist`. The documented order is now `core → 10 → 15 → 20 → 30 → 40 → 50 → 60`, module 15 is marked required rather than optional, and the guide now distinguishes the dependencies that fail loudly at install time from the ones that only surface on first call. Existing databases are unaffected; this corrects documentation and changes no schema.
-- **A Node version bump silently switched off 25 tests, and would have done it again** — `src/lib/network.ts` read `navigator.onLine` at the moment it was imported. `navigator` is a browser global that Node only gained in v21, so on Node 20 the module threw while loading, and the two suites that reach it — the metadata divergence report and the write plan — failed to *import* rather than failing an assertion. That is the quiet kind of failure: nothing said a test was wrong, 25 tests simply never reported, and the count at the bottom of the run was smaller than it should have been in a way nobody had a reason to notice. The read is now guarded exactly the way the `window` event listeners four lines below it always were. In the renderer `navigator` is always defined, so it reads precisely as before and nothing about the app's behaviour changes; anywhere else it assumes online, which is the state the renderer starts in anyway and which the first `offline` event corrects. Confirmed on Node 20 in a container: those two files go from failing to import with no tests run at all, to 25 passing.
+- **A Node version bump silently switched off 25 tests, and would have done it again** — `src/lib/network.ts` read `navigator.onLine` at the moment it was imported. `navigator` is a browser global that Node only gained in v21, so on Node 20 the module threw while loading, and the two suites that reach it — the metadata divergence report and the write plan — failed to _import_ rather than failing an assertion. That is the quiet kind of failure: nothing said a test was wrong, 25 tests simply never reported, and the count at the bottom of the run was smaller than it should have been in a way nobody had a reason to notice. The read is now guarded exactly the way the `window` event listeners four lines below it always were. In the renderer `navigator` is always defined, so it reads precisely as before and nothing about the app's behaviour changes; anywhere else it assumes online, which is the state the renderer starts in anyway and which the first `offline` event corrects. Confirmed on Node 20 in a container: those two files go from failing to import with no tests run at all, to 25 passing.
 
 ### Known issues
+
 - **The vault bucket's storage policies are not in version control.** Nothing in the repository creates them; they were lost during the move to modular schema files before v3.0.0, and whatever is installed on a given deployment was applied by hand. `tools/verify-schema.sql` now prints the inventory and asserts row-level security is on, but it cannot check the policies are correct because there is no committed set to check them against. Storage paths are `{org_id}/{hash[0:2]}/{hash}` and `files.content_hash` is readable across an organization, so a policy without an organization term would make the bucket enumerable across tenants. Bringing them under version control is scheduled for schema 96.
 - **A clean schema stamp does not prove this release's authorization fixes are still in place — it proves the objects exist.** `schema_release_manifest()` can assert that a function or table is present and that its source contains a given string. It cannot express a row-level policy's `WITH CHECK`, and **five of this release's seven authorization fixes are policies**, including the administrator-escalation fix at the top of this list. A later edit that dropped one of those checks would leave `verify-schema.sql` stamping a clean schema over it, which is the same shape as the three checks this release had to repair for certifying more than they verified. `harness/policy-controls.ps1`, new in this release, is the only thing in the repository that detects it: it asserts 38 properties of the installed policies, and all 38 hold on schema 95. It needs Docker and an operator, and it is deliberately not wired into CI, so it is a release-time check rather than a continuous one. If you are deciding whether a green stamp means you are covered, this is the gap.
 
@@ -254,20 +306,22 @@ All notable changes to BluePLM will be documented in this file.
 These entries were written for a 3.24.0 that was prepared and then not released; the tag was never created and no installer was ever built from it. They are reproduced unchanged, because they describe work you are installing for the first time here.
 
 #### Added
+
 - **`scan-divergence` — find out where BluePLM and your SOLIDWORKS files disagree, without changing either** — a read-only scan that walks the vault, reads every part and assembly through the Document Manager library, and reports how the database and the file differ on the fields BluePLM owns: item number, description, revision, and per-configuration tabs and descriptions. It answers four questions. How many files record fewer configurations than the file actually has, which is the fingerprint of check-in replacing the whole configuration map instead of merging into it. For every value the database has lost, whether the file still has it — **recoverable** — or whether neither side does, which is **unrecoverable** and is listed file by file, because a value created through BluePLM before the property-type fix could fail to reach the file at the same time as it was being wiped from the database. Which values the two sides both hold and disagree about, with both versions shown, since only a person can decide those. And how long one read-back of a file costs, including a part with many configurations, which is the number that decides whether every future write can afford to verify itself. Run it with `npm run scan:divergence` while the app is running and you are signed in, or type `scan-divergence` in the app's terminal. It writes a summary you read and a JSON report a later repair step can act on, both into the log folder. It cannot write to your files, your vault or the database — documents are opened read-only, the database is only ever queried, and files under the regression-test folder are hashed before and after to prove their bytes did not move.
 - **Pick which SOLIDWORKS version BluePLM uses** — on a machine with more than one release installed, BluePLM now asks which one you actually work in the first time it starts, and remembers the answer. You can change it later under Settings → Integrations → SOLIDWORKS; switching restarts the SOLIDWORKS service so the choice takes effect immediately.
 - **Hide a folder from non-admins** — an admin can right-click a folder and hide it, which takes it out of the file browser, the sidebar tree, search results and the Item Browser for everyone who is not an admin. This is decluttering, not an access restriction: the files underneath stay readable through the API, and the menu says as much where you turn it on. The list of hidden folders lives in the organization's existing settings, so there is no schema change to apply.
 
 #### Fixed
+
 - **Metadata written without SOLIDWORKS open could vanish, and the "Document Manager cannot write configuration properties" limitation never existed** — creating a property through the Document Manager library asks for the property's type, and BluePLM asked for type `2`, which is not one of the types that exist (the text type is `30`). The library refused every create and said so in its return value; BluePLM discarded that value, counted the write as successful and reported it back to you. Updating a property that was already in the file worked, which is why the failure looked like a configuration-scope problem for three releases: a part whose configurations already carried the properties updated fine, and a part that needed a new one silently did not. Measured side by side on a real part, the documented type writes and reads back correctly at both file and configuration level.
-- **A file's references have never been resolved through the Document Manager library** — the reference search is told what to look for as a set of flags, and BluePLM passed only the document *types* to match, never the flag that means "look for external references". The library did exactly as asked and returned nothing, on every file, always. On a test drawing the old flags found 0 references and the corrected ones found the drawing's model.
+- **A file's references have never been resolved through the Document Manager library** — the reference search is told what to look for as a set of flags, and BluePLM passed only the document _types_ to match, never the flag that means "look for external references". The library did exactly as asked and returned nothing, on every file, always. On a test drawing the old flags found 0 references and the corrected ones found the drawing's model.
 - **A refused write is now reported as a failure** — neither the result of creating a property nor the result of saving the file was checked, so a save the library refused - because the file was read-only, the common case for a vault file you have not checked out - was indistinguishable from one that succeeded. Both are now checked, the write reports the real outcome, and the SOLIDWORKS fallback gets its chance instead of being skipped after an imaginary success.
 - **The SOLIDWORKS path told the same lie, and now it does not either** — the fix above covered the Document Manager library, but the fallback that drives SOLIDWORKS directly had the identical defect and is the path every configuration-level edit took. SOLIDWORKS answers each property write with a code saying whether it landed, and answers the save with a list of reasons it could not be written; all of them were discarded, so "properties set: 6" meant "6 properties were requested", never "6 properties are in the file". Each write is now checked individually and the save's reasons are read and reported in words - "the file is read-only - check it out first" rather than a silent success. A model that saved with a rebuild error still counts as written, because it was.
-- **Editing a configuration's properties no longer waits for SOLIDWORKS to start** — configuration-level edits were deliberately excluded from the fast path, on the belief that the Document Manager library could not create configuration properties. It never had that limitation: creates were failing at *every* scope for the type reason above, and it only looked configuration-specific because file-level properties usually already exist while a configuration frequently needs one created. With the type corrected, configuration edits take the same path file-level edits already did and skip the SOLIDWORKS cold start.
+- **Editing a configuration's properties no longer waits for SOLIDWORKS to start** — configuration-level edits were deliberately excluded from the fast path, on the belief that the Document Manager library could not create configuration properties. It never had that limitation: creates were failing at _every_ scope for the type reason above, and it only looked configuration-specific because file-level properties usually already exist while a configuration frequently needs one created. With the type corrected, configuration edits take the same path file-level edits already did and skip the SOLIDWORKS cold start.
 - **Saving a part with many configurations is one pass over the file instead of one per configuration** — the "batch" write opened, saved and closed the part once for each configuration, so a part with 68 of them did that 68 times inside a 60-second budget and frequently ran out of time. It now writes every configuration inside a single open-and-save through the Document Manager library, and falls back to the old per-configuration route only if that fails. When it does fall back it reports which configurations were written and which were not, rather than declaring success because at least one of them worked.
 - **"Not a native SOLIDWORKS file" for files that plainly were** — the table that turns the library's open-failure code into a sentence was shifted by one from code 2 onward. A read-only file reported "not a native SOLIDWORKS file", a missing licence reported "file is open in another application", and a genuinely missing file reported "file is read-only". Every code now says what it means.
 - **"SOLIDWORKS is not available" while SOLIDWORKS was open** — with two releases installed side by side, BluePLM only ever asked Windows for the version-independent `SldWorks.Application`, which points at whichever release registered last. That is frequently not the one you have open, and a running SOLIDWORKS only publishes itself under its own versioned identifier, so every attempt to connect failed even though the application was right there. BluePLM now tries each installed release in turn and connects to the one that is actually running.
-- **BluePLM no longer starts a second SOLIDWORKS behind your back** — when connecting failed it fell through to launching SOLIDWORKS, which on a multi-version machine started a *different* release that then sat there consuming a licence and never became usable. It now refuses to launch while a SOLIDWORKS is already running and reports why the connection failed instead.
+- **BluePLM no longer starts a second SOLIDWORKS behind your back** — when connecting failed it fell through to launching SOLIDWORKS, which on a multi-version machine started a _different_ release that then sat there consuming a licence and never became usable. It now refuses to launch while a SOLIDWORKS is already running and reports why the connection failed instead.
 - **File reading uses the Document Manager library that matches your SOLIDWORKS** — the library was loaded from a hardcoded path, so a 2024 library could end up reading files saved by 2026. It now comes from the release you selected.
 - **Reading metadata no longer gives up when SOLIDWORKS stops answering** — SOLIDWORKS sometimes runs without publishing itself for other programs to connect to, and BluePLM assumed a file was open in it whenever that happened. That assumption is the safe one, but it also routed every read down the one path that could not possibly work, so properties, configurations and references all failed on files BluePLM could have read perfectly well through the Document Manager library. It now recognises that an unreachable SOLIDWORKS cannot be holding your file either, and reads it directly.
 - **"Sync Metadata" on a drawing explains itself when it cannot reach SOLIDWORKS** — the connection error was flattened into a plain sentence somewhere on the way back, so the check meant to recognise it never matched and you got a generic failure with nothing to act on. The specific cause now survives the trip and you are told the connection to SOLIDWORKS is what needs fixing.
@@ -277,6 +331,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.23.0] - 2026-07-31
 
 ### Added
+
 - **Customers module** — a new top-level module for pulling customers, addresses and orders out of Odoo and enriching them with researched background and a category. It opens as a three-zone workspace: a segment navigator on the left, charts and a virtualized roster in the middle, and a customer 360 panel on the right. The aggregation runs in database RPCs rather than in the client.
 - **`POST /api/customers/sync`** — pulls partners, addresses, orders and order lines from Odoo. Gated on `module:customers` + `create`. Field selection is intersected against Odoo's own `fields_get`, so a field your Odoo doesn't have is skipped rather than erroring the run.
 - **A sync you can watch and stop** — `integration_sync_log` carries phase, progress, heartbeat and cancel columns, the API drives them through a `SyncRun` reporter and honours a cancel request at phase checkpoints, and the UI polls a status endpoint. The sidebar and the main area share one sync button instead of each rendering its own live copy.
@@ -287,6 +342,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Duplicate a SolidWorks part together with its drawing** — a new file context-menu action. A drawing stores the path of its model inside the file, so copying both byte-for-byte would leave the new drawing pointing at the original part; the service rewrites that stored reference after the copy, using the Document Manager API or Pack and Go.
 
 ### Changed
+
 - **A state change is now one atomic, permission-checked operation** — the client used to write the file, its assignment and its state history separately, without checking the file was actually in the transition's starting state, without reading the transition's allowed roles, and without honouring the target state's checkout rule. It also branched on a column that does not exist, so the legacy `files.state` was never updated. All of it now happens inside `execute_workflow_transition`: the guards run, the file and its assignment move together, the revision bumps if the state says so, and `workflow_history` and `file_state_entries` record it. A stale transition list produces a clear "the file is no longer in this state" rather than a silent wrong move.
 - **Approval gates finally mean something** — a gated transition opened review rows that nothing ever read, and re-running it just piled up duplicates. Gates now appear in Reviews under "Workflow gates", honour the gate's approval mode and required count, and the last approval is what moves the file. A rejection cancels the sibling reviews so the change can be resubmitted rather than sitting behind reviews nobody can action.
 - **`POST /files/:id/release`, `POST /files/:id/obsolete` and the `state` field on `PATCH /files/:id/metadata` go through the workflow engine** instead of writing the state column directly, so an ERP integration cannot walk a file past its own workflow's rules. A file that has no workflow assigned still takes the direct path. A blocked change answers `202` with `requires_review`, and a refusal carries the reason.
@@ -306,16 +362,17 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Odoo access is now read-only by construction** — all Odoo calls go through `odooReadOnlyCall`, which validates the model and ORM method against an allowlist and rejects writes, including ones nested inside a batch. The unguarded client is no longer exported.
 
 ### Fixed
+
 - **Drawing a transition landed it somewhere other than where you dropped it** — every node was hit-tested as a rectangle, so an endpoint dropped on a diamond or an ellipse settled in the empty corner of its bounding box; the drop target itself was whichever DOM node happened to receive the mouseup, guarded by half-second timers; and the anchor you chose was thrown away on insert in favour of an arch waypoint, so the finished arrow visibly jumped. Connections now snap to the real silhouette of the shape — the border highlights as you approach it, ports magnetise from 16px away, and the node lights up from 28px out so you never have to land inside it. The rubber band is drawn by the same maths that draws the committed line, the drop is resolved from geometry at pointer up for both drawing and re-anchoring an existing end, and the anchor is saved with the transition. Dropping on the border pins the endpoint there; dropping on the body attaches to the node and re-routes when it moves. Hold **Alt** to place an endpoint exactly, ignoring the magnets. Ports and highlights keep their size on screen, so they are as easy to grab at 25% zoom as at 200%.
 - **Transition handles sat outside the boxes they were attached to** — three different numbers described how tall a state box is: the constants file said 60, the canvas context declared its own private 50 and drew the node with it, and the line renderer anchored to 60. Every unresized node's endpoints were 5px off, resized nodes were off by however much they had been resized because the handle code never passed the size through at all, and a pair of transitions running in opposite directions had their handles on top of each other because only the line applied the 14px separation. The three renderers no longer each re-derive the geometry: the line, its drag handles and the rubber band shown while connecting all read one `computeTransitionGeometry`, so a handle is where its line is by construction. A label pinned to a fixed spot now keeps its drag handle, and a transition whose two states sit on top of each other no longer places its label at `NaN`.
 - **The diagram forgot its layout on every refresh** — node sizes, waypoints, edge anchors and label positions lived only in React state. They are now real columns and survive a reload; a drag writes once when it settles rather than on every frame.
-- **Redo undid things** — undoing an added state pushed a *delete* onto the redo stack, so redo deleted the state instead of bringing it back, and the same for transitions. Redoing a move re-applied the position from *before* the move. Dragging a node was not undoable at all, because nothing ever recorded it. A history entry now always describes what you did, undo reverts it and redo re-applies it, and a failed write puts the entry back rather than leaving the canvas and the database disagreeing.
+- **Redo undid things** — undoing an added state pushed a _delete_ onto the redo stack, so redo deleted the state instead of bringing it back, and the same for transitions. Redoing a move re-applied the position from _before_ the move. Dragging a node was not undoable at all, because nothing ever recorded it. A history entry now always describes what you did, undo reverts it and redo re-applies it, and a failed write puts the entry back rather than leaving the canvas and the database disagreeing.
 - **Ctrl+C, Ctrl+V, Delete and Escape fired while you were typing** — the canvas shortcuts had no editable-target guard, so renaming a state and pressing Delete deleted the state. They now stand down for inputs, textareas, selects and contenteditable fields.
 - **Importing a workflow could leave you with nothing** — the import deleted the existing graph and then inserted the new one without a transaction, so a malformed file emptied the workflow. Import now runs as a single database transaction and validates the payload first, and export carries the whole diagram — styling, node size, gates and routing — so a round trip reproduces what you were looking at. Files exported by the old version still import.
 - **Switching workflows kept the previous canvas** — selection, in-flight drags and layout maps all carried over, and a slow load could overwrite a newer selection.
 - **Saving a drawing stalled for ten seconds and then reported nothing to sync** — before reading a file's properties or references, the service asks whether SolidWorks has that file open, because the fast Document Manager API must not touch a document SolidWorks is holding. That question was answered by a fresh Running Object Table lookup, which fails permanently with `MK_E_UNAVAILABLE` when SolidWorks and BluePLM run at different integrity levels, and a failed lookup is deliberately read as "assume open". So every read took the full SolidWorks path at roughly 2.5 seconds instead of milliseconds — even with no documents open at all, which is exactly what the service's own "list open documents" command reported in 12ms using the connection it already had. The check now answers from that same cached connection first, and only falls back to a lookup when it has none. Two separate subsystems were also each asking the same drawing for its references after a save, queueing a second three-second round trip behind the first; they now share one.
 - **A metadata refresh that found everything already up to date looked identical to one that failed** — it logged only when it changed something, so the common case left no trace at all. Each file's outcome is now recorded, and the summary distinguishes files that were updated, files already in sync, files that could not be read, and files never attempted.
-- **Your biggest customers were showing as churned** — Odoo puts the ordering *contact* in `sale.order.partner_id`, and for a company customer that is one of its employees, so every order was credited to whichever person was named on it. A company's own row kept the date of the last order booked directly against it, aged past the 365-day threshold and read as "Churned" while its contacts showed orders from that morning. Orders are now credited to the company — the contact's `commercial_partner_id`, exactly as Odoo's own sales reporting groups them — and the contact who placed each one is kept in the new `customer_orders.contact_id`. Because standard Odoo defines that field on `res.partner` and not on `sale.order`, the sync builds the contact-to-company map from partner records, reading whichever contacts and parent companies the customer pull did not already return. A **full resync** after upgrading is what re-points the orders already mirrored.
+- **Your biggest customers were showing as churned** — Odoo puts the ordering _contact_ in `sale.order.partner_id`, and for a company customer that is one of its employees, so every order was credited to whichever person was named on it. A company's own row kept the date of the last order booked directly against it, aged past the 365-day threshold and read as "Churned" while its contacts showed orders from that morning. Orders are now credited to the company — the contact's `commercial_partner_id`, exactly as Odoo's own sales reporting groups them — and the contact who placed each one is kept in the new `customer_orders.contact_id`. Because standard Odoo defines that field on `res.partner` and not on `sale.order`, the sync builds the contact-to-company map from partner records, reading whichever contacts and parent companies the customer pull did not already return. A **full resync** after upgrading is what re-points the orders already mirrored.
 - **A company and its contacts no longer appear as separate customers** — the Customers table listed one row per Odoo partner, so "SIX Voice" and "Shuhei Habu" sat side by side splitting the same account's money between them. It now shows one row per company, expandable to reveal the contacts underneath, with spend, orders and recency rolled up. Filters match an account when the company or any of its contacts matches.
 - **The Accounts tab showed a stale segment** — it took the segment from the first contact it happened to read while computing recency across all of them, so an account could read "Churned" next to a last order from today. Both the tab and the customer table now derive the segment from the rolled-up dates.
 - **An account could be named after a contact** — accounts recorded the name of whichever partner reached them first, so "BlueLink" could display as "Blake Bennett". A company name now wins over an individual's.
@@ -327,6 +384,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **XML entities in Odoo responses were not decoded** — a company name containing `&amp;` came back mangled.
 
 ### Schema
+
 - Bumped to schema version **86** (`EXPECTED_SCHEMA_VERSION`). Apply the latest `supabase/core.sql` together with `modules/10-source-files.sql`, `modules/40-integrations.sql` and `modules/60-customers.sql`.
 - Run a **full resync** of customers once afterwards — it is what re-points the orders already mirrored from the contact who placed them to the company behind them.
 - This release expects **API 2.4.0** and **SolidWorks service 1.12.0**: redeploy the API and rebuild the service from `solidworks-service/`.
@@ -336,12 +394,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.22.0] - 2026-07-28
 
 ### Added
+
 - **Copy Item Number / Description via highlight box** — a slow double-click on a non-editable Item Number or Description cell now opens a read-only, auto-selected highlight box (mirroring the Name column) so the value can be copied cleanly. Editing stays gated on checkout, and a fast double-click still opens the file.
 - **Pending panel scrolls the file into view** — clicking a file in the Pending panel (Open Files, checked out, new files) selected it but didn't scroll it into view. It now reuses the existing `pendingScrollToFile` mechanism so the file list scrolls to the selected file.
 - **SolidWorks service status indicator in the top bar** — a CAD glyph next to the org/online-users cluster shows the live service state: a spinner while connecting, a green check when running (with Document Manager), yellow for DM-only, red when stopped, gray when unconfigured. Hover shows service stats (running, SolidWorks installed, DM availability, version, queue depth) and clicking opens Settings → SolidWorks. Toggle it via the top-bar config dropdown ("SolidWorks Status").
 - **Keep SolidWorks warm in the background (organization-wide)** — an admin setting that pre-launches a hidden SolidWorks instance so the first property edit is instant instead of paying a ~40s cold-start. No window is shown. Default on, switchable off per organization.
 
 ### Changed
+
 - **SolidWorks service now starts from the Electron main process at app launch** — the service is launched in parallel with the renderer's initial vault load using a cached auto-start policy, so it's ready in ~2s instead of waiting behind the boot work. The renderer's auto-start becomes an idempotent confirmation. (Takes effect from the second launch after upgrading, once the policy cache is written.)
 - **Interactive SolidWorks commands now jump the queue** — opening a folder floods the concurrency-3 command queue with one preview request per file, which pushed the properties for the file you just clicked (or a status ping) tens of slots back until it timed out. Commands are now tagged interactive (status probes, get/set properties, configurations, references, selection) or bulk, and the queue serves the highest priority first, FIFO within a priority.
 - **Navigating away from a folder cancels its queued previews** — leaving a folder now drops any still-queued preview requests for files no longer on screen. Up to three already dispatched to the service can't be aborted and still run to completion.
@@ -350,6 +410,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **SolidWorks service bumped to 1.10.0** — see the COM stability fixes below.
 
 ### Fixed
+
 - **Startup took 35–40s on a large vault because the file watcher starved the main process** — chokidar walks the whole tree before it reports ready, and on a 27,600-entry vault that measured 194,928ms while saturating the main process event loop the entire time, so the startup vault scan crawled behind it. Windows and macOS now use one native recursive `fs.watch` handle, which the OS sets up in constant time (measured at 0ms on the same vault). The scan itself was also made non-starvable: it yields on a time budget and stops yielding if wall-clock time diverges from time actually spent working. The same vault scan now completes in about 1.6s. The native backend reimplements what chokidar provided — add/change/unlink/addDir/unlinkDir classification and `awaitWriteFinish` — and asks the renderer for a full resync if the watch handle is ever lost. Windows also emits notifications with no filename attached (roughly one every two seconds on an idle vault of this size); those are counted and ignored rather than treated as lost events.
 - **Files showed as modified forever with nothing to check in** — reading metadata back out of a SolidWorks file recorded every value as a pending edit, including values the database already held, and any non-empty pending metadata forces a file to render as modified. A drawing whose properties already matched the server would go orange, come back orange after check-in, and stay that way. Pending edits are now reconciled against the committed values at every point they're created or restored, so a no-op read records nothing and existing phantom entries clear themselves on the next load.
   - This required `get_vault_files_fast` and `get_vault_files_delta` to return `custom_properties` (**schema v73**), since per-configuration item numbers and descriptions live there and the file explorer never loaded the column. As a side effect the `Custom` column, custom-property search matching, grid card metadata, and config-tab exports now show data in the explorer instead of being silently empty.
@@ -374,6 +435,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Review kickback — "invalid input value for enum review_status: kicked_back"** — the `kicked_back` value was added to the `review_status` enum (schema v55) by editing the `CREATE TYPE` statement, which only runs for brand-new databases; pre-existing databases never received the value, so kicking a review back failed. Added an idempotent `ALTER TYPE review_status ADD VALUE IF NOT EXISTS 'kicked_back'` backfill that repairs existing databases.
 
 ### Schema
+
 - Bumped to schema version **73** (`EXPECTED_SCHEMA_VERSION`). Admins must apply the latest `supabase/core.sql` (plus any optional modules in use) for the phantom-modified-file fix and the review kickback repair to take effect.
 
 ---
@@ -381,9 +443,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.21.0] - 2026-06-16
 
 ### Changed
+
 - **SolidWorks write performance & reliability** — file-level metadata edits no longer trigger a SolidWorks cold start: the service now writes file-level-only properties via the Document Manager API first and only falls back to the full SolidWorks COM API when needed (service bumped to **1.2.4**). Description-only edits skip redundant config writes, and service health pings are calmer (less polling churn).
 
 ### Fixed
+
 - **Clearing a description (or item number) now sticks through check-in** — emptying a part/assembly description or item number wrote correctly but then bounced back to the old value on the next read, and emptying-then-checking-in reverted the field entirely. Decisive write handling now persists cleared/blank values instead of treating them as "no change," and the check-in path sends an explicit empty string instead of collapsing an intentional clear (`null`) into `undefined` (which the `checkin_file` RPC's `COALESCE` treated as "no change"). Cleared fields stay empty.
 - **Removing a local copy now clears cached metadata** — "Remove Local Copy" deleted the file from disk but left locally persisted pending metadata (per-config descriptions, part number/description/revision edits) in `localStorage`. Re-downloading from the server could resurrect those stale values, causing different users to see different per-config descriptions for the same part. Deleting a local copy now wipes the persisted metadata for those files so a fresh download pulls clean metadata from the server.
 - **Cold-start version/hash detection no longer reports false changes** — on a cold start (when only the IndexedDB sync index is available), local version and hash lookups missed entries because the seed maps were keyed only by the original-case path while the IndexedDB index uses a lowercase key space. Persisted `localVersion`/`localHash` values are now mirrored under a lowercase key and looked up with a lowercase fallback, so cold-start and warm-refresh loads share a key space and stop surfacing spurious "modified" files.
@@ -393,13 +457,16 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.20.0] - 2026-06-11
 
 ### Changed
-- **Vault access is now opt-in** — previously a user with no vault grants implicitly saw *all* organization vaults (opt-out). Now non-admin users only see vaults they have been explicitly granted access to, via individual `vault_access` or one of their teams' `team_vault_access`; with no grants they see no vaults. Admins continue to see all vaults. `getAccessibleVaults` no longer falls back to "all vaults" on an empty grant set, and `checkVaultAccess` now resolves effective access (individual + team) and denies by default instead of treating a vault with no access rows as unrestricted.
+
+- **Vault access is now opt-in** — previously a user with no vault grants implicitly saw _all_ organization vaults (opt-out). Now non-admin users only see vaults they have been explicitly granted access to, via individual `vault_access` or one of their teams' `team_vault_access`; with no grants they see no vaults. Admins continue to see all vaults. `getAccessibleVaults` no longer falls back to "all vaults" on an empty grant set, and `checkVaultAccess` now resolves effective access (individual + team) and denies by default instead of treating a vault with no access rows as unrestricted.
   - **Breaking for existing orgs**: this is a hard cutover. After upgrading the schema, any non-admin user whose effective vault set is empty (in no team, or only in teams without `team_vault_access` such as the default "New Users" team) loses access until an admin grants it. Users already covered by team or individual grants are unaffected.
 
 ### Fixed
+
 - **Invite vault selections are now applied** — `pending_org_members.vault_ids` chosen when inviting a member were stored and shown in the admin UI but never written to `vault_access` on signup. `apply_pending_team_memberships` now grants those vaults when the invite is claimed, so invite-time vault scoping actually takes effect under the opt-in model.
 
 ### Schema
+
 - Bumped to schema version **62** (`EXPECTED_SCHEMA_VERSION`). Admins must apply the latest `supabase/core.sql` for the invite-grant behavior to take effect.
 
 ---
@@ -407,6 +474,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.19.2] - 2026-06-11
 
 ### Fixed
+
 - **Ghost file after server delete (unrecoverable cache entry)** — deleting a file from the server left a stale entry in the IndexedDB vault cache that no recovery action could clear: check-in failed with `File not found` and discard failed with `Cannot coerce the result to a single JSON object`, because both referenced a file id whose server row was already soft-deleted (and thus invisible to normal queries). Three fixes:
   - `delete-server` now invalidates the vault cache (`clearVaultCache`) after a successful server delete, just like discard does, so the next load rebuilds cleanly instead of resurrecting the deleted file as a ghost.
   - `undoCheckout` (used by Discard) now uses `.maybeSingle()` and treats a missing/already-deleted row as success, instead of throwing PostgREST `PGRST116`. This makes Discard a reliable "clear ghost" escape hatch for any pre-existing stuck entries.
@@ -417,6 +485,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.19.1] - 2026-05-28
 
 ### Fixed
+
 - **Ghost server-only files after move/delete** — moving a file into a subfolder (e.g. `CELSIUS-2/foo.SLDPRT` → `CELSIUS-2/Archive/foo.SLDPRT`) succeeded on disk but the next Refresh resurrected the original location as a synthetic cloud-only entry; an app restart was needed to clear it. Same family of bug caused `delete-server` files to reappear on Refresh. Root cause: the store kept two parallel views of server state (`state.files` with per-file `pdmData`, and a flat `state.serverFiles` array used by `refreshCurrentFolder` to detect cloud-only paths) and only `state.files` was updated on local mutations or realtime echoes — the stale `serverFiles` list still referenced the old path, so step 6 of the refresh pushed a synthetic `diffStatus: 'cloud'` row. Every mutator that touches `state.files` now mirrors the same shape change onto `state.serverFiles`: `renameFileInStore` (file + directory-prefix cases), `batchUpdateFileLocationsFromServer` (realtime move echoes), `updateFileLocationFromServer` (single-file realtime echoes), `removeCloudFile` (drop by id), `removeFilesFromStore` (drop by relative path with directory-prefix support), and `addCloudFile` (idempotent insert by id).
 - **`localHash` / `localVersion` drift causing files to falsely appear "synced"** — Wilson's intermittent symptom (BluePLM showed v2 while disk actually held v1, only fixable by deleting local and repulling) traced to several places where the trust chain for `localHash` and `localVersion` could drift from disk reality:
   - `useLoadFiles`: `existingLocalHashes` was seeded by full path but looked up by either full or relative path; IndexedDB hashes from prior sessions never reached the merge. Now seeded and looked up by both.
@@ -430,9 +499,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.19.0] - 2026-05-14
 
 ### Changed
+
 - **Top search bar defaults to current folder** — placeholder now reads `Search in <FolderName>...` (dim) and results are restricted to files under the current folder. A new "Scope" section at the top of the filter dropdown lets you switch between **Current folder** and **All folders** without leaving the dropdown that already lives on the top bar.
 
 ### Removed
+
 - **System stats topbar widget** — the CPU/Memory/Disk/Network widget in the title bar polled `system:get-stats` every 2 s, and on Windows the `systeminformation` package spawned a fresh `powershell.exe` per WMI/CIM query (multiple per poll). On slower machines those spawns stacked up faster than they could exit, producing 8–10 `powershell.exe` children at ~10% CPU each and starving the main process (which also caused the SolidWorks watchdog `tasklist`/`cmd.exe` `ETIMEDOUT` errors). Removed the widget, the `system:get-stats` IPC handler, the `getSystemStats` preload bridge, and the `systeminformation` dependency. Dev-tools telemetry now reports FPS only (CPU/memory/network graphs and `QuickStatCard`s removed alongside).
 - **⌘K hint in the search input** — the inline keyboard-shortcut badge has been removed (the Ctrl/⌘+K global shortcut still focuses the search bar).
 - **Duplicate filter row in the search dropdown** — the `QuickFilters` row that mirrored the filter button on the top bar has been removed; filters are now configured in one place (the filter button's dropdown).
@@ -442,15 +513,18 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.18.0] - 2026-04-21
 
 ### Security
+
 - **App & IPC** — Vault-scoped `fs:read-file` / `fs:write-file`; extension secrets require `EXTENSION_ENCRYPTION_KEY` (no default key); drag-preview file names use `createTextNode` (DOM XSS); dependency audit fixes (Fastify, systeminformation, rollup, etc.)
 - **API** — `@fastify/helmet` security headers; production CORS deny-by-default (`CORS_ORIGINS` allowlist); stricter `/auth/login` and `/auth/refresh` rate limits; `/health` errors sanitized; Swagger UI disabled in production; search on `/files` and `/suppliers` protected from PostgREST filter injection; webhooks reject private/internal URLs (SSRF)
 - **Database** — RLS tightened so `organizations` / `users` are not enumerable across orgs
 - **CLI** — Local HTTP server CORS limited to localhost
 
 ### Removed
+
 - **WooCommerce integration** — removed unshipped WooCommerce connector (tables, API routes, settings UI); may return as an extension
 
 ### Fixed
+
 - **Refresh button crash** — `refreshCurrentFolder` used `sf.name` (undefined) instead of `sf.file_name` when building cloud-only file entries from `LightweightFile` objects, corrupting ~11K files in the store and crashing React rendering with `TypeError: Cannot read properties of undefined (reading 'startsWith')`; also added defensive null guards to all `.startsWith()` filter callbacks in the file tree
 - **Refresh race condition** — `setIsLoading(false)` ran in `finally` before `startTransition` completed, dropping the concurrency guard too early and allowing realtime location flushes to collide with the in-flight `setFiles`; loading state now stays true until `startTransition` applies, and `flushLocationUpdates` defers while a refresh is in progress
 - **Backup** — Running state survives leaving the Backup tab; stuck `backup_running_since` auto-clears after 2 hours
@@ -462,9 +536,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.17.0] - 2026-03-23
 
 ### Added
+
 - **Folder picker for stale-path restores** — restore trashed files after a parent folder rename by choosing the target folder (single or batch)
 
 ### Fixed
+
 - **Folder rename / move** — Nested paths stay in sync (no ghost files or data loss); safe path-prefix matching; trashed files skipped; errors surfaced instead of failing silently; unsaved metadata no longer cleared incorrectly on nested updates
 
 ---
@@ -472,9 +548,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.16.0] - 2026-03-19
 
 ### Changed
+
 - **Unsaved SW files block check-in with a toast instead of auto-saving** — check-in and sync previously tried to save dirty SolidWorks files through the .NET service, which failed when SolidWorks was unresponsive. Now shows an error toast ("Unsaved changes detected — save in SolidWorks first") and aborts, letting you save manually and retry
 
 ### Fixed
+
 - **Cannot check in files open in SolidWorks** — two separate lock checks blocked check-in of saved files: (1) the pre-check treated any file with a SolidWorks `~$` temp file as locked, and (2) the file-read safety check used `O_RDWR` which gets `EBUSY` on Windows when SolidWorks holds a shared-read lock. Both now use read-only checks (`O_RDONLY`) so check-in and sync only block when the file is truly mid-write, allowing check-in while files remain open in SolidWorks or referenced assemblies
 
 ---
@@ -482,17 +560,20 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.15.0] - 2026-03-19
 
 ### Added
+
 - **Review kick-back status** — reviewers can now "kick back" a file for rework, distinct from outright rejection. Kicked-back reviews show a dedicated status and badge in the Reviews dashboard
 - **Breadcrumb folder dropdowns** — Explorer-style dropdown menus on breadcrumb segments let you navigate to sibling folders without backtracking
 - **Card view field persistence** — toolbar field customization in card view is now remembered across sessions
 - **Column layout push to all users** — admins can now force-push their current column configuration (visibility, width, order) to every user in the organization. Available from Settings > Metadata Columns and from the column header right-click menu. Connected users receive the update in real time; offline users pick it up on next launch
 
 ### Changed
+
 - **Auto-discard orphaned files enabled by default** — local files that no longer exist on the server are now automatically cleaned up. Also fixed the setting not being persisted (it reset to OFF on every restart even if manually enabled)
 - **Cancel review cancels pending responses** — cancelling a review now properly cancels all outstanding reviewer responses
 - **Splash screen removed** — the multi-stage startup splash screen ("Extensions ready", progress bars) is gone. The app now shows a blank window briefly while initializing and transitions directly to the main UI. Extension load failures are surfaced as warning toasts instead of a blocking banner
 
 ### Fixed
+
 - **Company logo missing in "Users Online" button** — the online-users button now loads the company logo independently with its own signed-URL generation, error handling, and retry, so it always shows the org logo even if the parent toolbar's async load failed. Broken URLs also fall back gracefully instead of rendering an invisible empty box
 - **SolidWorks checkout not propagating read-write state after restart** — normalized path separators, added STA fallback for COM reconnection (service v1.2.1), and retry on service status check during checkout
 - **Title bar drag region blocking clicks** — right-side toolbar items (stats, zoom, online users, panel toggles, user menu) were inside a single drag region, making them unclickable on some window managers. Each interactive element is now individually excluded from the drag region
@@ -503,6 +584,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Sidebar header showing "GROUP-SOURCE-FILES" instead of "EXPLORER"** — a previous code path could set the active view to a custom group ID (e.g. `group-source-files`) instead of a module ID. This value was persisted to localStorage and restored on every launch. Added three-layer defense: hydration validation rejects group IDs and resolves to the first child module, `setActiveView` guards against group IDs at runtime, and `getModuleTitle` falls back to the group's display name or "EXPLORER" instead of exposing raw internal identifiers
 
 ### Improved
+
 - **Scrollbar visibility** — increased horizontal scrollbar height and thumb opacity for easier grabbing
 - **Explorer tree density slider** — the explorer sidebar now has its own density slider (next to the "EXPLORER" header) that controls tree row spacing independently from the file browser's density slider
 - **Column order preserved on sync** — loading column defaults from the org or personal configuration now restores column order, not just visibility and width
@@ -512,18 +594,23 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.14.0] - 2026-03-16
 
 ### Added
+
 - **Copy-paste preserves version history** — pasted files inherit full history instead of resetting to v1
 
 ### Removed
+
 - **Notifications system** — removed unused module; bell icon now shows pending review count
 
 ### Changed
+
 - **PDF viewer rewritten** (preliminary) — new canvas-based renderer with working zoom, text selection, HiDPI support, and page virtualization
 
 ### Improved
+
 - **Sync performance logging** — each step logs duration with a summary line for diagnostics
 
 ### Fixed
+
 - **Drawing sync fallback** — infers parent model from filename when DM API returns no references
 - **Text selection in BR cells** — cells with text content are now selectable instead of starting a drag
 - **Inline edit not writing to SW file** — fixed silent exit paths and stale closure
@@ -547,6 +634,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.5] - 2026-02-09
 
 ### Added
+
 - **Copy file name from context menu**: Right-click any file and choose "Copy Name" to copy just the filename to clipboard. Works for all file states including cloud-only files, and supports multi-select
 - **Slow double-click highlights name for copying**: On checked-in files that can't be renamed, a slow double-click now shows the filename as selectable text so you can highlight and Ctrl+C to copy. Useful for toolbox parts with long names where the new part is very similar
 
@@ -555,6 +643,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.4] - 2026-02-09
 
 ### Fixed
+
 - **File tree crash on malformed file entries**: Fixed crash in the vault tree where `folderMetrics` computation would throw `Cannot read properties of undefined (reading 'startsWith')` if a file entry had an undefined `name` or `relativePath`. Added the same null guard that already existed in the tree builder
 
 ---
@@ -562,6 +651,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.3] - 2026-02-09
 
 ### Fixed
+
 - **Refresh button no longer crashes on large vaults**: The file browser refresh button at vault root was falling back to `loadFiles()` — a heavy full-vault reload that blocks the main process and can freeze or crash the app on large vaults (25k+ files). The button now always uses the lightweight folder-scoped refresh, which works correctly at root too
 - **Refresh button no longer crashes React**: The refresh handler used `flushSync` to force a synchronous render, which throws if called during an existing React render cycle (e.g., rapid clicks or concurrent transitions). Replaced with a safe async yield to the UI thread
 - **Rapid refresh clicks no longer corrupt file list**: Added a concurrency guard so overlapping refresh operations are skipped instead of running in parallel and corrupting state
@@ -571,9 +661,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.2] - 2026-02-05
 
 ### Improved
+
 - **Config property writes now set full PDM metadata**: Editing tab number or description on a configuration now writes all related properties in a single operation - Number (combined part number), Base Item Number, Tab Number, Description, Date, and DrawnBy. This ensures files are complete when used outside BluePLM
 
 ### Fixed
+
 - **Auto-refresh no longer overwrites part number and description**: For parts and assemblies, auto-refresh now only updates the revision from the file. BluePLM is the source of truth for part number, tab number, and description - reading these from the file would overwrite database values with potentially stale legacy properties
 - **SolidWorks no longer auto-launches for drawing sync**: Reading drawing references from the parent model now requires SolidWorks to already be running. The service no longer attempts to auto-start SolidWorks, which could create zombie processes and long hangs. Users see a clear message if SW needs to be opened
 
@@ -582,6 +674,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.1] - 2026-02-05
 
 ### Fixed
+
 - **Drawing sync not reading from parent model**: Fixed bug where "Sync Metadata" on a drawing would not update the item number from the parent part if the drawing had its own hardcoded properties. The sync now always traverses to the referenced part/assembly and reads the current values, using the drawing's own properties only as a fallback if the parent lookup fails
 
 ---
@@ -589,14 +682,17 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.13.0] - 2026-02-04
 
 ### Added
+
 - **Immediate config property writes**: Editing description or tab number on a configuration row now writes directly to the SolidWorks file on blur/Enter. This ensures "Sync Metadata" on drawings always reads fresh data from the parent model, even if BR numbers haven't been generated yet
 
 ### Fixed
+
 - **Drawing PDF export using wrong revision**: Fixed issue where exporting a drawing to PDF would incorrectly use the PDM revision (inherited from the parent part) instead of the drawing's own revision property. Drawing exports now only use the revision stored in the drawing file itself - if the drawing has no revision, it stays empty rather than inheriting an unrelated value
 - **PDF filename collisions overwriting files**: Fixed issue where exporting multiple drawings with identical part numbers would overwrite each other. The export now detects filename collisions and automatically appends `(1)`, `(2)`, etc. to ensure unique filenames
 - **Whitespace-only revision treated as valid**: Fixed edge case where a revision property containing only whitespace (e.g., `" "`) would pass validation checks but produce empty filenames. Whitespace-only values are now correctly treated as empty
 
 ### Improved
+
 - **Export filename collision detection**: STEP and STL exports now also detect filename collisions when multiple configurations would generate the same filename. When a collision is detected, the configuration name is appended (e.g., `BR-100_RevA_(Tall).step`)
 
 ---
@@ -604,6 +700,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.12.2] - 2026-01-28
 
 ### Fixed
+
 - **DM-API write operations failing**: Fixed bug where `setProperties` and `setPropertiesBatch` would always fall back to the slow SolidWorks API. The Document Manager API's `OpenDocumentForWrite` was passing raw integers instead of proper `SwDmDocumentType` enums, causing COM interop failures. Write operations now use the same enum conversion pattern that works for reads
 - **Improved DM-API error logging**: Added detailed logging throughout the property write path to help diagnose failures, including the specific error when opening files for write access
 
@@ -612,6 +709,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.12.1] - 2026-01-26
 
 ### Fixed
+
 - **Memory leak from thumbnail loading**: Fixed severe memory leak where navigating between folders would repeatedly request thumbnails for the same files, causing RAM usage to grow unbounded (8GB+ observed). Added a global LRU thumbnail cache with 200 entry limit (~6MB max), request deduplication for concurrent loads, and 5-minute TTL. Same file previously requested 100+ times now makes a single IPC call. Cache is automatically invalidated when files are moved, renamed, or deleted
 
 ---
@@ -619,6 +717,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.12.0] - 2026-01-23
 
 ### Added
+
 - **Type generation script**: New `npm run gen:types` command that loads `SUPABASE_ACCESS_TOKEN` from `.env` file and regenerates TypeScript types from the live database
 - **SolidWorks service versioning**: The SolidWorks service now reports its version, and the app checks for compatibility. Version mismatch warnings appear in the Service tab when the service is outdated or incompatible, with clear instructions to rebuild
 - **Metadata preservation when copying**: Copying files now preserves part number, description, and revision from the source file. Metadata is copied from pending local edits if present, otherwise from synced server data
@@ -626,6 +725,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Document Manager-only mode**: The SolidWorks service can now run without a full SolidWorks installation. Users with just the Document Manager API license key can read/write file properties, extract BOMs, get configurations, read references, and extract previews. A new "Feature Availability" collapsible section in the Service tab shows which features work in each mode. Operations requiring full SolidWorks (exports, mass properties, Pack and Go, etc.) now return clear error messages with `SW_NOT_INSTALLED` error code instead of failing silently
 
 ### Fixed
+
 - **Delete from server keeps file read-only**: Fixed issue where deleting a checked-in file from the server while keeping the local copy would leave the file read-only. Local-only files are now correctly made writable after the server deletion
 - **Sub-assemblies stay read-only after folder checkout**: Fixed issue where sub-assemblies and parts loaded as components of an open assembly would remain read-only in SolidWorks after checking out the folder. The checkout now updates the read-only state for all loaded documents, not just those with visible windows
 - **SolidWorks checkout not clearing read-only state**: Fixed issue where checking out an assembly file that's open in SOLIDWORKS would fail to clear the read-only flag, requiring users to close and reopen the file to edit it. The health check before `setDocumentReadOnly` was spawning a new thread that would time out when assemblies with components were open, even though SOLIDWORKS was actually responsive. Removed the overly strict health check since `ExecuteSerialized()` already provides proper retry logic
@@ -633,6 +733,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Schema idempotency**: Fixed `10-source-files.sql` not being fully idempotent - `SELECT drop_function_overloads()` calls were returning result sets that interfered with Supabase SQL Editor execution. Changed to `DO/PERFORM` blocks. Added migrations section for columns that may be missing from existing databases (`configuration_revisions`, `endpoint`, `restic_password_encrypted`, etc.)
 
 ### Changed
+
 - **Removed type workarounds**: Cleaned up `as any` type casts for `folders` table, `move_file` RPC, and `create_default_workflow` RPC now that types are regenerated
 - **Bulk delete performance overhaul**: Large file deletions no longer use optimistic UI updates. Files now remain visible with spinners during the deletion process, and both the file tree and main browser update together when the operation completes. This prevents visual inconsistencies where files would disappear then reappear if deletion failed
 - **Folder move reliability**: Moving folders now releases Document Manager file handles before the operation, cancels any queued thumbnail extractions, and checks for ongoing file operations (downloads, syncs) before proceeding. Previously, moves could fail with EPERM errors when files inside the folder were being processed
@@ -641,6 +742,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Multi-machine folder sync**: When another user moves a folder, the app now batches all file location updates into a single render instead of processing each file individually. This prevents UI freezes when large folders are moved by teammates
 
 ### Removed
+
 - **Speculative parent assembly warning**: Removed the warning toast "Some files may have parent assemblies still checked out" that appeared when checking in parts or assemblies. This warning was overly aggressive and triggered false positives - it would warn even when the checked-out assemblies had nothing to do with the files being checked in
 
 ---
@@ -648,6 +750,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.11.0] - 2026-01-22
 
 ### Added
+
 - **Collapse all folders in vault**: Right-click context menu on a vault now includes "Collapse All Folders" option to collapse every expanded folder in the vault at once
 - **Serial number generation confirmation**: Clicking the generate serial number button now shows a preview popup with the next number before committing. Click the green checkmark to confirm, or click away to cancel. This prevents accidental serial number generation and wasted numbers
 - **Right-click context menu for Pending pane**: All rows in the Pending sidebar view now support right-click context menus with actions appropriate to each file type:
@@ -658,6 +761,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
   - Deleted from Server: Open, Show in Explorer, Copy Path, Re-upload, Delete Local
 
 ### Changed
+
 - **Standardized Pending pane hover behavior**: Removed inconsistent blue underlined link-style hover from file names in the Pending view. All rows now use a consistent subtle highlight effect on hover, matching the main file browser behavior
 - **Item number box sizing**: The item number input box width is now calculated based on the serialization settings (prefix + digits + suffix), ensuring consistent alignment across all rows
 - **Tab placeholder text**: Changed the tab number placeholder from "001" to "tab" to make it clearer when no tab number has been assigned
@@ -674,6 +778,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Duplicate preview in bottom panel**: Fixed SolidWorks files showing two previews stacked on top of each other in the Preview tab. Both the SWDatacardPanel and the generic preview block were rendering simultaneously
 
 ### Removed
+
 - **Legacy SolidWorks service folders**: Removed empty legacy folders from `solidworks-service/` that were left over from project renaming (`BluePDM.SolidWorks`, `BluePDM.SolidWorksService`, `BluePLM.SolidWorks`)
 
 ---
@@ -681,6 +786,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.10.4] - 2026-01-21
 
 ### Fixed
+
 - **Auto-update not working**: Fixed missing version bump in package.json for 3.10.3 release, which prevented auto-update from detecting newer versions
 
 ---
@@ -688,6 +794,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.10.3] - 2026-01-21
 
 ### Fixed
+
 - **SolidWorks DM license key exposed in logs**: Removed logging of Document Manager license key prefix from SolidWorks service startup and configuration. Log files no longer contain any part of the license key value
 
 ---
@@ -695,6 +802,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.10.2] - 2026-01-21
 
 ### Fixed
+
 - **Multi-config export overwrites files**: Fixed issue where exporting a file with multiple configurations as STEP or STL would overwrite previous exports when configurations don't have unique tab numbers and the filename pattern doesn't include `{config}`. Now automatically appends `_(configName)` to the filename when a collision is detected (e.g., `BR-100_RevA.step`, `BR-100_RevA_(Tall).step`, `BR-100_RevA_(Short).step`)
 
 ---
@@ -702,6 +810,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.10.1] - 2026-01-21
 
 ### Fixed
+
 - **File rename drops extension**: Fixed issue where renaming a checked-out file via the client UI would remove the file extension if the user only typed a new base name. Now the original extension is automatically preserved when no extension is provided in the new name (e.g., renaming "PartA.sldprt" to "PartB" now correctly results in "PartB.sldprt")
 
 ---
@@ -709,6 +818,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.10.0] - 2026-01-16
 
 ### Added
+
 - **Local assembly BOM viewing**: Configuration BOM dropdown now works for local-only assemblies and synced assemblies without extracted references:
   - Fetches BOM data directly from SolidWorks when files aren't in the database
   - Automatically enriches BOM items with metadata from matching local vault files (part numbers, descriptions, revisions)
@@ -730,12 +840,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Collapsible sections in Pending Changes**: All sections in the Pending Changes tab (Active Files, New Files, Checked Out Files, Checked Out by Others, Deleted from Server) now have expand/collapse toggles. Click the section header to collapse or expand - useful for focusing on specific file categories
 
 ### Improved
+
 - **BR number generation UX**: Enhanced the item number cell with better usability:
   - Minimum width on empty item number boxes (no longer tiny when showing just "-")
   - More padding between item number text and the generate button to prevent accidental clicks
   - New inline confirmation: clicking the sparkle button now shows the next BR number preview with a confirm checkmark that expands smoothly from the box. Click outside to cancel
 
 ### Fixed
+
 - **Active Files assembly expand arrow not showing**: Fixed the expandable chevron arrow not appearing next to assemblies in the Active Files section. Assembly files now always show the expand arrow, and clicking it loads the referenced components on-demand with a loading spinner. Previously, the arrow only appeared if references were pre-loaded successfully during initial load
 - **Text selection in editable cells triggering file drag**: Fixed issue where clicking and dragging to select text in description, revision, item number, or tab number cells would initiate a file drag operation instead of text selection
 - **Inconsistent avatar colors in file browser**: Fixed avatar fallbacks (initials in circles) appearing nearly transparent in file/folder lines while showing proper colored backgrounds in organization profiles. All avatar fallbacks now use consistent, visible colored backgrounds based on the user's email/name
@@ -745,10 +857,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.9.0] - 2026-01-16
 
 ### Added
+
 - **Real-time server sync for file moves**: Moving a checked-in file to a different folder now immediately updates the server `file_path`. Previously, moved files would appear as "new local" at the destination and "cloud-only" at the old location. Now the server reference is updated atomically before the local move, ensuring consistent state across all users
 - **PDF export filename patterns**: PDF exports for SolidWorks drawings now use the same filename pattern system as STEP/STL exports. The exported PDF filename follows the pattern configured in Settings → Export Options (e.g., `{partNumber}_Rev{rev}.pdf`). PDM metadata (part number, description, revision) from the drawing is passed to the export and used as fallback when SolidWorks file properties are empty
 
 ### Fixed
+
 - **Pinned folders show only folder name**: Pinned folders now display just the folder name instead of the full path. Full path is still visible on hover
 - **SolidWorks files from templates opening as templates**: Fixed issue where new SolidWorks files created from templates (`.prtdot`, `.asmdot`, `.drwdot`) would still behave as templates when opened in SolidWorks. The fix uses the SolidWorks API to properly convert template metadata to document metadata instead of simply copying the file
 - **Notification badge clipping**: Fixed notification badge getting clipped when the activity bar is collapsed. Badge now renders above other elements with proper overflow handling
@@ -756,6 +870,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Window drag region on right side of top bar**: Fixed the area to the right of the search bar not being draggable to move the window. The right-side controls container was expanding to fill available space; now constrained to fit content only
 
 ### Changed
+
 - **Context menu reorganization**: Right-click context menu is now more compact with grouped submenus:
   - "File Actions" groups: Show in Explorer, Copy Path, Copy Folder Path, Pin, Rename
   - "Edit" groups: Copy, Cut, Paste
@@ -770,6 +885,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.8.0] - 2026-01-15
 
 ### Added
+
 - **Insert into Assembly**: New context menu option for SolidWorks parts and assemblies. Right-click any `.sldprt` or `.sldasm` file → "Insert into Assembly" shows a submenu of currently open assemblies in SolidWorks. Select one to add the part/assembly as a component at the origin
 - **Create SolidWorks files from templates**: New "New .sldprt", "New .sldasm", "New .slddrw" options in the empty area and folder context menus. Each shows a submenu of available templates from the configured document templates folder (`.prtdot`, `.asmdot`, `.drwdot` files). Created files appear instantly in the file browser without waiting for file watcher refresh
 - **Drawing revision propagation**: When a drawing is checked in, its revision is automatically propagated to the `configuration_revisions` field of all referenced parts/assemblies. This enables tracking which drawing revision corresponds to each configuration of a part
@@ -781,13 +897,16 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Copy folder path**: New "Copy Folder Path" option in file context menu copies the directory portion of the file path (without the filename)
 
 ### Performance
+
 - **Faster check-in and first check-in**: Removed unnecessary SOLIDWORKS Document Manager operations from check-in and first check-in (sync) commands. Previously, check-in would call `getDocumentInfo`, `saveDocument`, and write metadata to every SW file via Document Manager, causing significant slowdowns when checking in folders. Now check-in only: computes hash, uploads changed content, updates server, and sets read-only. Metadata should be saved to SW files during editing via "Save to File" button - check-in sends `pendingMetadata` to the server database only
 
 ### Fixed
+
 - **Sticky hover state on checkout avatars**: Fixed issue where the notification bell hover state could get "stuck" on checkout avatars in virtualized lists when scrolling quickly. Now uses pointer events with periodic hover state verification
 - **Empty context menu positioning**: Context menu for empty areas now properly adjusts position to stay within viewport bounds, matching the behavior of the file context menu
 
 ### Changed
+
 - **No checkout required for move/cut**: Files can now be moved (drag-and-drop) and cut (Ctrl+X) without being checked out first. This simplifies file organization workflows - checkout is still required for editing file content
 - **Schema version**: Bumped to v46
   - v46: Added `configuration_revisions` JSONB column to files table for tracking per-configuration revisions from drawing releases
@@ -797,9 +916,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.7.1] - 2026-01-14
 
 ### Added
+
 - **Inline tab number editing**: Edit tab numbers directly in the Item Number column for SolidWorks files. When the Tab column is hidden, a compact tab input appears inline next to the base part number. The input stays visible even when configurations are expanded
 
 ### Changed
+
 - **Tab column visible by default**: The "Tab" column is now visible by default in the file browser for new users
 
 ---
@@ -807,6 +928,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.7.0] - 2026-01-14
 
 ### Added
+
 - **SOLIDWORKS License Management**: Organization-wide license management system for SOLIDWORKS serial numbers
   - **Admin license inventory**: Add, edit, and delete licenses with serial number, nickname, type (standalone/network), product name, seats, purchase/expiry dates, and notes
   - **User assignment**: Assign licenses to organization users with searchable dropdown
@@ -821,6 +943,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Version metadata snapshots**: Each file version now stores a snapshot of the part number and description at check-in time, preserving historical metadata values independent of current file state
 
 ### Fixed
+
 - **Rollback version display**: Rolling back to an older version (e.g., V2 from V3) now correctly shows "V2 Local (Rolled back)" in the versions tab instead of incorrectly displaying a phantom "V4" pending version. The rolled-back version is properly highlighted as the local version
 - **SolidWorks drawing metadata inheritance**: Drawings that use PRP references (`$PRP:"PropertyName"`) to inherit metadata from their referenced parts/assemblies now correctly display resolved values instead of raw PRP syntax. The system:
   - Detects PRP references or empty drawing metadata during sync
@@ -830,6 +953,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Drawing reference extraction**: SolidWorks drawings (`.slddrw`) are now included in reference extraction during sync and check-in. Drawing→model relationships are stored in `file_references` table with type `'reference'` (distinct from assembly `'component'` relationships)
 
 ### Changed
+
 - **Schema version**: Bumped to v45
   - v44: SOLIDWORKS license management tables, RLS policies, and helper functions
   - v45: file_versions stores part_number and description per version
@@ -839,6 +963,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.6.1] - 2026-01-13
 
 ### Fixed
+
 - **Schema version mismatch**: App now correctly expects schema v43 (was missing from 3.6.0 build)
 
 ---
@@ -846,18 +971,22 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.6.0] - 2026-01-13
 
 ### Added
+
 - **Per-part vendor management**: New "Vendors" tab in the right-panel details view for managing suppliers at the part level. Link multiple vendors to any synced file with vendor part numbers, pricing, lead times, minimum order quantities, and notes. Set preferred vendors with star ratings and quick-add new vendors inline
 - **Inline serial number generation**: Generate the next serial number directly from the Item # column in the file browser. Hover over any checked-out file to reveal a sparkle button, or click to edit and use the button in the input field. Auto-saves to SolidWorks files immediately
 
 ### Performance
+
 - **Optimized backup status checks**: Backup status is now computed incrementally instead of re-checking all snapshots on every poll. Status summary (last backup time, snapshot count) is cached and only updated when new snapshots are detected
 - **Memoized file tree items**: FileTree and VaultTreeItem components now use React.memo with custom comparators to prevent unnecessary re-renders during file operations
 
 ### Fixed
+
 - **Double version increment on metadata save**: Fixed bug where saving metadata to a SolidWorks file during checkout (via "Save to File" or datacard edits) would cause version to increment twice on check-in. The checkin_file RPC now detects if a version was already created during the checkout session and skips duplicate version creation
 - **Item number not saving to SolidWorks file**: Serial numbers generated via the new inline generate button are now immediately written to the SolidWorks file (not just stored as pending metadata)
 
 ### Changed
+
 - **Schema version**: Bumped to v43
 
 ---
@@ -865,6 +994,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.5.0] - 2026-01-12
 
 ### Added
+
 - **STL Export Quality Settings**: New export options in Settings → Export Options for STL files:
   - **Resolution presets**: Coarse (faster, smaller), Fine (recommended for 3D printing), or Custom
   - **Custom deviation/angle**: Fine-grained control over mesh quality when using Custom resolution
@@ -873,6 +1003,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Serial number race condition protection**: New `update_serialization_settings_safe` RPC function prevents counter overwrites when multiple users generate part numbers simultaneously
 
 ### Performance
+
 - **Serial file operation queue**: Checkout, checkin, sync, download, and discard operations now execute serially through a queue system. This prevents overlapping operations, provides cleaner progress feedback, and eliminates race conditions when rapidly clicking multiple files
 - **Batch setReadonly calls**: File operations now collect all paths and make a single IPC call to set file permissions, instead of one call per file
 - **Incremental flush optimization**: For large batches (50+ files), incremental UI updates are skipped during processing to avoid expensive React re-renders. Final update happens once at completion
@@ -880,6 +1011,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Debounced realtime updates**: Local file modifications are tracked for 5 seconds to prevent stale realtime events from reverting local changes
 
 ### Fixed
+
 - **Metadata property priority**: "Number" property is now checked first when extracting part numbers from SolidWorks files. Previously "Base Item Number" was checked first, which could contain legacy/template values that incorrectly overrode user edits saved via "Save to File"
 - **Cross-machine checkout release**: Releasing a checkout from a different machine now properly updates the local UI. Previously, if you checked out a file on Machine A and released it from Machine B, Machine A would still show the file as checked out until refresh
 - **Pending metadata preserved on realtime updates**: Files with unsaved local edits (pending metadata) are now protected from realtime event overwrites. This fixes the bug where typing in a datacard field could be interrupted by a stale database update
@@ -887,6 +1019,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Metadata merged on clear**: When pending metadata is cleared after save, the values are now merged into pdmData so the UI continues showing the saved values without requiring a refresh
 
 ### Changed
+
 - **hasPendingConfigChanges → hasPendingMetadataChanges**: Renamed function to reflect that it now checks ALL pending metadata (part number, description, revision) not just config-specific changes
 - **Schema version**: Bumped to v42
 
@@ -895,6 +1028,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.4.0] - 2026-01-10
 
 ### Added
+
 - **Notification Center**: Full notification system with real-time updates and categorized notifications
   - **Categories**: Reviews, Change Control, Purchasing, Quality, Workflow, System, and Collaboration
   - **Pending reviews panel**: View and respond to reviews directly from notifications
@@ -906,10 +1040,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Push to All Users (Sidebar Settings)**: Admins can force-push their sidebar configuration to all organization members, overriding individual customizations. Includes confirmation dialog with warning about overwriting user settings
 
 ### Changed
+
 - **Sidebar group toggle cascades to children**: When disabling a custom group, all child modules within that group are now also disabled. When enabling a group, all children are enabled. Previously, toggling a group only affected the group visibility, leaving children in their original state
 - **Push to All Users modal**: Improved modal styling with solid backgrounds for better readability (was semi-transparent)
 
 ### Fixed
+
 - **Folder UI not updating after download**: Folders now immediately turn green when all cloud files are downloaded, instead of requiring an app restart. The folder icon color is now derived from computed child metrics (`isFolderSynced`) rather than stale folder metadata (`diffStatus`). This architectural fix also ensures folder icons update correctly for:
   - Downloading individual files from a cloud-only folder
   - Mixed folders (some cloud, some synced) showing correct synced state
@@ -917,6 +1053,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Folder disappearing after "Delete local files"**: Folders containing cloud-only files now remain visible as cloud-only (gray icon) instead of disappearing. Delete command now preserves folders when they have cloud children remaining
 
 ### Performance
+
 - **O(N) folder metrics computation**: Fixed O(N²) folder metrics computation - now O(N) single pass via pre-computed Map. Previously 250,000 iterations per render, now 1,000
 - **Custom memo comparator**: Added custom memo comparator to VirtualizedTreeRow comparing 15 relevant props instead of 40+, dramatically reducing re-renders
 - **Consolidated folder metrics**: Eliminated duplicate folderMetrics computation (was running twice per state change), single source of truth in useVaultTree
@@ -935,6 +1072,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.3.2] - 2026-01-09
 
 ### Performance
+
 - Fixed folder display in file grid view (path normalization)
 - Applied selective Zustand selectors to remaining explorer hooks
 
@@ -943,6 +1081,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.3.1] - 2026-01-09
 
 ### Performance
+
 - Implemented selective Zustand selectors to reduce unnecessary re-renders
 - Added virtualization to file tree for improved performance with large vaults
 - Added virtualization to file list for improved performance with large directories
@@ -954,6 +1093,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.3.0] - 2026-01-08
 
 ### Added
+
 - **Startup splash screen**: New blocking splash screen displays during app initialization showing real-time progress through two stages:
   - **Stage 1 (Core)**: Store hydration, configuration check, session restoration, organization loading, and permissions
   - **Stage 2 (Extensions)**: Extension discovery and activation with 10-second timeout per extension
@@ -964,6 +1104,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
   - All folders (directories don't require checkout)
 
 ### Fixed
+
 - **Complete fix for zombie process on app close**: Fixed all causes of the process not terminating after closing the window:
   - **Update check timer**: The periodic update check interval (every 2 minutes) was not being stopped, keeping the Node.js event loop alive
   - **File watcher**: The chokidar file watcher was not being closed during shutdown
@@ -977,6 +1118,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.2.1] - 2026-01-08
 
 ### Fixed
+
 - **App crash on startup after update**: Fixed critical bug where Extension Host files were not bundled for production builds, causing immediate crash when opening the app after updating to 3.2.0
 
 ---
@@ -984,6 +1126,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.2.0] - 2026-01-08
 
 ### Added
+
 - **Paste files from Windows Explorer**: You can now Ctrl+C files or folders in Windows Explorer and Ctrl+V to paste them directly into BluePLM. Previously only drag-and-drop was supported. Files are copied to the current folder with progress tracking and error handling
 - **Extension System Architecture**: New plugin architecture for third-party and first-party extensions
   - **Extension Host**: Isolated Electron renderer process for client-side extension code with per-extension sandboxing and watchdog monitoring
@@ -997,6 +1140,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Marketplace UI**: Extension store frontend at marketplace.blueplm.io with search, categories, and publisher dashboards
 
 ### Changed
+
 - **Google Drive extension moved to separate repository**: The Google Drive extension is now maintained in its own repository at [blueplm-ext-google-drive](https://github.com/bluerobotics/blueplm-ext-google-drive). This establishes the pattern for all BluePLM extensions to be standalone packages that install from the Extension Store
 
 ---
@@ -1004,12 +1148,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.5] - 2026-01-07
 
 ### Added
+
 - **Vault setup wizard**: New first-time connection dialog when connecting to a vault. Shows sync stats (files on server vs local), and lets users configure auto-download preferences before syncing begins
 - **Wipe local files action**: New "Wipe Local" button in vault settings to delete all local files without disconnecting from the vault. Cloud files remain untouched
 - **Sync stats calculation**: New `calculateVaultSyncStats` utility in vault health check to compare local and server file states
 - **i18n for vault setup**: Added translations for vault setup dialog in all supported languages (EN, DE, ES, FR, PT, ZH-CN, ZH-TW)
 
 ### Changed
+
 - **Vault disconnect preserves files**: Disconnecting from a vault no longer deletes local files. Use the new "Wipe Local" action if you want to remove files
 - **Integration status polling**: Background polling now uses "silent" mode to avoid UI flickering from repeated "checking" states
 - **Permissions editor toggle-all**: "Toggle all" actions now properly include Source Files permissions for the current vault context
@@ -1017,6 +1163,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Delete vault confirmation**: Now requires typing the vault name twice to prevent accidental deletion
 
 ### Fixed
+
 - **Stale pending metadata on checkout**: Checkout now clears any persisted pending metadata from previous checkouts. Previously, stale metadata could incorrectly show in the datacard after re-checking out a file
 - **Vault setup not completing**: Fixed issue where vault connections from the welcome screen would not properly mark setup as complete, causing the setup dialog to reappear
 
@@ -1025,11 +1172,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.4] - 2026-01-07
 
 ### Fixed
+
 - **SolidWorks service resilience**: Check-in operations now detect when the SolidWorks service crashes or times out and automatically skip remaining SW calls in the batch. Previously, a crashed service would hang the entire check-in operation
 - **Auto-download includes folders**: Auto-download setting now properly handles cloud-only folders in addition to files, ensuring complete folder structures are downloaded when enabling auto-sync
 - **Processing spinner propagation**: Fixed spinners showing on sibling files instead of child files. Spinners now correctly propagate DOWN to children within a processing folder, not UP to parents
 
 ### Changed
+
 - **SolidWorks service logging**: Enhanced diagnostic logging with comprehensive state summaries, command tracking with IDs, queue depth monitoring, and clearer timeout/error reporting for easier debugging
 
 ---
@@ -1037,6 +1186,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.3] - 2026-01-07
 
 ### Fixed
+
 - **Realtime sync for member attributes**: Fixed issue where team membership, workflow role, and job title changes required a manual refresh to appear. Added realtime subscriptions for `team_members`, `user_workflow_roles`, and `user_job_titles` tables. Admin views now update instantly when any admin makes changes, and affected users receive toast notifications when their roles/teams/titles are modified
 
 ---
@@ -1044,6 +1194,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.2] - 2026-01-08
 
 ### Fixed
+
 - **Non-admin users unable to sync files**: Fixed RLS policy bug where file insert/update/delete operations used `system:files` permission which didn't exist in the permission system. Only org admins could bypass this check, causing all non-admin users (engineers, etc.) to see "0 out of N files uploaded" errors. Changed policies to use `module:explorer` which is properly configurable via team permissions
 
 ---
@@ -1051,9 +1202,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.1] - 2026-01-07
 
 ### Added
+
 - **Vault migration dialog**: User-friendly dialog shown after major version upgrades when connecting to an existing vault. Runs a health check comparing local files with server state, identifies files with missing storage blobs, and offers one-click "Fix All" to re-sync affected files
 
 ### Fixed
+
 - **SolidWorks file downloads failing**: Fixed critical bug where check-in did not upload modified file content to storage. When users checked in files (especially SolidWorks files with metadata writeback), the database was updated with the new content hash but the actual file was never uploaded. This caused all downloads of those files to fail with HTTP 400 errors. Check-in now properly uploads file content to storage when the hash changes.
 - **Delete local files spinner**: Fixed missing loading spinner when deleting local files. Spinners now appear in the inline action button area (where download/checkout/checkin spinners appear) for list view, grid view, and tree view
 - **Upgrade file sync issues**: Fixed issues where users upgrading to 3.1 with existing vault folders would see orphan checkout warnings or "Missing Storage Files" dialogs. Files with matching content hashes are now recognized as synced regardless of timestamps, and storage blob existence is pre-validated before download attempts
@@ -1063,13 +1216,16 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.1.0] - 2026-01-07
 
 ### Added
+
 - **Clean install on major upgrades**: App data is automatically wiped when upgrading between major versions (2→3, 3→4, etc.) ensuring a fresh start. Clears settings, logs, cache, browser storage, and temp files
 - **Unified logging utility**: New `src/lib/logger.ts` with dual output to DevTools console AND Electron app log. Supports error/warn/info/debug levels with category prefixes (e.g., `[Auth]`, `[Realtime]`) for filtering. Debug logging toggleable via `localStorage.setItem('debug', 'true')`
 
 ### Changed
+
 - **Console logging cleanup**: Reduced console statements from ~225 to 11 (~95% reduction). Removed subscription status spam, heartbeat logs, JSON dumps, and verbose state tracking. Meaningful logs converted to unified logger
 
 ### Fixed
+
 - **Vault display consistency**: Fixed issue where file tree and file pane would show files from existing local folders even when no vault was connected in settings. Now consistently shows "No vault connected" state until a vault is explicitly connected via Settings > Vaults
 
 ---
@@ -1077,6 +1233,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [3.0.2] - 2026-01-07
 
 ### Fixed
+
 - **SolidWorks service bundling**: Fixed path in GitHub Actions workflow (`solidworks-addin` → `solidworks-service`) and corrected extraResources glob pattern so the service executable is properly included in Windows builds
 
 ## [3.0.0] - 2026-01-07
@@ -1084,37 +1241,44 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ### Added
 
 #### Architecture
+
 - **Enterprise folder structure**: Reorganized `src/features/` to mirror database modules (source, items, change-control, supply-chain, integrations, dev-tools, settings)
 - **Component layer separation**: `components/core/` (primitives), `components/layout/` (app shell), `components/shared/` (reusable), `components/effects/` (visual)
 - **Lazy module loading**: Sidebar views and settings panels load on-demand. Disabled modules never load into memory
 
 #### Zustand Store
+
 - **17 specialized slices**: Decomposed monolithic store into focused slices (files, vaults, workflows, settings, UI, etc.)
 - **Versioned migrations**: `src/stores/migrations.ts` with version tracking for safe state upgrades
 - **Hydration tracking**: `onRehydrateStorage` callback prevents race conditions on app startup
 
 #### API (v2.0.0)
+
 - **Layered architecture**: Separated into core (types, errors), config, infrastructure (repositories), and HTTP layers
 - **Repository pattern**: `FileRepository`, `VaultRepository`, `WebhookRepository` with mappers
 - **TypeBox schemas**: Full OpenAPI documentation for all endpoints
 
 #### Database (Schema v36)
+
 - **Modular schema**: Split into `core.sql` + optional modules (`10-source-files.sql`, `20-change-control.sql`, `30-supply-chain.sql`, `40-integrations.sql`)
 - **Atomic RPC functions**: `checkout_file`, `checkin_file` with `FOR UPDATE` row locks and built-in activity logging
 - **Schema version tracking**: Automatic mismatch warnings between app and database versions
 
 #### Performance
+
 - **Concurrency limiting**: `processWithConcurrency()` utility with configurable worker pools (default: 20 concurrent ops)
 - **Batch chunking**: `BATCH_CHUNK_SIZE = 100` for bulk database operations
 - **SolidWorks optimization**: Skip service calls for files with cached hashes and no pending metadata
 - **Fire-and-forget activity logging**: Non-blocking audit trail creation
 
 #### Terminal
+
 - **60+ CLI commands**: Full command system with categories (navigation, search, file ops, PDM, vault, backup, collaboration, admin, batch)
 - **Self-registering commands**: `registerTerminalCommand()` with metadata, usage, examples
 - **Command categories**: `help` shows commands grouped by function
 
 ### Changed
+
 - **Database schema**: v36 with modular architecture
 - **Electron**: v39 (Chromium 142, Node.js 22, V8 14.2)
 - **React**: v19
@@ -1122,6 +1286,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Checkout/checkin**: Now use atomic PostgreSQL RPCs instead of multi-step client logic
 
 ### Fixed
+
 - **Circular dependency crash**: Fixed "Cannot access 'COLUMN_TRANSLATION_KEYS' before initialization" in FilePane
 - **Checkout race conditions**: Atomic RPCs with `FOR UPDATE` locks prevent concurrent checkout conflicts
 - **Double activity logging**: RPCs handle logging; removed duplicate client-side logging
@@ -1129,6 +1294,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **SolidWorks service reliability**: Polling-based startup confirmation, proper cleanup on app quit
 
 ### Removed
+
 - **Legacy fileService.ts**: Consolidated into `src/lib/supabase/files/`
 - **Duplicate utilities**: Consolidated 9 copies of `buildFullPath`, 6 copies of `formatBytes` into single source
 - **Dead code**: `StatusBar.tsx`, `SolidWorksPreviewPanel.tsx`, unused dependencies (@tanstack/react-query, @tanstack/react-table, clsx)
@@ -1139,6 +1305,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.22.0] - 2026-01-01
 
 ### Added
+
 - **Per-configuration tab numbers**: Parts/assemblies with multiple SolidWorks configs can have different tab numbers per config (e.g., BR-12345-001, BR-12345-002, BR-12345-003). Datacard shows "Base #" (shared) and "Tab #" (per-config) fields with live preview
 - **Export configurations from file browser**: Right-click on expanded configuration rows to export STEP/IGES/STL. Supports multi-select with Ctrl+click and Shift+click to export specific configurations
 - **Configurable export filenames**: New Settings → Export Options page to customize exported file naming patterns with tokens like `{partNumber}`, `{config}`, `{rev}`, `{date}`, etc. Example: `{partNumber}_Rev{rev}` produces `BR-101011-394_RevA.step`
@@ -1148,12 +1315,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Log viewer multi-select**: Select multiple entries with checkboxes, Shift+click for range selection, copy with full content
 
 ### Changed
+
 - **Electron upgraded to v39**: Major upgrade bringing Chromium 142, Node.js 22, V8 14.2, plus electron-builder 26 and electron-updater 6.7.3
 - **SolidWorks datacard redesigned**: Cleaner 3-column layout (preview, properties, export). Config tabs only appear when needed. Service status is now a subtle indicator dot
 - **SolidWorks property saving optimized**: "Save to File" now only writes configs with pending changes and uses batch API. Previously wrote all configs individually (N API calls), now makes 1 call for only changed configs
 - **Log viewer toolbar**: Compact two-row layout with inline level counts and grouped controls
 
 ### Fixed
+
 - **Slow checkout operations**: Fixed 10-20+ second checkouts by fetching machine info once per batch instead of per-file. Activity logging now fire-and-forget
 - **SolidWorks drawing revision not syncing**: Fixed Revision property extraction from .slddrw files (incorrect COM interop types)
 - **SolidWorks datacard not showing PDM metadata**: Fixed Item #, Description, Revision fields not loading from database
@@ -1162,6 +1331,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Security**: Updated systeminformation to fix Windows command injection vulnerability
 
 ### Removed
+
 - Cleaned up dead code (`StatusBar.tsx`, `SolidWorksPreviewPanel.tsx`), unused dependencies (@tanstack/react-query, @tanstack/react-table, clsx), and consolidated duplicate utilities (9 copies of `buildFullPath`, 6 copies of `formatBytes`)
 
 ---
@@ -1169,17 +1339,20 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.21.0] - 2025-12-31
 
 ### Added
+
 - **User "last online" tracking**: Users now have a "last online" timestamp visible in member lists and user profiles. Shows relative time (e.g., "5m ago", "Online now") with a clock icon on its own line for cleaner layout
 - **Real-time last online sync**: The "last online" timestamp now updates every 30 seconds via heartbeat, so it stays in sync with the online indicator in the top right
 - **Team module defaults in Members & Teams**: Each team now has a "Modules" button to configure which modules are enabled by default for team members. If a user is in multiple teams, they get the union of all enabled modules (if any team enables a module, it's enabled)
 - **Full module configuration per team**: Team module defaults now use the same full editor as Settings > Modules. Teams can have their own module order, custom groups, dividers, sub-menus (parent-child relationships), and icon colors - not just enable/disable toggles
 
 ### Fixed
+
 - **Auth provider settings not respected on sign-in**: Sign-in screen now respects organization's auth provider settings. If admin disables email/phone sign-in, those options are hidden from the sign-in screen
 - **User simulation not respecting team restrictions**: When simulating a user (admin feature), the sidebar now correctly shows only modules enabled for the simulated user's teams, and vaults are filtered based on the team's vault access. This works for both active and pending users
 - **Backups failing due to stale repository locks**: Backups now automatically clear stale locks before starting and before applying retention policy. Previously, if a backup was interrupted, subsequent backups would fail with "repository is already locked" error
 
 ### Changed
+
 - **Members & Teams UI improvements**: Teams and users in the Members & Teams settings now have a cleaner look with subtle ring borders, hover highlights, and colored left borders on team headers. Expanded teams have a prominent drop shadow effect on all sides to visually "pop out" from surrounding content
 - **Team-based permissions architecture**: Admin status is now determined by membership in the "Administrators" team instead of the legacy `role` column. All permissions flow through the team system. The `role` column is deprecated but retained for backward compatibility
 - **Lazy loading for modules**: All sidebar views and settings panels are now lazy loaded using React.lazy(). Disabled modules are never loaded into memory, and views are only loaded when navigated to. This significantly reduces memory usage for users who don't need all features
@@ -1189,6 +1362,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Schema version**: Bumped to v24
 
 ### Removed
+
 - **Performance Processes tab**: Removed the non-functional "Processes" tab from Performance settings. Module memory tracking was causing performance issues and has been replaced with lazy loading instead
 - **Role impersonation from dev tools**: Removed the deprecated Admin/Engineer/Viewer role impersonation feature. User impersonation (simulating a specific user's permissions) remains available for admins
 - **Deprecated TeamsSettings and MembersSettings**: Removed the orphaned separate Teams and Members settings pages. All team/member management now goes through the unified "Members & Teams" settings tab
@@ -1198,6 +1372,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.20.3] - 2025-12-31
 
 ### Fixed
+
 - **In-app update crashing on macOS**: Fixed auto-update install crashing on Mac. Replaced problematic `quitAndInstall` with `app.relaunch()` + `app.exit()` which is more reliable on macOS
 
 ---
@@ -1205,6 +1380,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.20.2] - 2025-12-31
 
 ### Fixed
+
 - **Pending users showing in main list**: Fixed in both MembersSettings and TeamMembersSettings views - users who haven't signed in yet now only appear in "Pending Members" section
 
 ---
@@ -1212,6 +1388,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.20.1] - 2025-12-31
 
 ### Fixed
+
 - **Pending users showing in main list**: Users who haven't signed in yet (still pending) now only appear in "Pending Members" section, not duplicated in the main user list
 
 ---
@@ -1219,9 +1396,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.20.0] - 2025-12-31
 
 ### Added
+
 - **Per-vault permissions**: Teams and individual users can now have different permission levels per vault. Set "All Vaults (Global)" for org-wide permissions, or select a specific vault for vault-scoped permissions. Example: Engineering team can have admin on Production vault but view-only on Archive vault
 
 ### Changed
+
 - **Schema version**: Bumped to v20
 - **Permission functions**: `get_user_permissions` and `user_has_permission` now accept optional `vault_id` parameter for vault-scoped checks
 
@@ -1230,9 +1409,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.19.3] - 2025-12-31
 
 ### Fixed
+
 - **User record not created after account deletion**: Fixed critical bug where signing in after "Delete Account" would fail to create the user record in `public.users`. The `ensure_user_org_id` RPC now creates the user record if the auth trigger failed, and applies pending team memberships
 
 ### Changed
+
 - **Schema version**: Bumped to v19
 
 ---
@@ -1240,9 +1421,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.19.2] - 2025-12-31
 
 ### Fixed
+
 - **Invited users added to wrong team**: Fixed bug where users invited with specific teams (e.g., "Doris") were also incorrectly added to "New Users" team. Now only adds to default team if user has no team memberships yet
 
 ### Changed
+
 - **Schema version**: Bumped to v18
 
 ---
@@ -1250,6 +1433,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.19.1] - 2025-12-31
 
 ### Changed
+
 - **Admin remove user fully deletes**: Removing a user from the organization now fully deletes them from `auth.users`, allowing clean re-invites without "user already registered" errors
 - **Schema version**: Bumped to v17
 
@@ -1258,10 +1442,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.19.0] - 2025-12-31
 
 ### Fixed
+
 - **Multi-vault display bug on sign-in**: Fixed issue where the second vault would show the first vault's files until manually selecting each vault. Root cause was the working directory not updating when `activeVaultId` changed, and stale closure issues in the auto-connect flow
 - **Invited users can't see teams/roles**: Fixed critical bug where `handle_new_user` didn't include `org_id` in the `ON CONFLICT UPDATE` clause, so returning users with pending invites never had their org assigned
 
 ### Changed
+
 - **Schema version**: Bumped to v13
 
 ---
@@ -1269,16 +1455,19 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.18.3] - 2025-12-31
 
 ### Added
+
 - **Block user feature**: Admins can now block users from the organization. Blocked users cannot rejoin via org code and need an explicit re-invite
 - **Regenerate org code**: Admins can regenerate the organization code/slug for security, invalidating all existing org codes
 
 ### Fixed
+
 - **Invite flow 403 error**: Fixed RLS policy that queried `auth.users` directly (permission denied). Now uses `auth.jwt()` to get email from JWT token
 - **Case-insensitive email matching**: All invite-related email comparisons are now case-insensitive (RLS policies, triggers, and client queries)
 - **Re-invite after removal**: When removing a user from the org, their pending invite is now cleaned up properly, allowing them to be re-invited
 - **API invite validation**: API now uses case-insensitive email matching and properly cleans up old invites before creating new ones
 
 ### Changed
+
 - **Schema version**: Bumped to v12
 
 ---
@@ -1286,6 +1475,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.18.2] - 2025-12-31
 
 ### Fixed
+
 - **Backup scheduler not triggering**: Fixed React closure bug where scheduled backups never ran because the scheduler was checking stale config state instead of fetching fresh data from the database
 
 ---
@@ -1293,6 +1483,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.18.1] - 2025-12-31
 
 ### Fixed
+
 - **Non-admin inline edit buttons**: Team and workflow role badges are now non-interactive for non-admins (previously appeared clickable but saves would silently fail)
 
 ---
@@ -1300,6 +1491,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.18.0] - 2025-12-31
 
 ### Added
+
 - **Realtime permissions sync**: Vault access, team membership, and permission changes now sync instantly without refresh
   - When an admin changes your vault access, you see the update immediately
   - Team membership changes apply in real-time
@@ -1307,11 +1499,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
   - Toast notifications inform users when their access changes
 
 ### Fixed
+
 - **Invite flow not associating organization**: Fixed RLS policy that prevented new users from seeing their pending invite (schema v8)
 - **Pending membership not applying on re-login**: Fixed triggers to fire on UPDATE, not just INSERT, so users who failed initial login can retry (schema v9)
 - **Ambiguous column reference in triggers**: Fixed `apply_pending_team_memberships` function variable naming conflict
 
 ### Changed
+
 - **Schema version**: Bumped to v9
 
 ---
@@ -1319,6 +1513,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.5] - 2025-12-31
 
 ### Added
+
 - **Change Organization option**: Added "Change Organization" link on sign-in screen to clear stored config and return to setup
 
 ---
@@ -1326,6 +1521,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.4] - 2025-12-31
 
 ### Changed
+
 - **Schema version**: Bumped to v7 (was missing from v2.17.2/v2.17.3)
 
 ---
@@ -1333,10 +1529,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.3] - 2025-12-31
 
 ### Added
+
 - **Unassigned users visibility**: Users without teams now show a prominent yellow "Unassigned" badge
 - **Default team warning**: Shows warning in Teams tab when no default team is set (users will have no permissions)
 
 ### Improved
+
 - **Default team dropdown**: Clearer "Unassigned (no team permissions)" option text
 
 ---
@@ -1344,10 +1542,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.2] - 2025-12-31
 
 ### Added
+
 - **Default Team for New Users UI**: Admins can now select which team new users are added to in Settings → Team Members → Teams tab
 - **Invited users without teams get default team**: Users invited without specific team assignments are now added to the default team (if configured)
 
 ### Fixed
+
 - **Schema migration for existing orgs**: Running schema now creates default teams for existing organizations that don't have them
 
 ---
@@ -1355,6 +1555,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.1] - 2025-12-31
 
 ### Fixed
+
 - **Org code missing slug**: `generateOrgCode` now always includes the organization slug from the current org
 - **Legacy org codes without slug**: Added fallback — if org code has no slug but there's only one organization in the database, automatically join it
 - **Root cause of "no organization found"**: Users with non-matching email domains and no pending invite can now join via the org slug embedded in org codes
@@ -1364,18 +1565,21 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.17.0] - 2025-12-31
 
 ### Added
+
 - **"New Users" default team**: New organizations automatically get a "New Users" team with Engineer-level permissions
 - **Org code join flow**: Users entering an org code can now sign in without a pre-created invite — they're automatically added to the org and default team
 - **`join_org_by_slug` RPC**: Database function for joining an organization via org slug (from org code)
 - **`default_new_user_team_id` setting**: Admins can configure which team new users (joining via org code) are auto-added to
 
 ### Fixed
+
 - **Invited users auth flow**: `on_auth_user_created` trigger now fires on INSERT **and** UPDATE (fixes issue where `inviteUserByEmail` creates auth.users first, then user signs in)
 - **Delete account now hard deletes**: `delete_user_account` actually removes records from `auth.users` and `public.users` instead of just soft-deleting
 - **Pending membership role handling**: Improved logging shows exact role being assigned from pending_org_members
 - **Backup RPC call**: App now calls `apply_pending_team_memberships` RPC as fallback if DB trigger doesn't fire
 
 ### Changed
+
 - **Schema version**: Bumped to v6
 - **Email domain enforcement**: `join_org_by_slug` respects email domain restrictions if configured
 
@@ -1384,12 +1588,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.10] - 2025-12-30
 
 ### Fixed
+
 - **New user auth race condition**: Added retry logic when fetching user profile (handles trigger timing)
 - **Invited users not linked to org**: Now checks `pending_org_members` directly if trigger didn't run
 - **Session registration fails for new users**: Added retry logic with helpful error message
 - **Stuck spinners**: Users now see proper "No Organization Found" screen with helpful guidance
 
 ### Changed
+
 - **Invite email button**: Links directly to blueplm.io/downloads instead of auth confirmation URL
 
 ---
@@ -1397,6 +1603,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.9] - 2025-12-30
 
 ### Added
+
 - **API version tracking**: App now checks if deployed API version matches expected version, shows warnings in Settings → API if outdated
 
 ---
@@ -1404,14 +1611,17 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.8] - 2025-12-30
 
 ### Added
+
 - **Invite email includes org code**: Users now receive the Organization Code directly in their invite email — no need to ask admin
 - **Email delivery docs**: Added SMTP setup guide (Resend/SendGrid) to prevent invite emails going to spam
 
 ### Fixed
+
 - **Re-invite users**: API now automatically cleans up stale auth users when re-inviting, fixing "user already exists" errors
 - **API startup logging**: Shows whether service key is configured for invites
 
 ### Changed
+
 - **Invite flow**: "Confirm & Download" button redirects to blueplm.io/downloads after account confirmation
 - **Email template**: Updated invite template displays org code with copy-friendly formatting
 
@@ -1420,6 +1630,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.7] - 2025-12-30
 
 ### Fixed
+
 - **Schema version mismatch**: Updated app to expect schema v3 (was incorrectly set to v1, causing "database newer than app" warnings)
 
 ---
@@ -1427,6 +1638,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.6] - 2025-12-30
 
 ### Added
+
 - **Sign-In Methods settings**: Admins can control which authentication providers (Google, Email, Phone) are available for team members and suppliers
 
 ---
@@ -1434,10 +1646,12 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.5] - 2025-12-30
 
 ### Added
+
 - **Documentation site**: VitePress-powered docs at docs.blueplm.io with auto-deploy on release
 - **Docs content**: Getting started guides, admin/user setup, source files, and settings documentation
 
 ### Fixed
+
 - **Build**: Isolated docs dependencies to prevent conflicts with API Docker build
 
 ---
@@ -1445,6 +1659,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.2] - 2025-12-30
 
 ### Changed
+
 - **Schema version**: Bumped to v2 for workflow_roles, job_titles, pending_org_members, vault_users tables
 
 ---
@@ -1452,6 +1667,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.1] - 2025-12-30
 
 ### Fixed
+
 - **User invite**: Added REST API deployment step to main README and API docs (SUPABASE_SERVICE_KEY required for invite emails)
 
 ---
@@ -1459,6 +1675,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.16.0] - 2025-12-29
 
 ### Added
+
 - **Members settings redesign**: Tabbed UI with Users, Teams, Roles, and Titles tabs - each with search and full CRUD
 - **Vault access enforcement**: Non-admins only see vaults they have access to; auto-disconnect on revoked access
 - **Job Titles**: Display labels for users with inline assignment, create/edit/delete from modal
@@ -1469,14 +1686,17 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Sentry user tracking**: Hashed user/org IDs in error reports (privacy-preserving, consent-based)
 
 ### Changed
+
 - **Permissions simplified**: All permissions flow through team membership (removed role selection from dialogs)
 - **Create User**: Now includes vault restrictions and optional invite email
 - **Email auto-join removed**: Users join via pre-created accounts or organization code only
 
 ### Improved
+
 - **Network resilience**: Auto-retry with exponential backoff; friendly error messages for connection issues
 
 ### Fixed
+
 - **Clipboard**: Fixed "Write permission denied" in packaged app using Electron native API
 - **Contribution count**: Accurate totals (previously capped at 1000)
 - **Pending view**: SolidWorks temp files (`~$...`) now hidden
@@ -1487,6 +1707,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.15.0] - 2025-12-28
 
 ### Added
+
 - **Workflow Roles**: Custom approval roles (Design Lead, QA Manager, etc.) assignable to states, transitions, and gate reviewers
 - **Advanced Workflow Features**: State permissions, transition conditions/actions, revision schemes, auto-transitions, workflow tasks, transition approvals, and audit history
 - **Workflow Canvas**: Right-click to create states, infinite canvas, elbow paths with draggable handles, connection point snapping, snap-to-grid/alignment with visual guides
@@ -1494,9 +1715,11 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 - **Schema version checking**: Startup warnings for database migrations, status in Settings
 
 ### Changed
+
 - **Workflow model simplified**: Gates replaced with transition approvals (industry-standard)
 
 ### Fixed
+
 - Sidebar submenu animation drift
 - Workflow: drag-to-connect, elbow paths, transition persistence, spline perpendicularity, control points, color picker layout
 
@@ -1505,6 +1728,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.14.2] - 2025-12-28
 
 ### Fixed
+
 - **Recursive subassembly fetching**: Fixed "too many connections" and performance issues
   - Batch queries with chunking (50 items at a time)
   - Proper connection management in recursive loops
@@ -1521,6 +1745,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.14.1] - 2025-12-27
 
 ### Fixed
+
 - **Subassembly support**: Deep recursive loading for multi-level assemblies
 - **File status indicators**: Real-time sync status icons in file browser
 - **Search performance**: Debounced search with proper cleanup
@@ -1530,11 +1755,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.14.0] - 2025-12-27
 
 ### Added
+
 - **Bill of Materials (BOM)**: Generate and export BOMs from assemblies
 - **File comparison**: Side-by-side diff view for file versions
 - **Bulk operations**: Select multiple files for batch checkout/checkin
 
 ### Changed
+
 - **File browser redesign**: Tree view with drag-and-drop support
 - **Settings organization**: Grouped into logical categories
 
@@ -1543,11 +1770,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.13.0] - 2025-12-26
 
 ### Added
+
 - **Workflow Designer**: Visual canvas for creating approval workflows
 - **Custom states**: Define workflow states with colors and icons
 - **Transition rules**: Configure who can move files between states
 
 ### Fixed
+
 - **Memory leaks**: Proper cleanup of event listeners and subscriptions
 - **Offline mode**: Better handling of network disconnection
 
@@ -1556,11 +1785,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.12.0] - 2025-12-25
 
 ### Added
+
 - **Team permissions**: Granular permission system based on team membership
 - **Vault access control**: Restrict vault visibility per user/team
 - **Activity feed**: Real-time updates of organization activity
 
 ### Changed
+
 - **Authentication flow**: Simplified login with magic links
 - **User onboarding**: Guided setup for new organizations
 
@@ -1569,11 +1800,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.11.0] - 2025-12-24
 
 ### Added
+
 - **SolidWorks integration**: Native add-in for direct PDM operations
 - **eDrawings viewer**: Built-in 3D preview for CAD files
 - **Thumbnail generation**: Automatic preview images for supported formats
 
 ### Fixed
+
 - **Large file uploads**: Chunked uploads for files over 50MB
 - **Version conflicts**: Better merge resolution for concurrent edits
 
@@ -1582,11 +1815,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.10.0] - 2025-12-23
 
 ### Added
+
 - **RFQ module**: Request for Quote generation and tracking
 - **Supplier management**: Vendor database with contact info
 - **Part costing**: Track costs and pricing history
 
 ### Changed
+
 - **Database schema**: Optimized indexes for faster queries
 - **API performance**: Reduced response times by 40%
 
@@ -1595,11 +1830,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.9.0] - 2025-12-22
 
 ### Added
+
 - **Custom fields**: User-defined metadata fields for files
 - **Search filters**: Advanced search with field-specific filters
 - **Export options**: CSV and Excel export for reports
 
 ### Fixed
+
 - **File sync conflicts**: Improved conflict detection and resolution
 - **UI responsiveness**: Fixed lag in large file listings
 
@@ -1608,11 +1845,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.8.0] - 2025-12-21
 
 ### Added
+
 - **Notifications**: In-app notifications for file changes and mentions
 - **Comments**: Thread-based discussions on files and versions
 - **@mentions**: Tag users in comments for notifications
 
 ### Changed
+
 - **Navigation**: Streamlined sidebar with collapsible sections
 - **Dark mode**: Improved contrast and readability
 
@@ -1621,11 +1860,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.7.0] - 2025-12-20
 
 ### Added
+
 - **Version history**: Complete audit trail of all file changes
 - **Rollback**: Restore files to any previous version
 - **Compare versions**: Visual diff between file versions
 
 ### Fixed
+
 - **Download resumption**: Resume interrupted downloads
 - **Upload validation**: Better file type and size checks
 
@@ -1634,11 +1875,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.6.0] - 2025-12-19
 
 ### Added
+
 - **Multi-vault support**: Manage multiple storage vaults per organization
 - **Vault migration**: Move files between vaults
 - **Storage analytics**: Track usage per vault and user
 
 ### Changed
+
 - **File organization**: Folders now support nesting up to 10 levels
 - **Search scope**: Search across all vaults or specific vault
 
@@ -1647,11 +1890,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.5.0] - 2025-12-18
 
 ### Added
+
 - **Google Drive integration**: Sync files with Google Drive folders
 - **Auto-sync**: Automatic synchronization on file changes
 - **Conflict resolution**: Handle sync conflicts gracefully
 
 ### Fixed
+
 - **OAuth flow**: Fixed token refresh issues
 - **Large folder sync**: Pagination for folders with 1000+ files
 
@@ -1660,11 +1905,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.4.0] - 2025-12-17
 
 ### Added
+
 - **Part numbering**: Configurable serial number schemes
 - **Auto-increment**: Automatic part number generation
 - **Number validation**: Prevent duplicate part numbers
 
 ### Changed
+
 - **Part creation flow**: Streamlined form with smart defaults
 - **Validation rules**: Configurable per organization
 
@@ -1673,11 +1920,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.3.0] - 2025-12-16
 
 ### Added
+
 - **Organization settings**: Company profile, logo, and branding
 - **User management**: Invite, remove, and manage user roles
 - **Audit logging**: Track all administrative actions
 
 ### Fixed
+
 - **Permission checks**: Consistent enforcement across UI
 - **Session handling**: Fixed logout issues on token expiry
 
@@ -1686,11 +1935,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.2.0] - 2025-12-15
 
 ### Added
+
 - **File preview**: In-browser preview for images, PDFs, and text files
 - **Quick actions**: Context menu for common file operations
 - **Keyboard shortcuts**: Navigate and operate with keyboard
 
 ### Changed
+
 - **Upload UX**: Drag-and-drop with progress indicators
 - **Error handling**: More descriptive error messages
 
@@ -1699,11 +1950,13 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.1.0] - 2025-12-14
 
 ### Added
+
 - **Checkout/Checkin**: File locking for collaborative editing
 - **Lock status**: Visual indicators for locked files
 - **Force unlock**: Admin ability to release stuck locks
 
 ### Fixed
+
 - **Concurrent edits**: Prevent data loss from simultaneous saves
 - **Lock cleanup**: Auto-release locks on session timeout
 
@@ -1712,12 +1965,14 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [2.0.0] - 2025-12-13
 
 ### Added
+
 - **Complete rewrite**: New architecture with React + Electron
 - **Supabase backend**: PostgreSQL with real-time subscriptions
 - **Modern UI**: Tailwind CSS with dark mode support
 - **Cross-platform**: Windows, macOS, and Linux support
 
 ### Changed
+
 - **Authentication**: Moved to Supabase Auth
 - **Storage**: Cloud-first with local caching
 - **Performance**: 5x faster file operations
@@ -1727,6 +1982,7 @@ These entries were written for a 3.24.0 that was prepared and then not released;
 ## [1.0.0] - 2025-12-01
 
 ### Added
+
 - Initial release
 - Basic file management
 - User authentication

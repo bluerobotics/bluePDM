@@ -95,7 +95,14 @@ export interface VaultWatcherDeps {
   scanCache: WatcherScanCache
 }
 
-function isIgnored(relativePath: string): boolean {
+/**
+ * Shared by the watcher and the full vault scan. The two must agree: a path the
+ * scan records but the watcher ignores never receives change events, and appears
+ * and disappears from the file list as the scan happens to catch it. SolidWorks
+ * `~$` lock files are the case that bites - they exist only while a document is
+ * open, so they surface as local-only files that nobody created.
+ */
+export function isIgnoredVaultPath(relativePath: string): boolean {
   return IGNORED_PATTERNS.some((pattern) => pattern.test(relativePath))
 }
 
@@ -283,7 +290,7 @@ function createNativeWatcher(dirPath: string, deps: VaultWatcherDeps): VaultWatc
 
     const relativePath = filename.toString().replace(/\\/g, '/')
     if (!relativePath || relativePath.startsWith('..')) return
-    if (isIgnored(relativePath)) return
+    if (isIgnoredVaultPath(relativePath)) return
 
     pending.add(relativePath)
     scheduleFlush(pending.size > BULK_CHANGE_THRESHOLD ? DEBOUNCE_BULK_MS : DEBOUNCE_MS)

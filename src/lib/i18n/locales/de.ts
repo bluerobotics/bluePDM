@@ -172,13 +172,15 @@ export const de: TranslationDict = {
       expand: 'Erweitern',
       collapse: 'Einklappen',
     },
+    configEdit: {
+      checkOutToEdit: 'Datei zum Bearbeiten auschecken',
+    },
     configCommit: {
       write: 'In Datei schreiben',
       writeAndSync: 'Schreiben und Zeichnungen aktualisieren',
       writeAndSyncCount: 'Schreiben und Zeichnungen für {{count}} Konfigurationen aktualisieren',
       pending: 'Noch nicht in das Dokument geschrieben',
-      swOffline:
-        'Starten Sie den SolidWorks-Dienst, um Konfigurationsmetadaten zu schreiben',
+      swOffline: 'Starten Sie den SolidWorks-Dienst, um Konfigurationsmetadaten zu schreiben',
       summary:
         'Konfigurationen geschrieben: {{configurations}}; Zeichnungen aktualisiert: {{updated}}, übersprungen: {{skipped}}, fehlgeschlagen: {{failed}}',
     },
@@ -342,10 +344,23 @@ export const de: TranslationDict = {
     dropFilesHere: 'Dateien hier ablegen zum Hochladen',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: 'Aus dem Tresor gelöschte Dateien entfernen?',
+      message:
+        'Diese lokalen Dateien befinden sich nicht mehr im Tresor auf dem Server, daher würde BluePLM sie normalerweise automatisch entfernen. Es sind mehr als üblich, daher wurde noch nichts entfernt. Beim Entfernen werden die lokalen Kopien in den Papierkorb verschoben. Brechen Sie ab, um sie zu behalten und im Dateibrowser zu prüfen.',
+      confirm: 'Dateien entfernen',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      'Einige Umbenennungen haben den Server nicht erreicht, der weiterhin die alten Pfade speichert. Betroffene Dateien werden als verschoben angezeigt; führen Sie reconcile-moved-paths aus, um sie zu aktualisieren.',
+    cloudRenameFailed: 'Umbenennen auf dem Server nicht möglich',
     checkIn: 'Einchecken',
     checkOut: 'Auschecken',
     download: 'Herunterladen',
+    getLatest: 'Neueste Version abrufen',
     upload: 'Hochladen',
     delete: 'Löschen',
     rename: 'Umbenennen',
@@ -360,6 +375,15 @@ export const de: TranslationDict = {
     rollback: 'Zurücksetzen',
     discard: 'Änderungen verwerfen',
     forceRelease: 'Freigabe erzwingen',
+  },
+
+  syncError: {
+    toast: 'Synchronisierung fehlgeschlagen: {{reason}}',
+    toastWithMore: 'Synchronisierung fehlgeschlagen: {{reason}} (+{{count}} weitere)',
+    failed: 'Synchronisierung fehlgeschlagen',
+    unknown: 'Unbekannter Fehler',
+    pathCaseConflict:
+      'Eine andere Datei belegt auf dem Server bereits diesen Pfad und unterscheidet sich nur in der Groß- und Kleinschreibung. Aktualisiere die Dateiliste, um sie anzuzeigen.',
   },
 
   status: {
@@ -427,6 +451,56 @@ export const de: TranslationDict = {
       'Diese Änderung startet den SOLIDWORKS-Dienst neu. Wählen Sie die Version, in der Sie Ihre Dateien öffnen.',
     automatic: 'Automatisch',
     automaticDescription: 'Die von Windows als Standard registrierte Version verwenden',
+  },
+
+  reconcileMovedPaths: {
+    offline: 'Verschobene Pfade können offline nicht abgeglichen werden',
+    notSignedIn: 'Bitte zuerst anmelden',
+    noOrganization: 'Keine Organisation verbunden',
+    noVault: 'Kein Tresor verbunden',
+    nothingToReconcile: 'Keine Datei wartet auf eine Aktualisierung ihres Serverpfads',
+
+    reportHeading:
+      '{{count}} Dateien wurden auf diesem Computer verschoben oder umbenannt, während der Server weiterhin die alten Pfade führte.',
+    reportEligible: 'Bei {{count}} kann der Serverpfad jetzt geschrieben werden.',
+    reportBlocked: '{{count}} sind von anderen Personen ausgecheckt und werden nicht geschrieben:',
+    reportHolder: '{{count}} gehalten von {{user}}',
+    unknownHolder: 'einem anderen Benutzer',
+    reportConflict: '{{count}} übersprungen — ein anderer Dateieintrag belegt den neuen Pfad:',
+    reportUnverified:
+      '{{count}} übersprungen — der Inhalt der Datei stimmt nicht mehr mit dem überein, was der Server für sie aufgezeichnet hat; das Verschieben kann nicht überprüft werden:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… und {{count}} weitere',
+
+    dryRunSummary:
+      'Nur Vorprüfung: {{eligible}} von {{total}} Serverpfaden können geschrieben werden. Es wurde nichts geschrieben.',
+    dryRunNote: 'Nur Bericht. Ohne --apply wird nichts geschrieben.',
+
+    refused:
+      'Es wurde nichts geschrieben: {{count}} dieser Dateien sind von anderen Personen ausgecheckt ({{holders}}). Bitten Sie sie einzuchecken und starten Sie erneut, oder verwenden Sie --skip-checked-out, um die übrigen abzugleichen und ihre unberührt zu lassen.',
+    nothingEligible:
+      'Es kann nichts geschrieben werden: {{blocked}} sind von anderen Personen ausgecheckt und {{skipped}} wurden übersprungen.',
+    confirmUnavailable:
+      'Es wurde nichts geschrieben: dieser Befehl benötigt einen Bestätigungsdialog, und es war keiner verfügbar.',
+
+    confirmTitle: '{{count}} Serverpfade aktualisieren?',
+    confirmMessage:
+      'Bei {{count}} Dateien wird der Serverpfad auf den aktuellen Speicherort auf der Festplatte aktualisiert. Dabei wird je Datei ein Eintrag geschrieben und ein Verschieben protokolliert; alle anderen Computer der Organisation übernehmen die neuen Pfade bei der nächsten Synchronisierung.',
+    confirmRemainder: '{{count}} weitere bleiben unverändert ({{detail}}).',
+    confirmText: '{{count}} Pfade aktualisieren',
+    declined: 'Abgebrochen. Es wurde nichts geschrieben.',
+
+    progress: '{{count}} Serverpfade werden aktualisiert…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Unbekannter Fehler',
+
+    summaryComplete: '{{count}} Serverpfade abgeglichen.',
+    summaryPartial:
+      '{{succeeded}} von {{total}} Serverpfaden abgeglichen — {{leftovers}}. Führen Sie den Befehl erneut aus, um ihn abzuschließen.',
+    summaryFailed: '{{count}} fehlgeschlagen',
+    summaryNotAttempted: '{{count}} nicht versucht',
+    summaryBlocked: '{{count}} von anderen ausgecheckt',
+    summarySkipped: '{{count}} übersprungen',
   },
 
   hiddenFolders: {

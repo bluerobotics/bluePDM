@@ -368,10 +368,23 @@ export const en: TranslationDict = {
   },
 
   // File operations
+  autoDiscard: {
+    largeBatch: {
+      title: 'Remove files deleted from the vault?',
+      message:
+        'These local files are no longer in the vault on the server, so BluePLM would normally remove them automatically. There are more than usual, so nothing has been removed yet. Removing them sends the local copies to the Recycle Bin. Cancel to keep them and review them in the file browser.',
+      confirm: 'Remove files',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      'Some renames did not reach the server, which still records the old paths. Affected files show as moved; run reconcile-moved-paths to update them.',
+    cloudRenameFailed: 'Could not rename on the server',
     checkIn: 'Check In',
     checkOut: 'Check Out',
     download: 'Download',
+    getLatest: 'Get Latest',
     upload: 'Upload',
     delete: 'Delete',
     rename: 'Rename',
@@ -386,6 +399,20 @@ export const en: TranslationDict = {
     rollback: 'Rollback',
     discard: 'Discard Changes',
     forceRelease: 'Force Release',
+  },
+
+  // First check-in ("sync") failures. Only the unique-index violation is restated. Postgres reports
+  // it as a duplicate key, but what it means is that a file already holds that path with different
+  // letter casing, and a refresh is the way out rather than a retry: the file stops being eligible
+  // for sync only once the colliding row is in the local list. Everything else is passed through
+  // verbatim, because a raw message the user can quote beats a generic one.
+  syncError: {
+    toast: 'Sync failed: {{reason}}',
+    toastWithMore: 'Sync failed: {{reason}} (+{{count}} more)',
+    failed: 'Sync failed',
+    unknown: 'Unknown error',
+    pathCaseConflict:
+      'Another file already occupies this path on the server, differing only in letter case. Refresh the file list to bring it into view.',
   },
 
   // Sharing a file by link. Every one of these is a refusal: the success path returns a URL rather
@@ -479,6 +506,9 @@ export const en: TranslationDict = {
       noComponents: 'No components in this configuration',
       expand: 'Expand',
       collapse: 'Collapse',
+    },
+    configEdit: {
+      checkOutToEdit: 'Check out file to edit',
     },
     configCommit: {
       write: 'Write to file',
@@ -1440,6 +1470,59 @@ export const en: TranslationDict = {
       columnDatabaseEmpty: 'BluePLM empty',
       columnDiffer: 'Differ',
     },
+  },
+
+  // The reconcile-moved-paths repair - commits local moves the server never recorded.
+  // Worded throughout so that the reader can tell a run that wrote from a run that did not: every
+  // outcome names what was written, what was left, and what to do about the remainder.
+  reconcileMovedPaths: {
+    offline: 'Cannot reconcile moved paths while offline',
+    notSignedIn: 'Please sign in first',
+    noOrganization: 'No organization connected',
+    noVault: 'No vault is connected',
+    nothingToReconcile: 'No file is waiting for its server path to be updated',
+
+    reportHeading:
+      '{{count}} files were moved or renamed on this computer while the server kept recording their old paths.',
+    reportEligible: '{{count}} can have their server path written now.',
+    reportBlocked: '{{count}} are checked out by other people and will not be written:',
+    reportHolder: '{{count}} held by {{user}}',
+    unknownHolder: 'another user',
+    reportConflict: '{{count}} skipped — another file record already occupies the new path:',
+    reportUnverified:
+      '{{count}} skipped — the file’s contents no longer match what the server recorded for it, so the move cannot be verified:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… and {{count}} more',
+
+    dryRunSummary:
+      'Pre-flight only: {{eligible}} of {{total}} server paths can be written. Nothing was written.',
+    dryRunNote: 'Reporting only. Nothing is written without --apply.',
+
+    refused:
+      'Nothing was written: {{count}} of these files are checked out by other people ({{holders}}). Ask them to check in and run it again, or re-run with --skip-checked-out to reconcile the rest and leave theirs alone.',
+    nothingEligible:
+      'Nothing can be written: {{blocked}} are checked out by other people and {{skipped}} were skipped.',
+    confirmUnavailable:
+      'Nothing was written: this command needs a confirmation dialog and none was available.',
+
+    confirmTitle: 'Update {{count}} server paths?',
+    confirmMessage:
+      '{{count}} files will have their server path updated to where they now sit on disk. This writes one file record and logs one move for each, and every other computer in the organization picks up the new paths on its next sync.',
+    confirmRemainder: '{{count}} more are left unchanged ({{detail}}).',
+    confirmText: 'Update {{count}} Paths',
+    declined: 'Cancelled. Nothing was written.',
+
+    progress: 'Updating {{count}} server paths…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Unknown error',
+
+    summaryComplete: 'Reconciled {{count}} server paths.',
+    summaryPartial:
+      'Reconciled {{succeeded}} of {{total}} server paths — {{leftovers}}. Run it again to finish.',
+    summaryFailed: '{{count}} failed',
+    summaryNotAttempted: '{{count}} not attempted',
+    summaryBlocked: '{{count}} checked out by others',
+    summarySkipped: '{{count}} skipped',
   },
 
   // Admin-only folder visibility (decluttering, not access control)

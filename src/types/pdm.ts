@@ -481,6 +481,10 @@ export interface PDMFile {
   checked_out_by_machine_id: string | null // Machine ID that checked out the file
   checked_out_by_machine_name: string | null // Machine name for display
   checked_out_user?: CheckoutUserProfile | null
+  /** file_path at the moment of checkout. Null when not checked out. */
+  checked_out_file_path: string | null
+  /** file_name at the moment of checkout. Null when not checked out. */
+  checked_out_file_name: string | null
 
   // Content tracking
   content_hash: string | null // SHA-256 hash of file content

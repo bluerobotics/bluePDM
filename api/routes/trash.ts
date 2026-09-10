@@ -73,9 +73,12 @@ const trashRoutes: FastifyPluginAsync = async (fastify) => {
         .eq('id', id)
         .single()
 
+      // Also bump updated_at so the watermark-based delta sync (get_vault_files_delta)
+      // surfaces the restore to other clients even if the deployed RPC keys off
+      // updated_at. Without this, other machines keep the row cached as trashed.
       const { data, error } = await request
         .supabase!.from('files')
-        .update({ deleted_at: null, deleted_by: null })
+        .update({ deleted_at: null, deleted_by: null, updated_at: new Date().toISOString() })
         .eq('id', id)
         .eq('org_id', request.user!.org_id)
         .select()

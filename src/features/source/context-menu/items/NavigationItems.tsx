@@ -5,6 +5,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import type { DialogName } from '../types'
 import type { ToastType } from '@/stores/types'
 import { getFilesInFolder } from '@/lib/commands'
+import { isPathWithinDirectory } from '@/lib/utils'
 
 interface NavigationItemsProps {
   firstFile: LocalFile
@@ -50,13 +51,13 @@ export function NavigationItems({
       setIsCalculatingSize(true)
       openDialog('properties')
       const filesInFolder = getFilesInFolder(files, firstFile.relativePath)
+      // Same containment rule as the file count above, so the two halves of the size dialog
+      // agree when the folder's stored spelling differs in case from its children's.
       const foldersInFolder = files.filter(
         (f) =>
           f.isDirectory &&
-          f.relativePath
-            .replace(/\\/g, '/')
-            .startsWith(firstFile.relativePath.replace(/\\/g, '/') + '/') &&
-          f.relativePath !== firstFile.relativePath,
+          isPathWithinDirectory(f.relativePath, firstFile.relativePath) &&
+          f.relativePath.length > firstFile.relativePath.length,
       )
       let totalSize = 0
       for (const f of filesInFolder) {

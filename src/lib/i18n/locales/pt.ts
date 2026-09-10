@@ -165,13 +165,15 @@ export const pt: TranslationDict = {
       expand: 'Expandir',
       collapse: 'Recolher',
     },
+    configEdit: {
+      checkOutToEdit: 'Faça check-out do ficheiro para editar',
+    },
     configCommit: {
       write: 'Escrever no ficheiro',
       writeAndSync: 'Escrever e atualizar desenhos',
       writeAndSyncCount: 'Escrever e atualizar desenhos para {{count}} configurações',
       pending: 'Ainda não escrito no documento',
-      swOffline:
-        'Inicie o serviço do SolidWorks para escrever os metadados da configuração',
+      swOffline: 'Inicie o serviço do SolidWorks para escrever os metadados da configuração',
       summary:
         'Configurações escritas: {{configurations}}; desenhos atualizados: {{updated}}, ignorados: {{skipped}}, falhados: {{failed}}',
     },
@@ -336,10 +338,23 @@ export const pt: TranslationDict = {
     dropFilesHere: 'Largue ficheiros aqui para carregar',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: 'Remover os ficheiros eliminados do cofre?',
+      message:
+        'Estes ficheiros locais já não estão no cofre no servidor, pelo que o BluePLM normalmente os removeria automaticamente. São mais do que o habitual, por isso ainda não foi removido nada. Removê-los envia as cópias locais para a Reciclagem. Cancele para os manter e analisá-los no explorador de ficheiros.',
+      confirm: 'Remover ficheiros',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      'Algumas mudanças de nome não chegaram ao servidor, que continua a registar os caminhos antigos. Os ficheiros afetados aparecem como movidos; execute reconcile-moved-paths para os atualizar.',
+    cloudRenameFailed: 'Não foi possível mudar o nome no servidor',
     checkIn: 'Check-In',
     checkOut: 'Check-Out',
     download: 'Transferir',
+    getLatest: 'Obter a versão mais recente',
     upload: 'Carregar',
     delete: 'Eliminar',
     rename: 'Renomear',
@@ -354,6 +369,15 @@ export const pt: TranslationDict = {
     rollback: 'Reverter',
     discard: 'Descartar Alterações',
     forceRelease: 'Forçar Libertação',
+  },
+
+  syncError: {
+    toast: 'Falha na sincronização: {{reason}}',
+    toastWithMore: 'Falha na sincronização: {{reason}} (+{{count}} mais)',
+    failed: 'Falha na sincronização',
+    unknown: 'Erro desconhecido',
+    pathCaseConflict:
+      'Outro ficheiro já ocupa este caminho no servidor e difere apenas em maiúsculas e minúsculas. Atualize a lista de ficheiros para o ver.',
   },
 
   status: {
@@ -421,6 +445,56 @@ export const pt: TranslationDict = {
       'Esta alteração reinicia o serviço SOLIDWORKS. Escolha a versão em que abre os seus ficheiros.',
     automatic: 'Automática',
     automaticDescription: 'Usar a versão que o Windows registou como predefinida',
+  },
+
+  reconcileMovedPaths: {
+    offline: 'Não é possível reconciliar caminhos movidos offline',
+    notSignedIn: 'Faça login primeiro',
+    noOrganization: 'Nenhuma organização conectada',
+    noVault: 'Nenhum cofre conectado',
+    nothingToReconcile: 'Nenhum arquivo está aguardando a atualização do seu caminho no servidor',
+
+    reportHeading:
+      '{{count}} arquivos foram movidos ou renomeados neste computador enquanto o servidor continuou registrando os caminhos antigos.',
+    reportEligible: 'Em {{count}} o caminho do servidor pode ser gravado agora.',
+    reportBlocked: '{{count}} estão com check-out feito por outras pessoas e não serão gravados:',
+    reportHolder: '{{count}} em posse de {{user}}',
+    unknownHolder: 'outro usuário',
+    reportConflict: '{{count}} ignorados — outro registro de arquivo já ocupa o novo caminho:',
+    reportUnverified:
+      '{{count}} ignorados — o conteúdo do arquivo já não corresponde ao que o servidor registrou para ele, portanto a movimentação não pode ser verificada:',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… e mais {{count}}',
+
+    dryRunSummary:
+      'Apenas verificação prévia: {{eligible}} de {{total}} caminhos do servidor podem ser gravados. Nada foi gravado.',
+    dryRunNote: 'Apenas relatório. Nada é gravado sem --apply.',
+
+    refused:
+      'Nada foi gravado: {{count}} desses arquivos estão com check-out feito por outras pessoas ({{holders}}). Peça que façam check-in e execute novamente, ou execute com --skip-checked-out para reconciliar os demais e deixar os deles intactos.',
+    nothingEligible:
+      'Nada pode ser gravado: {{blocked}} estão com check-out feito por outras pessoas e {{skipped}} foram ignorados.',
+    confirmUnavailable:
+      'Nada foi gravado: este comando precisa de uma caixa de diálogo de confirmação e nenhuma estava disponível.',
+
+    confirmTitle: 'Atualizar {{count}} caminhos do servidor?',
+    confirmMessage:
+      'O caminho no servidor de {{count}} arquivos será atualizado para onde eles estão agora no disco. Isto grava um registro e anota uma movimentação para cada um, e todos os outros computadores da organização receberão os novos caminhos na próxima sincronização.',
+    confirmRemainder: '{{count}} outros permanecem inalterados ({{detail}}).',
+    confirmText: 'Atualizar {{count}} caminhos',
+    declined: 'Cancelado. Nada foi gravado.',
+
+    progress: 'Atualizando {{count}} caminhos do servidor…',
+    failureItem: '{{path}}: {{error}}',
+    unknownError: 'Erro desconhecido',
+
+    summaryComplete: '{{count}} caminhos do servidor reconciliados.',
+    summaryPartial:
+      '{{succeeded}} de {{total}} caminhos do servidor reconciliados — {{leftovers}}. Execute novamente para concluir.',
+    summaryFailed: '{{count}} com falha',
+    summaryNotAttempted: '{{count}} não tentados',
+    summaryBlocked: '{{count}} com check-out de outros',
+    summarySkipped: '{{count}} ignorados',
   },
 
   hiddenFolders: {

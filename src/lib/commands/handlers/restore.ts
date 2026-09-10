@@ -8,8 +8,11 @@
  * or path pattern.
  */
 
+import { log } from '@/lib/logger'
+
 import { usePDMStore } from '../../../stores/pdmStore'
 import { getDeletedFiles, restoreFile } from '../../supabase'
+import { clearVaultCache } from '../../cache/vaultFileCache'
 import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
@@ -158,6 +161,18 @@ export async function handleRestore(
             )
           }
         }
+      }
+
+      // Invalidate the vault cache so the next load rebuilds without the stale
+      // trashed entry. Without this, the restore is invisible to the IndexedDB
+      // cache until it naturally expires (see clearVaultCache callers in delete.ts).
+      const { activeVaultId } = usePDMStore.getState()
+      if (activeVaultId) {
+        clearVaultCache(activeVaultId).catch((error) => {
+          log.warn('[Restore]', 'Failed to clear vault cache after restore', {
+            error: String(error),
+          })
+        })
       }
 
       addOutput('success', `Restored: ${fileToRestore.file_path}`)

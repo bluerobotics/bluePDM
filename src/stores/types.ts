@@ -1097,6 +1097,12 @@ export interface FilesSlice {
 
   // Actions - Realtime Updates
   addCloudFile: (pdmFile: import('../types/pdm').PDMFile) => void
+  /**
+   * Batch version of addCloudFile: applies the same per-file merge/insert logic as
+   * addCloudFile, but for many files in a single store commit (one re-render, one
+   * recompute of the tree/folderMetrics/flattenedItems memos) instead of N.
+   */
+  addCloudFiles: (pdmFiles: import('../types/pdm').PDMFile[]) => void
   updateFilePdmData: (fileId: string, pdmData: Partial<import('../types/pdm').PDMFile>) => void
   /** Update a file's location from a realtime event (handles path changes from other users) */
   updateFileLocationFromServer: (

@@ -16,6 +16,11 @@
  * - Server file list is loaded (all server files are marked as "known synced")
  * - Files are deleted from server (removed from index)
  * - Orphaned files are discarded (removed from index)
+ *
+ * A path that leaves the server while the file is still on disk is kept as a
+ * tombstone rather than pruned, because "was previously synced" is the only
+ * evidence that distinguishes an orphan from a file the user authored. Without it
+ * the answer survived exactly one load after the server row disappeared.
  */
 
 import { log } from '@/lib/logger'
@@ -23,6 +28,16 @@ import { log } from '@/lib/logger'
 const DB_NAME = 'blueplm-sync-index'
 const DB_VERSION = 3
 const STORE_NAME = 'sync-index'
+
+/**
+ * How long a tombstone keeps asserting that a path was once synced.
+ *
+ * The assertion is what allows the file to be deleted from disk, so it must not
+ * outlive the confidence behind it: after a month unaddressed, the likelier reading
+ * of a local file at a path the server dropped is that the path was reused. Expiry
+ * reclassifies the file as 'added', which is the direction that leaves work in place.
+ */
+const ORPHAN_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 interface SyncIndexEntry {
   key: string // vaultId:relativePath (compound key)
@@ -32,6 +47,22 @@ interface SyncIndexEntry {
   ino?: number // NTFS file index number (survives renames)
   localVersion?: number // last known synced version (survives app restart)
   localHash?: string // last known content hash (survives app restart)
+  // Path the index knows only from local state: the old server path of a file moved
+  // on disk, or its new local path before the move reaches the server. Carrying the
+  // inode at both paths is what keeps rename detection working across loads, so these
+  // entries must survive the server prune - but they are not evidence of a sync, so
+  // orphan detection must never see them.
+  localOnly?: boolean
+  // When this path was first observed missing from the server while the file was still
+  // on disk. Set only for paths that were server-backed, so it means "the server row
+  // for a file we hold went away", not "this path is unknown to the server".
+  orphanedAt?: number
+}
+
+/** What the loader needs about a path the sync index knows. */
+export interface SyncIndexPathInfo {
+  /** Set only on tombstoned paths: when the server row was first seen gone. */
+  orphanedAt?: number
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null
@@ -79,10 +110,16 @@ function makeKey(vaultId: string, relativePath: string): string {
 }
 
 /**
- * Get the sync index for a vault - returns Set of previously synced paths (lowercase)
+ * Get the sync index for a vault - previously synced paths (lowercase) keyed for
+ * `has()` lookups, with tombstone detail for the paths that carry it.
  * This is the main function used during file loading to detect orphaned files.
+ *
+ * Local-only paths are excluded: they record an inode for rename detection, not a
+ * sync, and treating one as evidence of a sync would classify a moved file as an
+ * orphan. Tombstones past their TTL are excluded for the same reason the prune
+ * would drop them on the next write.
  */
-export async function getSyncIndex(vaultId: string): Promise<Set<string>> {
+export async function getSyncIndex(vaultId: string): Promise<Map<string, SyncIndexPathInfo>> {
   try {
     const db = await openDB()
 
@@ -94,19 +131,34 @@ export async function getSyncIndex(vaultId: string): Promise<Set<string>> {
 
       request.onsuccess = () => {
         const entries = request.result as SyncIndexEntry[]
-        const pathSet = new Set(entries.map((e) => e.relativePath))
-        log.info('[SyncIndex]', `Loaded ${pathSet.size} synced paths for vault ${vaultId}`)
-        resolve(pathSet)
+        const now = Date.now()
+        const paths = new Map<string, SyncIndexPathInfo>()
+        let tombstoned = 0
+
+        for (const entry of entries) {
+          if (entry.localOnly) continue
+          if (entry.orphanedAt !== undefined) {
+            if (now - entry.orphanedAt > ORPHAN_TOMBSTONE_TTL_MS) continue
+            tombstoned++
+          }
+          paths.set(entry.relativePath, { orphanedAt: entry.orphanedAt })
+        }
+
+        log.info(
+          '[SyncIndex]',
+          `Loaded ${paths.size} synced paths (${tombstoned} orphan tombstones) for vault ${vaultId}`,
+        )
+        resolve(paths)
       }
 
       request.onerror = () => {
         log.error('[SyncIndex]', 'Failed to read sync index', { error: request.error })
-        resolve(new Set())
+        resolve(new Map())
       }
     })
   } catch (error) {
     log.error('[SyncIndex]', 'Error reading sync index', { error })
-    return new Set()
+    return new Map()
   }
 }
 
@@ -191,7 +243,10 @@ export async function removeFromSyncIndex(vaultId: string, paths: string[]): Pro
         request.onsuccess = () => {
           completed++
           if (completed + errors === paths.length) {
-            log.info('[SyncIndex]', `Removed ${completed} paths from sync index for vault ${vaultId}`)
+            log.info(
+              '[SyncIndex]',
+              `Removed ${completed} paths from sync index for vault ${vaultId}`,
+            )
             resolve()
           }
         }
@@ -269,12 +324,18 @@ export async function clearSyncIndex(vaultId: string): Promise<void> {
  * This is an optimized version that replaces the entire index for a vault.
  * Called during file loading to ensure all server files are tracked.
  *
+ * A path that is no longer on the server is either dropped or tombstoned, depending
+ * on whether the file is still on disk. Callers that cannot say what is on disk get
+ * the plain drop, so a caller with a partial view can never tombstone.
+ *
  * @param vaultId - The vault ID
  * @param serverPaths - Array of all server file paths
+ * @param localPaths - Lowercased relative paths present on disk, from a complete scan
  */
 export async function updateSyncIndexFromServer(
   vaultId: string,
   serverPaths: string[],
+  localPaths?: ReadonlySet<string>,
 ): Promise<void> {
   if (serverPaths.length === 0) return
 
@@ -307,12 +368,36 @@ export async function updateSyncIndexFromServer(
           }
         }
 
-        // Prune stale entries whose paths are no longer on the server.
-        // These accumulate from renames and prevent correct inode detection.
+        // Resolve entries whose paths are no longer on the server. Stale paths
+        // accumulate from renames and prevent correct inode detection, so most are
+        // dropped - but a path whose file is still on disk is the only record that
+        // the file was ever synced, and dropping it makes an orphan indistinguishable
+        // from a file the user authored.
         const serverKeySet = new Set(serverPaths.map((p) => makeKey(vaultId, p)))
+        let tombstonesCreated = 0
+        let tombstonesDropped = 0
+
         for (const existing of existingEntries) {
-          if (!serverKeySet.has(existing.key)) {
+          if (serverKeySet.has(existing.key)) continue
+
+          // Owned by rename detection, which needs the inode at both paths. The prune
+          // and updateInodes used to delete and recreate these on every load.
+          if (existing.localOnly) continue
+
+          // Gone from disk as well: nothing left to classify, and keeping the record
+          // would make a future file at this path look like an orphan.
+          if (!localPaths?.has(existing.relativePath)) {
             store.delete(existing.key)
+            if (existing.orphanedAt !== undefined) tombstonesDropped++
+            continue
+          }
+
+          if (existing.orphanedAt === undefined) {
+            store.put({ ...existing, orphanedAt: now })
+            tombstonesCreated++
+          } else if (now - existing.orphanedAt > ORPHAN_TOMBSTONE_TTL_MS) {
+            store.delete(existing.key)
+            tombstonesDropped++
           }
         }
 
@@ -321,6 +406,9 @@ export async function updateSyncIndexFromServer(
         for (const path of serverPaths) {
           const key = makeKey(vaultId, path)
           const existingData = existingDataMap.get(key)
+          // Rebuilt from scratch, so a path back on the server loses both localOnly
+          // and orphanedAt. That is the exit for a reconciled move and for a file
+          // another user restored, and it is why a stored flag is never authoritative.
           const entry: SyncIndexEntry = {
             key,
             vaultId,
@@ -335,7 +423,14 @@ export async function updateSyncIndexFromServer(
           request.onsuccess = () => {
             completed++
             if (completed === serverPaths.length) {
-              log.info('[SyncIndex]', `Updated sync index with ${serverPaths.length} server paths`)
+              log.info(
+                '[SyncIndex]',
+                `Updated sync index with ${serverPaths.length} server paths`,
+                {
+                  tombstonesCreated,
+                  tombstonesDropped,
+                },
+              )
               resolve()
             }
           }
@@ -349,7 +444,10 @@ export async function updateSyncIndexFromServer(
       }
 
       existingRequest.onerror = () => {
-        log.error('[SyncIndex]', 'Failed to pre-read existing entries, falling back to no-ino update')
+        log.error(
+          '[SyncIndex]',
+          'Failed to pre-read existing entries, falling back to no-ino update',
+        )
         let completed = 0
         for (const path of serverPaths) {
           const entry: SyncIndexEntry = {
@@ -435,7 +533,10 @@ export async function getInodeMap(vaultId: string): Promise<Map<number, string[]
             }
           }
         }
-        log.info('[SyncIndex]', `Loaded inode map: ${map.size} entries with inodes for vault ${vaultId}`)
+        log.info(
+          '[SyncIndex]',
+          `Loaded inode map: ${map.size} entries with inodes for vault ${vaultId}`,
+        )
         resolve(map)
       }
 
@@ -458,10 +559,20 @@ export async function getInodeMap(vaultId: string): Promise<Map<number, string[]
  *
  * Creates new entries if none exist (upsert) so files from any entry path
  * (SolidWorks DM API extension, manual copy, etc.) get inode tracking.
+ *
+ * `localOnly` must be passed for every entry whose path is not on the server on this
+ * load, and left absent otherwise. It is derived per load and written unconditionally
+ * so a path that becomes server-backed loses the flag; a stored flag is never trusted.
  */
 export async function updateInodes(
   vaultId: string,
-  entries: Array<{ path: string; ino: number; localVersion?: number; localHash?: string }>,
+  entries: Array<{
+    path: string
+    ino: number
+    localVersion?: number
+    localHash?: string
+    localOnly?: boolean
+  }>,
 ): Promise<void> {
   if (entries.length === 0) return
 
@@ -474,7 +585,7 @@ export async function updateInodes(
 
       let completed = 0
 
-      for (const { path, ino, localVersion, localHash } of entries) {
+      for (const { path, ino, localVersion, localHash, localOnly } of entries) {
         const key = makeKey(vaultId, path)
         const getRequest = store.get(key)
 
@@ -485,6 +596,11 @@ export async function updateInodes(
             existing.ino = ino
             if (localVersion !== undefined) existing.localVersion = localVersion
             if (localHash !== undefined) existing.localHash = localHash
+            if (localOnly) {
+              existing.localOnly = true
+            } else {
+              delete existing.localOnly
+            }
             store.put(existing)
           } else {
             const newEntry: SyncIndexEntry = {
@@ -495,6 +611,7 @@ export async function updateInodes(
               ino,
               localVersion,
               localHash,
+              localOnly,
             }
             store.put(newEntry)
           }
@@ -544,7 +661,10 @@ export async function getVersionMap(
             })
           }
         }
-        log.info('[SyncIndex]', `Loaded version map: ${map.size} entries with version/hash data for vault ${vaultId}`)
+        log.info(
+          '[SyncIndex]',
+          `Loaded version map: ${map.size} entries with version/hash data for vault ${vaultId}`,
+        )
         resolve(map)
       }
 

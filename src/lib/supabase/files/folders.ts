@@ -5,6 +5,8 @@
  * Folders are synced immediately when created to ensure team visibility.
  */
 
+import { escapeLikePattern, folderPrefixLikePattern } from '@/lib/utils/likePattern'
+
 import { getSupabaseClient } from '../client'
 
 // ============================================
@@ -30,6 +32,53 @@ function getLogFn(): (level: string, msg: string, data?: any) => void {
   return typeof window !== 'undefined' && (window as any).electronAPI?.log // TODO: type this
     ? (level: string, msg: string, data?: any) => (window as any).electronAPI.log(level, msg, data) // TODO: type this
     : () => {}
+}
+
+/**
+ * Find the active folder row whose path matches `folderPath` case-insensitively.
+ *
+ * Folder matching has to be case-insensitive: Windows treats `RADCAM` and
+ * `Radcam` as one folder, every consumer of this table keys on
+ * `folder_path.toLowerCase()`, and `idx_folders_unique_active` is unique on
+ * `LOWER(folder_path)`, so a byte-exact `.eq()` or `.like()` misses rows whose
+ * stored spelling differs from the one the caller happens to hold. PostgREST
+ * has no case-insensitive equality operator, so the only way there is `.ilike()`
+ * - which reads `%` and `_` as wildcards, and `_` in particular is common in a
+ * folder name, hence escapeLikePattern on every path that becomes a pattern.
+ *
+ * The pattern carries no wildcards of its own - this is an exact match compared
+ * without regard to case, not a prefix match - so `Part_Files` cannot match
+ * `PartXFiles`.
+ *
+ * Deliberately neither `.single()` nor `.maybeSingle()`. Both ask PostgREST for
+ * exactly one row, and a case-insensitive comparison can legitimately match two
+ * on a database that predates `idx_folders_unique_active` being unique on
+ * `LOWER(folder_path)`, or one that has drifted since: `RADCAM` and `Radcam`
+ * were two active rows for one Windows folder, and one production vault carried
+ * twenty such pairs. postgrest-js reports that with the same `PGRST116` code it
+ * uses for no rows at all, so a caller that reads `PGRST116` as "absent" would
+ * take two rows for zero, insert, and fail on the unique index. Ordering plus a
+ * limit answers with one row whatever the table holds, and the order follows
+ * `remediate_case_colliding_folders()`'s survivor rule as closely as the client
+ * can - oldest first, lowest id to break the tie - so two machines looking at
+ * the same collision agree on which row they mean.
+ */
+async function findActiveFolderByPath(
+  client: ReturnType<typeof getSupabaseClient>,
+  vaultId: string,
+  folderPath: string,
+) {
+  const { data, error } = await client
+    .from('folders')
+    .select('*')
+    .eq('vault_id', vaultId)
+    .ilike('folder_path', escapeLikePattern(folderPath))
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(1)
+
+  return { folder: (data?.[0] as FolderRecord | undefined) ?? null, error }
 }
 
 // ============================================
@@ -91,13 +140,11 @@ async function syncSingleFolder(
   logFn: (level: string, msg: string, data?: any) => void,
 ): Promise<{ folder: FolderRecord | null; error: any }> {
   // Check if folder already exists (active, not deleted)
-  const { data: existing, error: fetchError } = await client
-    .from('folders')
-    .select('*')
-    .eq('vault_id', vaultId)
-    .eq('folder_path', folderPath)
-    .is('deleted_at', null)
-    .single()
+  const { folder: existing, error: fetchError } = await findActiveFolderByPath(
+    client,
+    vaultId,
+    folderPath,
+  )
 
   if (fetchError && fetchError.code !== 'PGRST116') {
     // PGRST116 = no rows returned (expected if folder doesn't exist)
@@ -107,7 +154,7 @@ async function syncSingleFolder(
 
   if (existing) {
     logFn('debug', '[syncFolder] Folder already exists', { folderPath, id: existing.id })
-    return { folder: existing as FolderRecord, error: null }
+    return { folder: existing, error: null }
   }
 
   // Create new folder record
@@ -127,14 +174,28 @@ async function syncSingleFolder(
     if (insertError.code === '23505') {
       logFn('debug', '[syncFolder] Folder created by another user (race condition)', { folderPath })
       // Fetch the existing record
-      const { data: raceFolder } = await client
-        .from('folders')
-        .select('*')
-        .eq('vault_id', vaultId)
-        .eq('folder_path', folderPath)
-        .is('deleted_at', null)
-        .single()
-      return { folder: raceFolder as FolderRecord | null, error: null }
+      const { folder: raceFolder, error: raceFetchError } = await findActiveFolderByPath(
+        client,
+        vaultId,
+        folderPath,
+      )
+      if (raceFolder) {
+        return { folder: raceFolder, error: null }
+      }
+      // idx_folders_unique_active is partial on `deleted_at IS NULL`, so 23505
+      // said an active row for this path exists in some spelling. Not reading it
+      // back means something else went wrong - the row was trashed in between,
+      // or the re-fetch itself failed - and answering `{ folder: null, error:
+      // null }` is what made that invisible: the directory watcher logs only
+      // `if (result.error)`, and fileOps leaves `folderPdmData` undefined, which
+      // surfaces much later as a delete with no folder id to work from.
+      logFn('warn', '[syncFolder] Unique violation but no active folder found', {
+        vaultId,
+        folderPath,
+        insertError: insertError.message,
+        fetchError: raceFetchError?.message,
+      })
+      return { folder: null, error: raceFetchError ?? insertError }
     }
     logFn('error', '[syncFolder] Insert error', { folderPath, error: insertError.message })
     return { folder: null, error: insertError }
@@ -246,7 +307,7 @@ export async function updateFolderServerPath(
       .from('folders')
       .select('id, folder_path')
       .eq('vault_id', currentFolder.vault_id)
-      .like('folder_path', `${oldPath}/%`)
+      .ilike('folder_path', folderPrefixLikePattern(oldPath))
       .is('deleted_at', null)
 
     if (childFetchError) {
@@ -254,9 +315,15 @@ export async function updateFolderServerPath(
         error: childFetchError.message,
       })
     } else if (childFolders && childFolders.length > 0) {
-      // Update each child folder's path
+      // Update each child folder's path. Splicing off the old prefix by length
+      // rather than calling String.replace(oldPath, ...): replace() with a
+      // string argument rewrites the first occurrence anywhere in the path, so
+      // renaming `Parts` rewrote the trailing segment of `Parts/Old/Parts`, and
+      // it is case-sensitive besides. The ILIKE above matched a literal prefix,
+      // so the first oldPath.length characters of each child are that prefix
+      // whatever case they are stored in.
       for (const child of childFolders) {
-        const newChildPath = child.folder_path.replace(oldPath, normalizedPath)
+        const newChildPath = normalizedPath + child.folder_path.slice(oldPath.length)
         await client.from('folders').update({ folder_path: newChildPath }).eq('id', child.id)
       }
       logFn('debug', '[updateFolderServerPath] Updated child folders', {
@@ -340,7 +407,7 @@ export async function deleteFolderOnServer(
         deleted_by: userId,
       })
       .eq('vault_id', folder.vault_id)
-      .like('folder_path', `${folder.folder_path}/%`)
+      .ilike('folder_path', folderPrefixLikePattern(folder.folder_path))
       .is('deleted_at', null)
 
     if (childDeleteError) {
@@ -399,7 +466,7 @@ export async function deleteFolderByPath(
         { count: 'exact' },
       )
       .eq('vault_id', vaultId)
-      .eq('folder_path', normalizedPath)
+      .ilike('folder_path', escapeLikePattern(normalizedPath))
       .is('deleted_at', null)
 
     if (deleteError) {
@@ -421,7 +488,7 @@ export async function deleteFolderByPath(
         { count: 'exact' },
       )
       .eq('vault_id', vaultId)
-      .like('folder_path', `${normalizedPath}/%`)
+      .ilike('folder_path', folderPrefixLikePattern(normalizedPath))
       .is('deleted_at', null)
 
     if (childError) {

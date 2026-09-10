@@ -43,9 +43,10 @@ export function resolveCommandConfirm(confirmed: boolean): void {
 
 /**
  * Show a confirmation dialog and wait for user response.
- * Used by command handlers via ctx.confirm().
+ * Used by command handlers via ctx.confirm(), and directly by callers that need a
+ * confirmation before choosing which command to run.
  */
-function showCommandConfirm(opts: {
+export function showCommandConfirm(opts: {
   title: string
   message: string
   items?: string[]
@@ -214,6 +215,7 @@ export function buildCommandContext(
     vaultPath: store.vaultPath,
     activeVaultId: store.activeVaultId,
     files: store.files,
+    serverFiles: store.serverFiles,
 
     // Confirmation dialog
     confirm: showCommandConfirm,
@@ -393,10 +395,11 @@ export async function executeCommand<K extends CommandId>(
     const opType = typeMap[commandId] || 'sync'
 
     // Map to OperationType for processing state (spinners)
-    // 'get-latest' maps to 'download' for spinner display
+    // 'get-latest' maps to 'sync' so the sync/update button shows its own spinner
+    // while queued, instead of the (unrelated) download button flickering.
     const processingType: import('../../stores/types').OperationType =
       commandId === 'get-latest'
-        ? 'download'
+        ? 'sync'
         : commandId === 'force-release'
           ? 'checkout'
           : commandId === 'discard'

@@ -90,12 +90,13 @@ export function NameCell({
     toggleFileConfigExpansion,
     canHaveDrawingRefs,
     toggleDrawingRefExpansion,
-    selectedDownloadableFiles,
+    selectedCloudOnlyFiles,
     selectedUploadableFiles,
     selectedCheckoutableFiles,
     selectedCheckinableFiles,
     selectedUpdatableFiles,
     handleInlineDownload,
+    handleInlineGetLatest,
     handleInlineUpload,
     handleInlineCheckout,
     handleInlineCheckin,
@@ -242,7 +243,7 @@ export function NameCell({
   // Check if this file's name should be dimmed (part of multi-select action hover)
   const isNameDimmed =
     !file.isDirectory &&
-    ((isDownloadHovered && selectedDownloadableFiles.some((f) => f.path === file.path)) ||
+    ((isDownloadHovered && selectedCloudOnlyFiles.some((f) => f.path === file.path)) ||
       (isUploadHovered && selectedUploadableFiles.some((f) => f.path === file.path)) ||
       (isCheckoutHovered && selectedCheckoutableFiles.some((f) => f.path === file.path)) ||
       (isCheckinHovered && selectedCheckinableFiles.some((f) => f.path === file.path)) ||
@@ -342,7 +343,7 @@ export function NameCell({
             {/* Sync/update button */}
             {(fm?.outdatedFilesCount || 0) > 0 && (
               <InlineSyncButton
-                onClick={(e) => handleInlineDownload(e, file)}
+                onClick={(e) => handleInlineGetLatest(e, file)}
                 count={fm?.outdatedFilesCount || 0}
                 isProcessing={operationType === 'sync'}
               />
@@ -438,17 +439,17 @@ export function NameCell({
           onClick={(e) => handleInlineDownload(e, file)}
           isProcessing={operationType === 'download'}
           selectedCount={
-            selectedFiles.includes(file.path) && selectedDownloadableFiles.length > 1
-              ? selectedDownloadableFiles.length
+            selectedFiles.includes(file.path) && selectedCloudOnlyFiles.length > 1
+              ? selectedCloudOnlyFiles.length
               : undefined
           }
           isSelectionHovered={
             selectedFiles.includes(file.path) &&
-            selectedDownloadableFiles.length > 1 &&
+            selectedCloudOnlyFiles.length > 1 &&
             isDownloadHovered
           }
           onMouseEnter={() =>
-            selectedDownloadableFiles.length > 1 &&
+            selectedCloudOnlyFiles.length > 1 &&
             selectedFiles.includes(file.path) &&
             setIsDownloadHovered(true)
           }
@@ -459,7 +460,7 @@ export function NameCell({
       {/* Sync outdated files */}
       {!file.isDirectory && operationType !== 'delete' && file.diffStatus === 'outdated' && (
         <InlineSyncButton
-          onClick={(e) => handleInlineDownload(e, file)}
+          onClick={(e) => handleInlineGetLatest(e, file)}
           isProcessing={operationType === 'sync'}
           selectedCount={
             selectedFiles.includes(file.path) && selectedUpdatableFiles.length > 1

@@ -442,6 +442,17 @@ export const checkoutCommand: Command<CheckoutParams> = {
                   email: user.email,
                   avatar_url: user.avatar_url,
                 },
+                // The checkout-time path snapshot the RPC just wrote. discard reads
+                // this store copy to decide whether to rename a file back, and it
+                // cannot wait for realtime: realtime skips files carrying pending
+                // metadata, and offline it never arrives. Without it discard renames
+                // nothing locally while undoCheckout still reverts the server path.
+                // The fallback is the same value the RPC snapshots - the server row's
+                // own file_path/file_name - not the local path.
+                checked_out_file_path:
+                  result.file?.checked_out_file_path ?? file.pdmData!.file_path,
+                checked_out_file_name:
+                  result.file?.checked_out_file_name ?? file.pdmData!.file_name,
               },
               pendingMetadata: undefined, // Clear any existing pending metadata
             },

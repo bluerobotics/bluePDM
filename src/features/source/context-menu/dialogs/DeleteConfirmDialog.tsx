@@ -1,13 +1,13 @@
 // src/features/source/context-menu/dialogs/DeleteConfirmDialog.tsx
 import { useEffect, useCallback } from 'react'
 import { AlertTriangle, File, Trash2, CloudOff } from 'lucide-react'
-import type { LocalFile } from '@/stores/pdmStore'
+import type { ServerDeletionTarget } from '@/lib/commands'
 import { MAX_VISIBLE_FILES } from '../constants'
 
 interface DeleteConfirmDialogProps {
   isOpen: boolean
   onClose: () => void
-  files: LocalFile[]
+  files: ServerDeletionTarget[]
   keepLocal: boolean
   onConfirm: () => void
 }

@@ -85,6 +85,7 @@ import {
 } from './handlers/bulkAssembly'
 import { packAndGoCommand } from './handlers/packAndGo'
 import { matchGhostFileCommand } from './handlers/matchGhostFile'
+import { reconcileMovedPathsCommand } from './handlers/reconcileMovedPaths'
 
 // Register all commands on module load
 function initializeCommands() {
@@ -127,6 +128,9 @@ function initializeCommands() {
 
   // Ghost file resolution
   registerCommand('match-ghost-file', matchGhostFileCommand)
+
+  // Repair: commit local moves the server never recorded. Registered, never invoked automatically.
+  registerCommand('reconcile-moved-paths', reconcileMovedPathsCommand)
 }
 
 // Initialize on import

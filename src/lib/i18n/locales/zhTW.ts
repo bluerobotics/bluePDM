@@ -163,6 +163,9 @@ export const zhTW: TranslationDict = {
       expand: '展開',
       collapse: '收合',
     },
+    configEdit: {
+      checkOutToEdit: '簽出檔案以編輯',
+    },
     configCommit: {
       write: '寫入檔案',
       writeAndSync: '寫入並更新工程圖',
@@ -324,10 +327,23 @@ export const zhTW: TranslationDict = {
     dropFilesHere: '將檔案拖放到此處上傳',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: '是否移除已從保險庫刪除的檔案？',
+      message:
+        '這些本機檔案已不在伺服器的保險庫中，BluePLM 通常會自動移除它們。本次數量多於平常，因此尚未移除任何檔案。移除會將本機副本放入資源回收筒。取消則保留這些檔案，可在檔案瀏覽器中查看。',
+      confirm: '移除檔案',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      '部分重新命名未同步到伺服器，伺服器仍記錄舊路徑。受影響的檔案顯示為已移動；請執行 reconcile-moved-paths 進行更新。',
+    cloudRenameFailed: '無法在伺服器上重新命名',
     checkIn: '簽入',
     checkOut: '簽出',
     download: '下載',
+    getLatest: '取得最新版本',
     upload: '上傳',
     delete: '刪除',
     rename: '重新命名',
@@ -342,6 +358,15 @@ export const zhTW: TranslationDict = {
     rollback: '復原',
     discard: '捨棄變更',
     forceRelease: '強制釋放',
+  },
+
+  syncError: {
+    toast: '同步失敗：{{reason}}',
+    toastWithMore: '同步失敗：{{reason}}（另有 {{count}} 個錯誤）',
+    failed: '同步失敗',
+    unknown: '未知錯誤',
+    pathCaseConflict:
+      '伺服器上已有另一個檔案佔用該路徑，僅大小寫不同。請重新整理檔案清單以顯示該檔案。',
   },
 
   status: {
@@ -406,6 +431,52 @@ export const zhTW: TranslationDict = {
     settingHint: '變更此設定會重新啟動 SOLIDWORKS 服務。請選擇您用來開啟檔案的版本。',
     automatic: '自動',
     automaticDescription: '使用 Windows 註冊為預設的版本',
+  },
+
+  reconcileMovedPaths: {
+    offline: '離線狀態下無法校正已移動的路徑',
+    notSignedIn: '請先登入',
+    noOrganization: '未連線任何組織',
+    noVault: '未連線任何庫',
+    nothingToReconcile: '沒有檔案等待更新其伺服器路徑',
+
+    reportHeading: '有 {{count}} 個檔案在本機被移動或重新命名，而伺服器仍記錄著它們的舊路徑。',
+    reportEligible: '其中 {{count}} 個現在可以寫入伺服器路徑。',
+    reportBlocked: '有 {{count}} 個已被他人簽出，將不會寫入：',
+    reportHolder: '{{count}} 個由 {{user}} 持有',
+    unknownHolder: '其他使用者',
+    reportConflict: '略過 {{count}} 個 — 另一筆檔案記錄已佔用新路徑：',
+    reportUnverified:
+      '略過 {{count}} 個 — 檔案內容與伺服器所記錄的不再一致，因此無法驗證此次移動：',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… 還有 {{count}} 個',
+
+    dryRunSummary: '僅預檢：{{total}} 個伺服器路徑中有 {{eligible}} 個可寫入。未寫入任何內容。',
+    dryRunNote: '僅產生報告。未加 --apply 不會寫入任何內容。',
+
+    refused:
+      '未寫入任何內容：其中 {{count}} 個檔案已被他人簽出（{{holders}}）。請他們簽入後重新執行，或使用 --skip-checked-out 重新執行以校正其餘檔案並保留他們的檔案不變。',
+    nothingEligible: '無法寫入任何內容：{{blocked}} 個已被他人簽出，{{skipped}} 個被略過。',
+    confirmUnavailable: '未寫入任何內容：此命令需要確認對話框，但目前無可用對話框。',
+
+    confirmTitle: '更新 {{count}} 個伺服器路徑？',
+    confirmMessage:
+      '將把 {{count}} 個檔案的伺服器路徑更新為它們目前在磁碟上的位置。這會為每個檔案寫入一筆記錄並記錄一次移動，組織中其他所有電腦將在下次同步時取得新路徑。',
+    confirmRemainder: '另有 {{count}} 個保持不變（{{detail}}）。',
+    confirmText: '更新 {{count}} 個路徑',
+    declined: '已取消。未寫入任何內容。',
+
+    progress: '正在更新 {{count}} 個伺服器路徑…',
+    failureItem: '{{path}}：{{error}}',
+    unknownError: '未知錯誤',
+
+    summaryComplete: '已校正 {{count}} 個伺服器路徑。',
+    summaryPartial:
+      '已校正 {{total}} 個伺服器路徑中的 {{succeeded}} 個 — {{leftovers}}。請再次執行以完成。',
+    summaryFailed: '{{count}} 個失敗',
+    summaryNotAttempted: '{{count}} 個未嘗試',
+    summaryBlocked: '{{count}} 個被他人簽出',
+    summarySkipped: '{{count}} 個已略過',
   },
 
   hiddenFolders: {

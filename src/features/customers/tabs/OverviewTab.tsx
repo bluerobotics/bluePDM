@@ -12,12 +12,15 @@ import { RevenueTrendChart } from '../charts/RevenueTrendChart'
 import { RfmScatterChart } from '../charts/RfmScatterChart'
 import { TopProductsChart } from '../charts/TopProductsChart'
 import { KpiStrip, PortfolioStrip } from '../components/KpiStrip'
-import type { CustomerAnalyticsData, CustomerRfmRow } from '../data/types'
+import type { CustomerAnalyticsData } from '../data/types'
 import { useChannelCounts } from '../hooks/useChannelCounts'
+import type { RosterRow } from '../hooks/useCustomerRoster'
+import type { AccountRollup } from '../lib/rollup'
 
 interface OverviewTabProps {
   data: CustomerAnalyticsData
-  roster: CustomerRfmRow[]
+  /** Rolled up to companies, so the scatter agrees with the customer table. */
+  accounts: AccountRollup<RosterRow>[]
   loading: boolean
   rosterLoading: boolean
   comparisonLabel: string
@@ -25,7 +28,7 @@ interface OverviewTabProps {
 
 export function OverviewTab({
   data,
-  roster,
+  accounts,
   loading,
   rosterLoading,
   comparisonLabel,
@@ -38,10 +41,17 @@ export function OverviewTab({
   const channelCounts = useChannelCounts()
 
   // Stable so the memoized scatter, the costliest chart here to rebuild, is
-  // not re-rendered by every unrelated change on this tab.
-  const openCustomer = useCallback(
-    (row: CustomerRfmRow) => setCustomerPanel({ customerId: row.customer_id, name: row.name }),
+  // not re-rendered by every unrelated change on this tab. Opens the account's
+  // lead row rather than an arbitrary contact, matching the Accounts tab.
+  const openAccount = useCallback(
+    (account: AccountRollup<RosterRow>) =>
+      setCustomerPanel({ customerId: account.lead.customer_id, name: account.lead.name }),
     [setCustomerPanel],
+  )
+
+  const toggleSegment = useCallback(
+    (segment: string) => toggleCustomerFacet('segments', segment),
+    [toggleCustomerFacet],
   )
 
   return (
@@ -89,7 +99,13 @@ export function OverviewTab({
 
         <CohortHeatmap data={data.cohorts} loading={loading} />
 
-        <RfmScatterChart rows={roster} loading={rosterLoading} onSelect={openCustomer} />
+        <RfmScatterChart
+          accounts={accounts}
+          loading={rosterLoading}
+          onSelect={openAccount}
+          selectedSegments={filters.segments}
+          onToggleSegment={toggleSegment}
+        />
 
         <TopProductsChart data={data.topProducts} loading={loading} />
       </div>

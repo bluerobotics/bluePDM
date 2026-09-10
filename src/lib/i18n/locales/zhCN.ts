@@ -163,6 +163,9 @@ export const zhCN: TranslationDict = {
       expand: '展开',
       collapse: '折叠',
     },
+    configEdit: {
+      checkOutToEdit: '签出文件以编辑',
+    },
     configCommit: {
       write: '写入文件',
       writeAndSync: '写入并更新工程图',
@@ -324,10 +327,23 @@ export const zhCN: TranslationDict = {
     dropFilesHere: '将文件拖放到此处上传',
   },
 
+  autoDiscard: {
+    largeBatch: {
+      title: '是否移除已从保险库删除的文件？',
+      message:
+        '这些本地文件已不在服务器的保险库中，BluePLM 通常会自动移除它们。本次数量多于平常，因此尚未移除任何文件。移除会将本地副本放入回收站。取消则保留这些文件，可在文件浏览器中查看。',
+      confirm: '移除文件',
+    },
+  },
+
   fileOps: {
+    serverPathUpdateFailed:
+      '部分重命名未同步到服务器，服务器仍记录旧路径。受影响的文件显示为已移动；请运行 reconcile-moved-paths 进行更新。',
+    cloudRenameFailed: '无法在服务器上重命名',
     checkIn: '签入',
     checkOut: '签出',
     download: '下载',
+    getLatest: '获取最新版本',
     upload: '上传',
     delete: '删除',
     rename: '重命名',
@@ -342,6 +358,15 @@ export const zhCN: TranslationDict = {
     rollback: '回滚',
     discard: '放弃更改',
     forceRelease: '强制释放',
+  },
+
+  syncError: {
+    toast: '同步失败：{{reason}}',
+    toastWithMore: '同步失败：{{reason}}（另有 {{count}} 个错误）',
+    failed: '同步失败',
+    unknown: '未知错误',
+    pathCaseConflict:
+      '服务器上已有另一个文件占用该路径，仅大小写不同。请刷新文件列表以显示该文件。',
   },
 
   status: {
@@ -406,6 +431,52 @@ export const zhCN: TranslationDict = {
     settingHint: '更改此设置会重启 SOLIDWORKS 服务。请选择您用来打开文件的版本。',
     automatic: '自动',
     automaticDescription: '使用 Windows 注册为默认的版本',
+  },
+
+  reconcileMovedPaths: {
+    offline: '离线状态下无法校正已移动的路径',
+    notSignedIn: '请先登录',
+    noOrganization: '未连接任何组织',
+    noVault: '未连接任何库',
+    nothingToReconcile: '没有文件等待更新其服务器路径',
+
+    reportHeading: '有 {{count}} 个文件在本机被移动或重命名，而服务器仍记录着它们的旧路径。',
+    reportEligible: '其中 {{count}} 个现在可以写入服务器路径。',
+    reportBlocked: '有 {{count}} 个已被他人签出，将不会写入：',
+    reportHolder: '{{count}} 个由 {{user}} 持有',
+    unknownHolder: '其他用户',
+    reportConflict: '跳过 {{count}} 个 — 另一条文件记录已占用新路径：',
+    reportUnverified:
+      '跳过 {{count}} 个 — 文件内容与服务器所记录的不再一致，因此无法验证此次移动：',
+    reportItem: '{{from}} → {{to}}',
+    reportAndMore: '… 还有 {{count}} 个',
+
+    dryRunSummary: '仅预检：{{total}} 个服务器路径中有 {{eligible}} 个可写入。未写入任何内容。',
+    dryRunNote: '仅生成报告。未加 --apply 不会写入任何内容。',
+
+    refused:
+      '未写入任何内容：其中 {{count}} 个文件已被他人签出（{{holders}}）。请他们签入后重新运行，或使用 --skip-checked-out 重新运行以校正其余文件并保留他们的文件不变。',
+    nothingEligible: '无法写入任何内容：{{blocked}} 个已被他人签出，{{skipped}} 个被跳过。',
+    confirmUnavailable: '未写入任何内容：此命令需要确认对话框，但当前无可用对话框。',
+
+    confirmTitle: '更新 {{count}} 个服务器路径？',
+    confirmMessage:
+      '将把 {{count}} 个文件的服务器路径更新为它们目前在磁盘上的位置。这会为每个文件写入一条记录并记录一次移动，组织中其他所有计算机将在下次同步时获取新路径。',
+    confirmRemainder: '另有 {{count}} 个保持不变（{{detail}}）。',
+    confirmText: '更新 {{count}} 个路径',
+    declined: '已取消。未写入任何内容。',
+
+    progress: '正在更新 {{count}} 个服务器路径…',
+    failureItem: '{{path}}：{{error}}',
+    unknownError: '未知错误',
+
+    summaryComplete: '已校正 {{count}} 个服务器路径。',
+    summaryPartial:
+      '已校正 {{total}} 个服务器路径中的 {{succeeded}} 个 — {{leftovers}}。请再次运行以完成。',
+    summaryFailed: '{{count}} 个失败',
+    summaryNotAttempted: '{{count}} 个未尝试',
+    summaryBlocked: '{{count}} 个被他人签出',
+    summarySkipped: '{{count}} 个已跳过',
   },
 
   hiddenFolders: {

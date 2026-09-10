@@ -6,7 +6,7 @@
 
 // TODO(decompose): Extract to filesSliceProcessing.ts — processing operations batching, flush logic, and all addProcessing/removeProcessing actions (lines ~18–95, 1585–1669)
 // TODO(decompose): Extract to filesSliceMetadata.ts — pending metadata, copy source, version notes, and config metadata actions (lines ~499–758)
-// TODO(decompose): Extract to filesSliceRealtime.ts — addCloudFile, updateFilePdmData, updateFileLocationFromServer, batchUpdateFileLocationsFromServer, removeCloudFile (lines ~1072–1477)
+// TODO(decompose): Extract to filesSliceRealtime.ts — addCloudFile, addCloudFiles, updateFilePdmData, updateFileLocationFromServer, batchUpdateFileLocationsFromServer, removeCloudFile (lines ~1072–1477)
 // TODO(decompose): Extract to filesSliceSolidworks.ts — SolidWorks configuration, config BOM, drawing ref, and config drawing expansion actions (lines ~1671–1862)
 
 import { StateCreator } from 'zustand'
@@ -46,7 +46,7 @@ import {
 } from '@/lib/metadata/writeState'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
-import { applyFileUpdates } from '../fileUpdates'
+import { applyFileUpdates, mergeWrittenFile } from '../fileUpdates'
 import { migratePersistedPathKeys, type PathRename } from '../persistedPathKeys'
 
 // ============================================================================
@@ -660,7 +660,7 @@ export const createFilesSlice: StateCreator<
       const relPathsToRemove = new Set<string>()
       const relPrefixesToRemove: string[] = []
       for (const item of itemsToRemove) {
-        const rel = item.relativePath.toLowerCase()
+        const rel = item.relativePath.replace(/\\/g, '/').toLowerCase()
         relPathsToRemove.add(rel)
         if (item.isDirectory) {
           relPrefixesToRemove.push(rel + '/')
@@ -672,7 +672,7 @@ export const createFilesSlice: StateCreator<
         relPathsToRemove.size === 0 && relPrefixesToRemove.length === 0
           ? state.serverFiles
           : state.serverFiles.filter((sf) => {
-              const sfPathLower = sf.file_path.toLowerCase()
+              const sfPathLower = sf.file_path.replace(/\\/g, '/').toLowerCase()
               if (relPathsToRemove.has(sfPathLower)) return false
               for (const prefix of relPrefixesToRemove) {
                 if (sfPathLower.startsWith(prefix)) return false
@@ -681,8 +681,21 @@ export const createFilesSlice: StateCreator<
             })
       serverFilesFilterMs = performance.now() - serverFilesFilterStart
 
+      // Callers pass the paths their delete batch touched, which for a folder is the folder
+      // and nothing under it. Pruning serverFiles by prefix but not files left the folder's
+      // contents behind as rows describing files no longer on disk, which a later copy to the
+      // same path then collided with. Same prefixes, same boundary rule, so the two lists
+      // come out of a delete describing the same vault.
       const filesFilterStart = performance.now()
-      const updatedFiles = state.files.filter((f) => !pathSet.has(f.path.toLowerCase()))
+      const updatedFiles = state.files.filter((f) => {
+        if (pathSet.has(f.path.toLowerCase())) return false
+        if (relPrefixesToRemove.length === 0) return true
+        const relLower = f.relativePath.replace(/\\/g, '/').toLowerCase()
+        for (const prefix of relPrefixesToRemove) {
+          if (relLower.startsWith(prefix)) return false
+        }
+        return true
+      })
       filesFilterMs = performance.now() - filesFilterStart
       return {
         files: updatedFiles,
@@ -719,28 +732,58 @@ export const createFilesSlice: StateCreator<
     const beforeCount = get().files.length
     bumpFileMutationEpoch()
     set((state) => {
-      // Build set of existing paths (case-insensitive for Windows compatibility)
-      const existingPaths = new Set(state.files.map((f) => f.path.toLowerCase()))
-      // Filter out duplicates - files with paths that already exist
-      const uniqueNewFiles = newFiles.filter((f) => !existingPaths.has(f.path.toLowerCase()))
-      const duplicateCount = newFiles.length - uniqueNewFiles.length
+      // Every caller of this action has just written to disk, so an incoming row is the
+      // newer description of that path and the incumbent is the older one. Dropping the
+      // incoming row instead - which this used to do - kept rows saying the file was not
+      // on disk over rows saying it was, and 66 of one paste's 72 files rendered as
+      // server-only. See mergeWrittenFile for which side wins which field.
+      const indexByPath = new Map<string, number>()
+      state.files.forEach((f, i) => indexByPath.set(f.path.toLowerCase(), i))
 
-      // Log if duplicates were filtered
-      if (duplicateCount > 0) {
-        const duplicatePaths = newFiles
-          .filter((f) => existingPaths.has(f.path.toLowerCase()))
-          .slice(0, 5)
-          .map((f) => f.path)
-        window.electronAPI?.log('warn', '[Store] addFilesToStore filtered duplicates', {
-          duplicateCount,
-          sampleDuplicates: duplicatePaths,
+      const files = [...state.files]
+      const mergeSamples: Array<Record<string, unknown>> = []
+      let mergedCount = 0
+      let changed = false
+
+      for (const incoming of newFiles) {
+        const pathLower = incoming.path.toLowerCase()
+        const existingIndex = indexByPath.get(pathLower)
+
+        if (existingIndex === undefined) {
+          indexByPath.set(pathLower, files.length)
+          files.push(incoming)
+          changed = true
+          continue
+        }
+
+        const existing = files[existingIndex]
+        const merged = mergeWrittenFile(existing, incoming)
+        mergedCount++
+        if (mergeSamples.length < 5) {
+          mergeSamples.push({
+            path: incoming.path,
+            incomingDiffStatus: incoming.diffStatus,
+            incomingIsSynced: incoming.isSynced,
+            existingDiffStatus: existing.diffStatus,
+            existingIsSynced: existing.isSynced,
+            pdmDataFrom: incoming.pdmData ? 'incoming' : existing.pdmData ? 'existing' : 'none',
+          })
+        }
+        if (merged === existing) continue
+
+        files[existingIndex] = merged
+        changed = true
+      }
+
+      if (mergedCount > 0) {
+        window.electronAPI?.log('warn', '[Store] addFilesToStore merged onto existing paths', {
+          mergedCount,
+          sampleMerged: mergeSamples,
           timestamp: Date.now(),
         })
       }
 
-      return {
-        files: [...state.files, ...uniqueNewFiles],
-      }
+      return changed ? { files } : state
     })
     window.electronAPI?.log('info', '[Store] addFilesToStore', {
       requestedCount: newFiles.length,
@@ -1487,6 +1530,132 @@ export const createFilesSlice: StateCreator<
         ? state.serverFiles
         : [...state.serverFiles, serverFileEntry],
     }))
+  },
+
+  /**
+   * Batch version of addCloudFile. Applies the identical per-file merge-or-insert
+   * transformation, but for the whole array in a single set() call.
+   *
+   * Calling addCloudFile once per file in a large batch (e.g. restoring hundreds of
+   * files from trash) allocates a fresh files/serverFiles array and triggers a full
+   * React re-render plus tree/folderMetrics/flattenedItems recompute PER FILE - an
+   * O(N x store-size) cost that has caused renderer OOM crashes on large batches.
+   * This does the equivalent work with one map over the existing arrays and one commit.
+   */
+  addCloudFiles: (inputPdmFiles) => {
+    if (inputPdmFiles.length === 0) return
+
+    const { vaultPath, activeVaultId } = get()
+    if (!vaultPath) {
+      window.electronAPI?.log(
+        'warn',
+        '[Store] addCloudFiles called with no vaultPath -- files will not appear in store',
+        { fileCount: inputPdmFiles.length },
+      )
+      return
+    }
+
+    // Defense in depth against cross-vault realtime leaks, mirroring addCloudFile.
+    const scopedPdmFiles = activeVaultId
+      ? inputPdmFiles.filter((f) => !f.vault_id || f.vault_id === activeVaultId)
+      : inputPdmFiles
+    if (scopedPdmFiles.length === 0) return
+
+    set((state) => {
+      // Seed the lookup with every existing file/folder so merges and parent-folder
+      // dedup are O(1) per lookup instead of an O(files.length) scan per input file.
+      const byPath = new Map(state.files.map((f) => [f.relativePath.toLowerCase(), f] as const))
+      const serverFileById = new Map(state.serverFiles.map((sf) => [sf.id, sf] as const))
+      const newFiles: LocalFile[] = []
+
+      for (const inputPdmFile of scopedPdmFiles) {
+        const pdmFile = reconcileCheckoutProfile(inputPdmFile)
+        const lowerPath = pdmFile.file_path.toLowerCase()
+
+        serverFileById.set(pdmFile.id, {
+          id: pdmFile.id,
+          file_path: pdmFile.file_path,
+          name: pdmFile.file_name,
+          extension: pdmFile.extension || '',
+          content_hash: pdmFile.content_hash || '',
+        })
+
+        const existing = byPath.get(lowerPath)
+        if (existing) {
+          // File already exists locally - merge pdmData instead of duplicating,
+          // same rule as addCloudFile's "existingByPath" branch.
+          let newDiffStatus = existing.diffStatus
+          if (existing.localHash) {
+            newDiffStatus = existing.localHash === pdmFile.content_hash ? undefined : 'outdated'
+          } else if (existing.localVersion !== undefined && pdmFile.version !== undefined) {
+            newDiffStatus =
+              existing.localVersion === pdmFile.version
+                ? undefined
+                : existing.localVersion < pdmFile.version
+                  ? 'outdated'
+                  : existing.diffStatus
+          } else if (existing.diffStatus === 'outdated') {
+            newDiffStatus = undefined
+          }
+
+          byPath.set(lowerPath, {
+            ...existing,
+            pdmData: pdmFile,
+            isSynced: true,
+            diffStatus: newDiffStatus,
+          })
+          continue
+        }
+
+        // Create cloud folders for parents that don't exist yet, deduped across
+        // both the pre-existing store and everything already queued in this batch.
+        const pathParts = pdmFile.file_path.split('/')
+        let currentPath = ''
+        for (let i = 0; i < pathParts.length - 1; i++) {
+          currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
+          const currentPathLower = currentPath.toLowerCase()
+          if (!byPath.has(currentPathLower)) {
+            const folder: LocalFile = {
+              name: pathParts[i],
+              path: buildFullPath(vaultPath, currentPath),
+              relativePath: currentPath,
+              isDirectory: true,
+              extension: '',
+              size: 0,
+              modifiedTime: '',
+              diffStatus: 'cloud',
+            }
+            byPath.set(currentPathLower, folder)
+            newFiles.push(folder)
+          }
+        }
+
+        // Add the cloud file itself - mark as 'cloud' (available for download)
+        const cloudFile: LocalFile = {
+          name: pdmFile.file_name,
+          path: buildFullPath(vaultPath, pdmFile.file_path),
+          relativePath: pdmFile.file_path,
+          isDirectory: false,
+          extension: pdmFile.extension,
+          size: pdmFile.file_size || 0,
+          modifiedTime: pdmFile.updated_at || '',
+          pdmData: pdmFile,
+          isSynced: false,
+          diffStatus: 'cloud',
+        }
+        byPath.set(lowerPath, cloudFile)
+        newFiles.push(cloudFile)
+      }
+
+      // Apply in-place merges to the existing files array (entries whose byPath
+      // value was replaced), then append everything newly created.
+      const mergedFiles = state.files.map((f) => byPath.get(f.relativePath.toLowerCase()) ?? f)
+
+      return {
+        files: [...mergedFiles, ...newFiles],
+        serverFiles: Array.from(serverFileById.values()),
+      }
+    })
   },
 
   updateFilePdmData: (fileId, pdmData) => {

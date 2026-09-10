@@ -84,11 +84,9 @@ export function PinnedFoldersSection({
   const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
 
   // Calculate multi-select file lists
-  const selectedDownloadableFiles = files.filter(
-    (f) =>
-      selectedFiles.includes(f.path) &&
-      !f.isDirectory &&
-      (f.diffStatus === 'cloud' || f.diffStatus === 'outdated'),
+  // Cloud-only files in the multi-select - drives the download button's count/hover state.
+  const selectedCloudOnlyFiles = files.filter(
+    (f) => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus === 'cloud',
   )
   const selectedUploadableFiles = files.filter(
     (f) =>
@@ -418,7 +416,7 @@ export function PinnedFoldersSection({
                       operationType={null}
                       onRefresh={onRefresh}
                       selectedFiles={selectedFiles}
-                      selectedDownloadableFiles={selectedDownloadableFiles}
+                      selectedCloudOnlyFiles={selectedCloudOnlyFiles}
                       selectedUploadableFiles={selectedUploadableFiles}
                       selectedCheckoutableFiles={selectedCheckoutableFiles}
                       selectedCheckinableFiles={selectedCheckinableFiles}

@@ -361,10 +361,11 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   // File operations (checkout, checkin, download, upload, etc.)
   const {
     handleDownload: handleInlineDownload,
+    handleGetLatest: handleInlineGetLatest,
     handleCheckout: handleInlineCheckout,
     handleCheckin: handleInlineCheckin,
     handleUpload: handleInlineUpload,
-    selectedDownloadableFiles,
+    selectedCloudOnlyFiles,
     selectedCheckoutableFiles,
     selectedCheckinableFiles,
     selectedUploadableFiles,
@@ -1643,11 +1644,12 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     () => ({
       // Inline action handlers
       handleInlineDownload,
+      handleInlineGetLatest,
       handleInlineUpload,
       handleInlineCheckout,
       handleInlineCheckin,
       // Computed selection arrays
-      selectedDownloadableFiles,
+      selectedCloudOnlyFiles,
       selectedUploadableFiles,
       selectedCheckoutableFiles,
       selectedCheckinableFiles,
@@ -1677,10 +1679,11 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     }),
     [
       handleInlineDownload,
+      handleInlineGetLatest,
       handleInlineUpload,
       handleInlineCheckout,
       handleInlineCheckin,
-      selectedDownloadableFiles,
+      selectedCloudOnlyFiles,
       selectedUploadableFiles,
       selectedCheckoutableFiles,
       selectedCheckinableFiles,

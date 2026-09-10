@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "13.0.5"
+    PostgrestVersion: "14.5"
   }
   public: {
     Tables: {
@@ -1019,6 +1019,7 @@ export type Database = {
       }
       customer_orders: {
         Row: {
+          contact_id: string | null
           created_at: string | null
           customer_id: string
           discount: number | null
@@ -1040,6 +1041,7 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
+          contact_id?: string | null
           created_at?: string | null
           customer_id: string
           discount?: number | null
@@ -1061,6 +1063,7 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
+          contact_id?: string | null
           created_at?: string | null
           customer_id?: string
           discount?: number | null
@@ -1082,6 +1085,13 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "customer_orders_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "customer_orders_customer_id_fkey"
             columns: ["customer_id"]
@@ -1691,6 +1701,196 @@ export type Database = {
             columns: ["process_template_id"]
             isOneToOne: false
             referencedRelation: "process_templates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extension_http_log: {
+        Row: {
+          duration_ms: number
+          error: string | null
+          extension_id: string
+          id: string
+          method: string
+          org_id: string
+          request_size: number | null
+          response_size: number | null
+          status: number
+          timestamp: string | null
+          url: string
+        }
+        Insert: {
+          duration_ms: number
+          error?: string | null
+          extension_id: string
+          id?: string
+          method: string
+          org_id: string
+          request_size?: number | null
+          response_size?: number | null
+          status: number
+          timestamp?: string | null
+          url: string
+        }
+        Update: {
+          duration_ms?: number
+          error?: string | null
+          extension_id?: string
+          id?: string
+          method?: string
+          org_id?: string
+          request_size?: number | null
+          response_size?: number | null
+          status?: number
+          timestamp?: string | null
+          url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extension_http_log_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extension_secret_access: {
+        Row: {
+          accessed_at: string | null
+          accessed_by: string
+          action: string
+          extension_id: string
+          id: string
+          org_id: string
+          secret_name: string
+        }
+        Insert: {
+          accessed_at?: string | null
+          accessed_by: string
+          action: string
+          extension_id: string
+          id?: string
+          org_id: string
+          secret_name: string
+        }
+        Update: {
+          accessed_at?: string | null
+          accessed_by?: string
+          action?: string
+          extension_id?: string
+          id?: string
+          org_id?: string
+          secret_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extension_secret_access_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extension_secret_versions: {
+        Row: {
+          archived_at: string | null
+          encrypted_value: string
+          extension_id: string
+          id: string
+          name: string
+          org_id: string
+        }
+        Insert: {
+          archived_at?: string | null
+          encrypted_value: string
+          extension_id: string
+          id?: string
+          name: string
+          org_id: string
+        }
+        Update: {
+          archived_at?: string | null
+          encrypted_value?: string
+          extension_id?: string
+          id?: string
+          name?: string
+          org_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extension_secret_versions_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extension_secrets: {
+        Row: {
+          created_at: string | null
+          encrypted_value: string
+          extension_id: string
+          name: string
+          org_id: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          encrypted_value: string
+          extension_id: string
+          name: string
+          org_id: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          encrypted_value?: string
+          extension_id?: string
+          name?: string
+          org_id?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extension_secrets_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extension_storage: {
+        Row: {
+          extension_id: string
+          key: string
+          org_id: string
+          updated_at: string | null
+          value: Json | null
+        }
+        Insert: {
+          extension_id: string
+          key: string
+          org_id: string
+          updated_at?: string | null
+          value?: Json | null
+        }
+        Update: {
+          extension_id?: string
+          key?: string
+          org_id?: string
+          updated_at?: string | null
+          value?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extension_storage_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -2417,6 +2617,8 @@ export type Database = {
           checked_out_by: string | null
           checked_out_by_machine_id: string | null
           checked_out_by_machine_name: string | null
+          checked_out_file_name: string | null
+          checked_out_file_path: string | null
           configuration_revisions: Json | null
           content_hash: string | null
           created_at: string | null
@@ -2451,6 +2653,8 @@ export type Database = {
           checked_out_by?: string | null
           checked_out_by_machine_id?: string | null
           checked_out_by_machine_name?: string | null
+          checked_out_file_name?: string | null
+          checked_out_file_path?: string | null
           configuration_revisions?: Json | null
           content_hash?: string | null
           created_at?: string | null
@@ -2485,6 +2689,8 @@ export type Database = {
           checked_out_by?: string | null
           checked_out_by_machine_id?: string | null
           checked_out_by_machine_name?: string | null
+          checked_out_file_name?: string | null
+          checked_out_file_path?: string | null
           configuration_revisions?: Json | null
           content_hash?: string | null
           created_at?: string | null
@@ -2908,6 +3114,54 @@ export type Database = {
           },
         ]
       }
+      integration_credentials: {
+        Row: {
+          created_at: string | null
+          id: string
+          org_id: string
+          owner_id: string
+          owner_type: string
+          secret: string | null
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          org_id: string
+          owner_id: string
+          owner_type: string
+          secret?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          org_id?: string
+          owner_id?: string
+          owner_type?: string
+          secret?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "integration_credentials_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "integration_credentials_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       integration_sync_log: {
         Row: {
           cancel_requested: boolean
@@ -3240,6 +3494,65 @@ export type Database = {
           },
         ]
       }
+      module_access: {
+        Row: {
+          granted_at: string | null
+          granted_by: string | null
+          id: string
+          module_id: string
+          org_id: string
+          team_id: string | null
+          user_id: string | null
+        }
+        Insert: {
+          granted_at?: string | null
+          granted_by?: string | null
+          id?: string
+          module_id: string
+          org_id: string
+          team_id?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          granted_at?: string | null
+          granted_by?: string | null
+          id?: string
+          module_id?: string
+          org_id?: string
+          team_id?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "module_access_granted_by_fkey"
+            columns: ["granted_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "module_access_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "module_access_team_id_fkey"
+            columns: ["team_id"]
+            isOneToOne: false
+            referencedRelation: "teams"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "module_access_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       notifications: {
         Row: {
           action_completed: boolean | null
@@ -3406,6 +3719,99 @@ export type Database = {
             columns: ["updated_by"]
             isOneToOne: false
             referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      org_extension_config: {
+        Row: {
+          config: Json | null
+          extension_id: string
+          org_id: string
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          config?: Json | null
+          extension_id: string
+          org_id: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          config?: Json | null
+          extension_id?: string
+          org_id?: string
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "org_extension_config_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "org_extension_config_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      org_installed_extensions: {
+        Row: {
+          allowed_domains: string[]
+          enabled: boolean | null
+          extension_id: string
+          handlers: Json
+          installed_at: string | null
+          installed_by: string | null
+          manifest: Json
+          org_id: string
+          pinned_version: string | null
+          version: string
+        }
+        Insert: {
+          allowed_domains?: string[]
+          enabled?: boolean | null
+          extension_id: string
+          handlers?: Json
+          installed_at?: string | null
+          installed_by?: string | null
+          manifest: Json
+          org_id: string
+          pinned_version?: string | null
+          version: string
+        }
+        Update: {
+          allowed_domains?: string[]
+          enabled?: boolean | null
+          extension_id?: string
+          handlers?: Json
+          installed_at?: string | null
+          installed_by?: string | null
+          manifest?: Json
+          org_id?: string
+          pinned_version?: string | null
+          version?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "org_installed_extensions_installed_by_fkey"
+            columns: ["installed_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "org_installed_extensions_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -5016,6 +5422,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      schema_remediation_log: {
+        Row: {
+          detail: string | null
+          id: string
+          ran_at: string
+          ran_by: string
+          release: number
+          remediation: string
+          rows_acted_on: number
+          subjects: Json
+        }
+        Insert: {
+          detail?: string | null
+          id?: string
+          ran_at?: string
+          ran_by?: string
+          release: number
+          remediation: string
+          rows_acted_on: number
+          subjects?: Json
+        }
+        Update: {
+          detail?: string | null
+          id?: string
+          ran_at?: string
+          ran_by?: string
+          release?: number
+          remediation?: string
+          rows_acted_on?: number
+          subjects?: Json
+        }
+        Relationships: []
       }
       schema_version: {
         Row: {
@@ -7266,6 +7705,23 @@ export type Database = {
         Returns: Json
       }
       admin_remove_user: { Args: { p_user_email: string }; Returns: Json }
+      anon_admitting_policies: { Args: { p_oid: unknown }; Returns: string[] }
+      anon_execute_allowlist: {
+        Args: never
+        Returns: {
+          reason: string
+          signature: string
+        }[]
+      }
+      anon_read_allowlist: {
+        Args: never
+        Returns: {
+          reason: string
+          relname: string
+        }[]
+      }
+      anon_read_grantors: { Args: { p_oid: unknown }; Returns: string[] }
+      anon_revoke_grantors: { Args: { p_oid: unknown }; Returns: string[] }
       apply_pending_license_assignments: {
         Args: { p_user_id: string }
         Returns: undefined
@@ -7273,6 +7729,16 @@ export type Database = {
       apply_pending_team_memberships: {
         Args: { p_user_id: string }
         Returns: undefined
+      }
+      apply_workflow_transition: {
+        Args: {
+          p_approvals: Json
+          p_comment: string
+          p_file_id: string
+          p_transition_id: string
+          p_user_id: string
+        }
+        Returns: Json
       }
       approve_eco_gate: {
         Args: { p_eco_id: string; p_gate_name: string; p_notes?: string }
@@ -7298,9 +7764,14 @@ export type Database = {
           total_cost: number
         }[]
       }
-      check_file_state_permission: {
-        Args: { p_file_id: string; p_permission: string; p_user_id: string }
-        Returns: boolean
+      check_anon_reach: {
+        Args: never
+        Returns: {
+          detail: string
+          identity: string
+          kind: string
+          severity: string
+        }[]
       }
       check_gate_requirements: {
         Args: { p_eco_id: string; p_gate_name: string }
@@ -7309,6 +7780,54 @@ export type Database = {
           completed_items: number
           incomplete_items: string[]
           required_items: number
+        }[]
+      }
+      check_null_unsafe_org_gates: {
+        Args: never
+        Returns: {
+          detail: string
+          signature: string
+        }[]
+      }
+      check_org_gates: {
+        Args: never
+        Returns: {
+          detail: string
+          signature: string
+          status: string
+        }[]
+      }
+      check_release_residue: {
+        Args: never
+        Returns: {
+          detail: string
+          identity: string
+          residue: string
+        }[]
+      }
+      check_schema_release: {
+        Args: never
+        Returns: {
+          detail: string
+          identity: string
+          module: string
+          status: string
+        }[]
+      }
+      check_unbound_entity_args: {
+        Args: never
+        Returns: {
+          detail: string
+          signature: string
+        }[]
+      }
+      check_withdrawn_execute: {
+        Args: never
+        Returns: {
+          detail: string
+          module: string
+          signature: string
+          status: string
         }[]
       }
       checkin_file: {
@@ -7339,12 +7858,16 @@ export type Database = {
         }
         Returns: Json
       }
+      cleanup_extension_http_logs: {
+        Args: { p_retention_days?: number }
+        Returns: number
+      }
+      cleanup_extension_secret_access_logs: {
+        Args: { p_retention_days?: number }
+        Returns: number
+      }
       cleanup_stale_sessions: { Args: never; Returns: number }
       clear_team_module_defaults: { Args: { p_team_id: string }; Returns: Json }
-      create_default_revision_scheme: {
-        Args: { p_created_by: string; p_org_id: string }
-        Returns: string
-      }
       complete_gate_review: {
         Args: {
           p_checklist_responses?: Json
@@ -7354,15 +7877,16 @@ export type Database = {
         }
         Returns: Json
       }
-      consume_share_link: {
-        Args: { p_token: string }
-        Returns: boolean
+      consume_share_link: { Args: { p_token: string }; Returns: boolean }
+      create_default_job_titles: {
+        Args: { p_created_by?: string; p_org_id: string }
+        Returns: undefined
+      }
+      create_default_permission_teams: {
+        Args: { p_created_by?: string; p_org_id: string }
+        Returns: undefined
       }
       create_default_workflow: {
-        Args: { p_created_by: string; p_org_id: string }
-        Returns: string
-      }
-      create_default_workflow_v2: {
         Args: { p_created_by: string; p_org_id: string }
         Returns: string
       }
@@ -7394,6 +7918,7 @@ export type Database = {
         }
         Returns: string
       }
+      current_actor_id: { Args: never; Returns: string }
       customer_analytics_summary: {
         Args: { p_from: string; p_org_id: string; p_to: string }
         Returns: {
@@ -7424,12 +7949,12 @@ export type Database = {
         Args: { p_from: string; p_org_id: string; p_to: string }
         Returns: {
           buyers: number
-          category: string | null
-          category_label: string | null
+          category: string
+          category_label: string
           orders: number
           revenue: number
-          subcategory: string | null
-          subcategory_label: string | null
+          subcategory: string
+          subcategory_label: string
         }[]
       }
       customer_channel_counts: {
@@ -7466,21 +7991,35 @@ export type Database = {
         Args: { p_from: string; p_org_id: string; p_to: string }
         Returns: {
           buyers: number
-          country: string | null
+          country: string
           orders: number
           revenue: number
         }[]
       }
+      customer_lifecycle_segment: {
+        Args: {
+          p_as_of: string
+          p_first_order: string
+          p_last_order: string
+          p_order_count: number
+        }
+        Returns: string
+      }
+      customer_non_revenue_statuses: { Args: never; Returns: string[] }
+      customer_order_is_revenue: {
+        Args: { p_status: string }
+        Returns: boolean
+      }
       customer_partner_coverage: {
         Args: { p_from: string; p_org_id: string; p_to: string }
         Returns: {
-          account_id: string | null
-          account_key: string | null
-          account_name: string | null
-          channel: string | null
+          account_id: string
+          account_key: string
+          account_name: string
+          channel: string
           contacts: number
           country: string
-          last_order_date: string | null
+          last_order_date: string
           name: string
           partner_channel: string
           total_spent: number
@@ -7488,7 +8027,12 @@ export type Database = {
         }[]
       }
       customer_revenue_timeseries: {
-        Args: { p_bucket?: string; p_from: string; p_org_id: string; p_to: string }
+        Args: {
+          p_bucket?: string
+          p_from: string
+          p_org_id: string
+          p_to: string
+        }
         Returns: {
           bucket_start: string
           buyers: number
@@ -7499,29 +8043,34 @@ export type Database = {
         }[]
       }
       customer_rfm: {
-        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
+        Args: {
+          p_from: string
+          p_limit?: number
+          p_org_id: string
+          p_to: string
+        }
         Returns: {
-          account_id: string | null
-          account_name: string | null
-          category: string | null
-          category_label: string | null
+          account_id: string
+          account_name: string
+          category: string
+          category_label: string
           channel: string
-          city: string | null
-          country: string | null
+          city: string
+          country: string
           customer_id: string
-          email: string | null
-          f_score: number | null
-          first_order_date: string | null
-          is_active: boolean | null
-          last_order_date: string | null
+          email: string
+          f_score: number
+          first_order_date: string
+          is_active: boolean
+          last_order_date: string
           lifetime_orders: number
-          m_score: number | null
+          m_score: number
           name: string
           order_count: number
-          r_score: number | null
-          recency_days: number | null
+          r_score: number
+          recency_days: number
           segment: string
-          subcategory: string | null
+          subcategory: string
           total_spent: number
         }[]
       }
@@ -7534,27 +8083,37 @@ export type Database = {
         }[]
       }
       customer_top_accounts: {
-        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
+        Args: {
+          p_from: string
+          p_limit?: number
+          p_org_id: string
+          p_to: string
+        }
         Returns: {
-          account_id: string | null
+          account_id: string
           buyers: number
-          cumulative_share: number | null
+          cumulative_share: number
           group_key: string
-          label: string | null
+          label: string
           orders: number
           rank_index: number
           revenue: number
-          share: number | null
+          share: number
         }[]
       }
       customer_top_products: {
-        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
+        Args: {
+          p_from: string
+          p_limit?: number
+          p_org_id: string
+          p_to: string
+        }
         Returns: {
           buyers: number
           orders: number
-          product_erp_id: string | null
+          product_erp_id: string
           product_key: string
-          product_name: string | null
+          product_name: string
           quantity: number
           revenue: number
         }[]
@@ -7572,17 +8131,14 @@ export type Database = {
         Args: { func_name: string }
         Returns: undefined
       }
+      enforce_anon_execute_posture: { Args: never; Returns: number }
       ensure_user_org_id: { Args: never; Returns: Json }
       execute_transition_to_legacy_state: {
         Args: { p_comment?: string; p_file_id: string; p_target_state: string }
         Returns: Json
       }
       execute_workflow_transition: {
-        Args: {
-          p_comment?: string
-          p_file_id: string
-          p_transition_id: string
-        }
+        Args: { p_comment?: string; p_file_id: string; p_transition_id: string }
         Returns: Json
       }
       extend_backup_lock: {
@@ -7638,6 +8194,7 @@ export type Database = {
           unit_price: number
         }[]
       }
+      get_denied_modules: { Args: never; Returns: string[] }
       get_eco_files: {
         Args: { p_eco_id: string }
         Returns: {
@@ -7649,6 +8206,19 @@ export type Database = {
           revision: string
           tagged_at: string
           tagged_by: string
+        }[]
+      }
+      get_extension_config: {
+        Args: { p_extension_id: string; p_org_id: string }
+        Returns: Json
+      }
+      get_extension_stats: {
+        Args: { p_extension_id: string; p_org_id: string }
+        Returns: {
+          http_requests_24h: number
+          last_http_request: string
+          secrets_count: number
+          storage_keys_count: number
         }[]
       }
       get_file_ecos: {
@@ -7730,6 +8300,14 @@ export type Database = {
           isOneToOne: false
           isSetofReturn: true
         }
+      }
+      get_module_access_config: {
+        Args: never
+        Returns: {
+          module_id: string
+          team_id: string
+          user_id: string
+        }[]
       }
       get_my_pending_reviews: {
         Args: never
@@ -7837,11 +8415,17 @@ export type Database = {
           vault_id: string
         }[]
       }
+      get_vault_files_count: {
+        Args: { p_org_id: string; p_vault_id?: string }
+        Returns: number
+      }
       get_vault_files_delta: {
         Args: { p_org_id: string; p_since: string; p_vault_id: string }
         Returns: {
           checked_out_at: string
           checked_out_by: string
+          checked_out_file_name: string
+          checked_out_file_path: string
           content_hash: string
           custom_properties: Json
           deleted_at: string
@@ -7865,6 +8449,8 @@ export type Database = {
         Returns: {
           checked_out_at: string
           checked_out_by: string
+          checked_out_file_name: string
+          checked_out_file_path: string
           content_hash: string
           custom_properties: Json
           description: string
@@ -7946,6 +8532,7 @@ export type Database = {
       is_org_admin:
         | { Args: never; Returns: boolean }
         | { Args: { p_user_id: string }; Returns: boolean }
+      is_org_member: { Args: { p_org_id: string }; Returns: boolean }
       join_org_by_slug: { Args: { p_org_slug: string }; Returns: Json }
       known_partner_channel_for_key: {
         Args: { p_account_key: string }
@@ -7961,6 +8548,8 @@ export type Database = {
           website: string
         }[]
       }
+      legacy_file_state: { Args: { p_state_name: string }; Returns: string }
+      like_escape: { Args: { p_text: string }; Returns: string }
       mark_all_notifications_read: {
         Args: { p_user_id: string }
         Returns: number
@@ -7969,6 +8558,15 @@ export type Database = {
         Args: { p_notification_ids: string[] }
         Returns: number
       }
+      may_review_gate: {
+        Args: { p_gate_id: string; p_user_id: string }
+        Returns: boolean
+      }
+      merge_custom_properties: {
+        Args: { p_existing: Json; p_incoming: Json }
+        Returns: Json
+      }
+      migrate_uuid_defaults: { Args: never; Returns: number }
       move_file: {
         Args: {
           p_file_id: string
@@ -7978,12 +8576,38 @@ export type Database = {
         }
         Returns: Json
       }
+      next_revision_value: {
+        Args: {
+          p_current: string
+          p_scheme: Database["public"]["Enums"]["revision_scheme"]
+        }
+        Returns: string
+      }
       notify_overdue_reviews: { Args: never; Returns: number }
+      org_gate_exclusion_reason: { Args: { p_oid: unknown }; Returns: string }
+      org_gate_status_blocks: { Args: { p_status: string }; Returns: boolean }
       preview_next_serial_number: {
         Args: { p_org_id: string }
         Returns: string
       }
+      probe_literal_for: { Args: { p_type: string }; Returns: string }
+      probe_literal_for_arg: {
+        Args: { p_arg: string; p_oid: unknown; p_type: string }
+        Returns: string
+      }
+      record_remediation: {
+        Args: {
+          p_detail: string
+          p_name: string
+          p_rows: number
+          p_subjects: Json
+        }
+        Returns: number
+      }
       regenerate_org_slug: { Args: never; Returns: Json }
+      remediate_case_colliding_folders: { Args: never; Returns: number }
+      remediate_cross_tenant_share_links: { Args: never; Returns: number }
+      remediate_cross_tenant_workflow_history: { Args: never; Returns: number }
       remove_pending_license_assignment: {
         Args: { p_license_id: string; p_pending_member_id: string }
         Returns: Json
@@ -7997,10 +8621,38 @@ export type Database = {
         }
         Returns: Json
       }
+      repair_config_maps: {
+        Args: { p_org_id: string; p_repairs: Json }
+        Returns: Json
+      }
+      require_eco_access: { Args: { p_eco_id: string }; Returns: string }
+      require_file_access: { Args: { p_file_id: string }; Returns: string }
+      require_org_member: { Args: { p_org_id: string }; Returns: undefined }
+      require_same_org_user: { Args: { p_user_id: string }; Returns: undefined }
+      require_vault_access: { Args: { p_vault_id: string }; Returns: string }
       reset_item_image: {
         Args: { p_org_id: string; p_part_number: string }
         Returns: boolean
       }
+      revoke_public_execute_on_org_rpcs: { Args: never; Returns: number }
+      row_selecting_id_args: { Args: { p_oid: unknown }; Returns: string[] }
+      schema_release_description: { Args: never; Returns: string }
+      schema_release_manifest: {
+        Args: never
+        Returns: {
+          identity: string
+          kind: string
+          module: string
+          probe: string
+          requires: string
+        }[]
+      }
+      schema_release_version: { Args: never; Returns: number }
+      seed_customer_categories: {
+        Args: { p_org_id: string }
+        Returns: undefined
+      }
+      seed_known_partners: { Args: { p_org_id: string }; Returns: number }
       set_item_designation_assignment: {
         Args: {
           p_designation_id?: string
@@ -8023,6 +8675,14 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      set_module_access: {
+        Args: {
+          p_module_id: string
+          p_team_ids?: string[]
+          p_user_ids?: string[]
+        }
+        Returns: Json
       }
       set_org_column_defaults: {
         Args: { p_column_defaults: Json; p_org_id: string }
@@ -8058,11 +8718,27 @@ export type Database = {
         Args: { p_column_defaults: Json }
         Returns: Json
       }
+      share_link_admission: {
+        Args: { p_token: string }
+        Returns: {
+          error_message: string
+          file_id: string
+          file_version: number
+          is_valid: boolean
+          org_id: string
+        }[]
+      }
+      strip_sql_noise: { Args: { p_src: string }; Returns: string }
+      try_stamp_schema: { Args: never; Returns: undefined }
       unassign_solidworks_license: {
         Args: { p_assignment_id: string }
         Returns: Json
       }
       unblock_user: { Args: { p_email: string }; Returns: Json }
+      update_extension_config: {
+        Args: { p_config: Json; p_extension_id: string; p_org_id: string }
+        Returns: boolean
+      }
       update_google_drive_settings: {
         Args: {
           p_client_id: string
@@ -8154,6 +8830,10 @@ export type Database = {
         Args: { p_code: string; p_ip_address?: string }
         Returns: Json
       }
+      user_can_access_module: {
+        Args: { p_module_id: string; p_user_id?: string }
+        Returns: boolean
+      }
       user_can_run_transition: {
         Args: { p_transition_id: string; p_user_id: string }
         Returns: boolean
@@ -8183,6 +8863,14 @@ export type Database = {
           file_version: number
           is_valid: boolean
           org_id: string
+        }[]
+      }
+      verify_and_stamp_schema: { Args: never; Returns: Json }
+      withdrawn_execute_manifest: {
+        Args: never
+        Returns: {
+          module: string
+          signature: string
         }[]
       }
     }
@@ -8251,8 +8939,8 @@ export type Database = {
       state_shape: "rectangle" | "diamond" | "hexagon" | "ellipse"
       state_type: "state" | "gate"
       supplier_auth_method: "email" | "phone" | "wechat"
-      transition_edge: "left" | "right" | "top" | "bottom"
       transition_arrow_head: "none" | "end" | "start" | "both"
+      transition_edge: "left" | "right" | "top" | "bottom"
       transition_line_style: "solid" | "dashed" | "dotted"
       transition_path_type: "straight" | "spline" | "elbow"
       user_role: "admin" | "engineer" | "viewer"
@@ -8293,12 +8981,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -8322,11 +9010,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -8347,11 +9035,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -8372,11 +9060,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -8389,11 +9077,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -8475,8 +9163,8 @@ export const Constants = {
       state_shape: ["rectangle", "diamond", "hexagon", "ellipse"],
       state_type: ["state", "gate"],
       supplier_auth_method: ["email", "phone", "wechat"],
-      transition_edge: ["left", "right", "top", "bottom"],
       transition_arrow_head: ["none", "end", "start", "both"],
+      transition_edge: ["left", "right", "top", "bottom"],
       transition_line_style: ["solid", "dashed", "dotted"],
       transition_path_type: ["straight", "spline", "elbow"],
       user_role: ["admin", "engineer", "viewer"],

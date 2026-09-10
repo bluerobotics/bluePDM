@@ -15,16 +15,21 @@ import type { OperationType, PendingMetadataEdit } from '@/stores/types'
  */
 export interface FilePaneHandlersContextValue {
   // Inline action handlers
+  /** Downloads cloud-only files - never fires alongside `handleInlineGetLatest`. */
   handleInlineDownload: (e: React.MouseEvent, file: LocalFile) => void
+  /** Updates outdated files to the latest server version - never fires alongside `handleInlineDownload`. */
+  handleInlineGetLatest: (e: React.MouseEvent, file: LocalFile) => void
   handleInlineUpload: (e: React.MouseEvent, file: LocalFile) => void
   handleInlineCheckout: (e: React.MouseEvent, file: LocalFile) => void
   handleInlineCheckin: (e: React.MouseEvent, file: LocalFile) => void
 
   // Computed selection arrays (for multi-select operations)
-  selectedDownloadableFiles: LocalFile[]
+  /** Cloud-only files in the multi-select - drives the download button's count/hover state. */
+  selectedCloudOnlyFiles: LocalFile[]
   selectedUploadableFiles: LocalFile[]
   selectedCheckoutableFiles: LocalFile[]
   selectedCheckinableFiles: LocalFile[]
+  /** Outdated files in the multi-select - drives the get-latest/sync button's count/hover state. */
   selectedUpdatableFiles: LocalFile[]
 
   // Status functions

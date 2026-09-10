@@ -30,7 +30,8 @@ import {
   updateFilePath,
   syncFolder,
 } from '@/lib/supabase'
-import type { DeletedFile } from '@/types/pdm'
+import { clearVaultCache } from '@/lib/cache/vaultFileCache'
+import type { DeletedFile, PDMFile } from '@/types/pdm'
 import { useFlattenedTrash } from './hooks'
 import { VirtualizedTrashRow } from './VirtualizedTrashRow'
 import { FolderPickerDialog } from './FolderPickerDialog'
@@ -50,6 +51,7 @@ export function TrashView() {
     trashFolderFilter,
     setTrashFolderFilter,
     addCloudFile,
+    addCloudFiles,
   } = usePDMStore(
     useShallow((s) => ({
       organization: s.organization,
@@ -65,6 +67,7 @@ export function TrashView() {
       trashFolderFilter: s.trashFolderFilter,
       setTrashFolderFilter: s.setTrashFolderFilter,
       addCloudFile: s.addCloudFile,
+      addCloudFiles: s.addCloudFiles,
     })),
   )
   const [deletedFiles, setDeletedFiles] = useState<DeletedFile[]>([])
@@ -74,7 +77,7 @@ export function TrashView() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
   const [folderPickerState, setFolderPickerState] = useState<{
-    files: Array<{ id: string; fileName: string; oldPath: string; fullFileData: any }>
+    files: Array<{ id: string; fileName: string; oldPath: string; fullFileData: PDMFile }>
     onSelect: (folder: string) => Promise<void>
   } | null>(null)
   const [isEmptying, setIsEmptying] = useState(false)
@@ -471,6 +474,19 @@ export function TrashView() {
     })
   }
 
+  // Invalidate the vault cache after a successful restore so the next load rebuilds
+  // without the stale trashed entry, mirroring what delete.ts does after a server
+  // delete. Without this, restored files linger out of the IndexedDB cache until it
+  // naturally expires. Non-fatal: a failure here just delays the cache refresh.
+  const clearVaultCacheAfterRestore = useCallback(() => {
+    if (!activeVaultId) return
+    clearVaultCache(activeVaultId).catch((error) => {
+      log.warn('[Trash]', 'Failed to clear vault cache after restore', {
+        error: String(error),
+      })
+    })
+  }, [activeVaultId])
+
   // Restore selected files
   const handleRestore = async () => {
     if (selectedFiles.size === 0 || !user) return
@@ -484,6 +500,7 @@ export function TrashView() {
       try {
         const result = await restoreFile(fileIds[0], user.id)
         if (result.success) {
+          clearVaultCacheAfterRestore()
           if (result.file) {
             const parentPath = result.file.file_path.substring(
               0,
@@ -581,8 +598,26 @@ export function TrashView() {
       id: string
       fileName: string
       oldPath: string
-      fullFileData: any
+      fullFileData: PDMFile
     }> = []
+    // Successfully restored files whose parent still exists locally - added to the
+    // store in a single batched commit after the loop instead of one commit per file.
+    const restoredFiles: PDMFile[] = []
+
+    // Build the parent-directory lookup ONCE before the loop. Re-scanning
+    // usePDMStore.getState().files (tens of thousands of entries) per restored file
+    // was the dominant cost of this loop at scale (443 files x ~28k entries x 2
+    // scans), and directly preceded renderer OOM crashes.
+    const parentDirLower = new Set(
+      usePDMStore
+        .getState()
+        .files.filter((f) => f.isDirectory && f.diffStatus !== 'cloud')
+        .map((f) => f.relativePath.toLowerCase()),
+    )
+
+    // Throttle progress-toast store writes to once per displayed percentage point
+    // instead of once per file.
+    let lastReportedPercent = -1
 
     try {
       for (let i = 0; i < fileIds.length; i++) {
@@ -599,16 +634,9 @@ export function TrashView() {
                 0,
                 result.file.file_path.lastIndexOf('/'),
               )
-              let parentExistsLocally = true
-              if (parentPath) {
-                const preRestoreFiles = usePDMStore.getState().files
-                parentExistsLocally = preRestoreFiles.some(
-                  (f) =>
-                    f.isDirectory &&
-                    f.diffStatus !== 'cloud' &&
-                    f.relativePath.toLowerCase() === parentPath.toLowerCase(),
-                )
-              }
+              const parentExistsLocally = parentPath
+                ? parentDirLower.has(parentPath.toLowerCase())
+                : true
 
               if (!parentExistsLocally && parentPath) {
                 // Defer adding stale-path files until user picks a destination
@@ -619,15 +647,7 @@ export function TrashView() {
                   fullFileData: result.file,
                 })
               } else {
-                addCloudFile(result.file)
-                const storeFiles = usePDMStore.getState().files
-                const wasAdded = storeFiles.some((f) => f.pdmData?.id === result.file!.id)
-                if (!wasAdded) {
-                  log.warn('[Restore]', 'File restored in DB but not added to store', {
-                    fileId: result.file.id,
-                    filePath: result.file.file_path,
-                  })
-                }
+                restoredFiles.push(result.file)
               }
             }
             restored++
@@ -645,7 +665,34 @@ export function TrashView() {
         }
 
         const percent = Math.round(((i + 1) / total) * 100)
-        updateProgressToast(toastId, i + 1, percent)
+        if (percent !== lastReportedPercent) {
+          lastReportedPercent = percent
+          updateProgressToast(toastId, i + 1, percent)
+        }
+      }
+
+      // Single batched store commit instead of one addCloudFile call (and one
+      // verification scan) per file.
+      if (restoredFiles.length > 0) {
+        addCloudFiles(restoredFiles)
+
+        const storeFileIds = new Set(
+          usePDMStore
+            .getState()
+            .files.map((f) => f.pdmData?.id)
+            .filter((id): id is string => id !== undefined),
+        )
+        const notAdded = restoredFiles.filter((f) => !storeFileIds.has(f.id))
+        if (notAdded.length > 0) {
+          log.warn('[Restore]', 'Some files restored in DB but not added to store', {
+            count: notAdded.length,
+            fileIds: notAdded.slice(0, 10).map((f) => f.id),
+          })
+        }
+      }
+
+      if (restored > 0) {
+        clearVaultCacheAfterRestore()
       }
 
       removeToast(toastId)
@@ -671,23 +718,37 @@ export function TrashView() {
           files: stalePathFiles,
           onSelect: async (folder: string) => {
             let moved = 0
+            // A bulk restore where the rows share a missing parent routes every file
+            // through here, so the commit is batched for the same reason the loop above
+            // is: one addCloudFile per file rebuilds the folder tree and re-renders the
+            // pane each time, work proportional to vault size repeated per file.
+            const filesToCommit: PDMFile[] = []
+
             for (const file of stalePathFiles) {
               const newFilePath = folder ? `${folder}/${file.fileName}` : file.fileName
+              // updateFilePath writes one row per call and has no batched counterpart,
+              // so these stay serial rather than opening a request per file at once.
               const updateResult = await updateFilePath(file.id, newFilePath)
               if (updateResult.success && updateResult.file) {
-                addCloudFile(updateResult.file)
+                filesToCommit.push(updateResult.file)
                 moved++
               } else {
-                addCloudFile(file.fullFileData)
+                filesToCommit.push(file.fullFileData)
               }
             }
-            const storeFiles = usePDMStore.getState().files
-            let notAdded = 0
-            for (const file of stalePathFiles) {
-              if (!storeFiles.some((f) => f.pdmData?.id === file.id)) {
-                notAdded++
-              }
+
+            if (filesToCommit.length > 0) {
+              addCloudFiles(filesToCommit)
             }
+
+            const storeFileIds = new Set(
+              usePDMStore
+                .getState()
+                .files.map((f) => f.pdmData?.id)
+                .filter((id): id is string => id !== undefined),
+            )
+            const notAdded = stalePathFiles.filter((file) => !storeFileIds.has(file.id)).length
+
             if (moved > 0) {
               addToast('success', `Moved ${moved} file(s) to "${folder || 'Vault Root'}"`)
             }
@@ -1307,9 +1368,7 @@ export function TrashView() {
               }
             }
 
-            for (const file of folderPickerState.files) {
-              addCloudFile(file.fullFileData)
-            }
+            addCloudFiles(folderPickerState.files.map((f) => f.fullFileData))
 
             const fileCount = folderPickerState.files.length
             addToast(
@@ -1324,9 +1383,7 @@ export function TrashView() {
             <FolderPickerDialog
               isOpen={true}
               onClose={() => {
-                for (const file of folderPickerState.files) {
-                  addCloudFile(file.fullFileData)
-                }
+                addCloudFiles(folderPickerState.files.map((f) => f.fullFileData))
                 addToast(
                   'info',
                   `${folderPickerState.files.length} restored file(s) kept at their original paths.`,
