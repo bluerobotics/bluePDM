@@ -4,13 +4,15 @@ vi.mock('@/lib/performanceMetrics', () => ({ recordMetric: vi.fn() }))
 
 const {
   computeLocalScanFingerprint,
+  computeServerFolderFingerprint,
   consumeSupersededLoad,
   isLoadFilesInFlight,
   markLoadSuperseded,
   runExclusiveLoad,
+  shouldSkipMerge,
 } = await import('./loadFilesCoordination')
 
-import type { LoadFilesRequest } from './loadFilesCoordination'
+import type { LoadFilesRequest, MergeSkipCheckInput } from './loadFilesCoordination'
 
 const VAULT = 'vault-1'
 
@@ -286,5 +288,128 @@ describe('computeLocalScanFingerprint', () => {
   it('encodes the count, so a delimiter collision cannot alias two scans', () => {
     expect(computeLocalScanFingerprint(base).startsWith('2:')).toBe(true)
     expect(computeLocalScanFingerprint([]).startsWith('0:')).toBe(true)
+  })
+})
+
+describe('computeServerFolderFingerprint', () => {
+  it('is stable for identical input', () => {
+    const paths = ['a', 'a/b']
+    expect(computeServerFolderFingerprint(paths)).toBe(computeServerFolderFingerprint(paths))
+  })
+
+  it('is independent of fetch order', () => {
+    expect(computeServerFolderFingerprint(['a/b', 'a'])).toBe(
+      computeServerFolderFingerprint(['a', 'a/b']),
+    )
+  })
+
+  it('changes when a folder is added', () => {
+    expect(computeServerFolderFingerprint(['a', 'a/b', 'a/c'])).not.toBe(
+      computeServerFolderFingerprint(['a', 'a/b']),
+    )
+  })
+
+  it('changes when a folder is removed', () => {
+    expect(computeServerFolderFingerprint(['a'])).not.toBe(
+      computeServerFolderFingerprint(['a', 'a/b']),
+    )
+  })
+
+  it('detects a create-plus-delete pair that a bare count would cancel out', () => {
+    // Same count (2) before and after, but the set of paths differs.
+    expect(computeServerFolderFingerprint(['a', 'b'])).not.toBe(
+      computeServerFolderFingerprint(['a', 'c']),
+    )
+  })
+
+  it('encodes the count, so a delimiter collision cannot alias two folder sets', () => {
+    expect(computeServerFolderFingerprint(['a', 'b']).startsWith('2:')).toBe(true)
+    expect(computeServerFolderFingerprint([]).startsWith('0:')).toBe(true)
+  })
+})
+
+describe('shouldSkipMerge', () => {
+  const unchangedInput = (): MergeSkipCheckInput => ({
+    silent: true,
+    forceHashComputation: false,
+    serverCacheHit: true,
+    serverDeltaCount: 0,
+    serverFoldersErrored: false,
+    lastMerged: {
+      scanFingerprint: 'scan-1',
+      storeFileCount: 10,
+      folderFingerprint: 'folder-1',
+    },
+    localScanFingerprint: 'scan-1',
+    storeFileCount: 10,
+    serverFolderFingerprint: 'folder-1',
+    filesLoaded: true,
+    vaultStale: false,
+  })
+
+  it('skips a genuinely unchanged pass', () => {
+    // Guards against a fix that makes the check always false, which would pass the
+    // "folder change forces a merge" test below for the wrong reason and silently
+    // reintroduce a full merge on every background refresh.
+    expect(shouldSkipMerge(unchangedInput())).toBe(true)
+  })
+
+  it('forces the merge when only the folder fingerprint changed - the bug this guards against', () => {
+    // Everything else (server delta, scan fingerprint, store count) is exactly what
+    // it is when another machine deletes an empty folder: nothing file-side moves.
+    const input = { ...unchangedInput(), serverFolderFingerprint: 'folder-2' }
+    expect(shouldSkipMerge(input)).toBe(false)
+  })
+
+  it('forces the merge when the folder fetch errored, even with matching fingerprints', () => {
+    const input = { ...unchangedInput(), serverFoldersErrored: true }
+    expect(shouldSkipMerge(input)).toBe(false)
+  })
+
+  it('forces the merge when there is no prior merge to compare against', () => {
+    const input = { ...unchangedInput(), lastMerged: undefined }
+    expect(shouldSkipMerge(input)).toBe(false)
+  })
+
+  it('forces the merge for a non-silent (explicit) request', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), silent: false })).toBe(false)
+  })
+
+  it('forces the merge when forceHashComputation is requested', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), forceHashComputation: true })).toBe(false)
+  })
+
+  it('forces the merge on a server cache miss', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), serverCacheHit: false })).toBe(false)
+  })
+
+  it('forces the merge when the server delta is non-zero', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), serverDeltaCount: 1 })).toBe(false)
+  })
+
+  it('forces the merge when the local scan fingerprint changed', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), localScanFingerprint: 'scan-2' })).toBe(false)
+  })
+
+  it('forces the merge when the store file count changed', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), storeFileCount: 11 })).toBe(false)
+  })
+
+  it('forces the merge before the initial load has completed', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), filesLoaded: false })).toBe(false)
+  })
+
+  it('forces the merge when the vault context has gone stale', () => {
+    expect(shouldSkipMerge({ ...unchangedInput(), vaultStale: true })).toBe(false)
+  })
+
+  it('skips when the vault genuinely has no folders, on repeated empty passes', () => {
+    const empty = computeServerFolderFingerprint([])
+    const input = {
+      ...unchangedInput(),
+      lastMerged: { scanFingerprint: 'scan-1', storeFileCount: 10, folderFingerprint: empty },
+      serverFolderFingerprint: empty,
+    }
+    expect(shouldSkipMerge(input)).toBe(true)
   })
 })

@@ -354,6 +354,10 @@ export const fr: TranslationDict = {
       generic_one: 'Impossible de supprimer automatiquement {{count}} fichier orphelin',
       generic_other: 'Impossible de supprimer automatiquement {{count}} fichiers orphelins',
     },
+    directoriesRemoved: {
+      generic_one: '{{count}} dossier vide laissé a également été supprimé',
+      generic_other: '{{count}} dossiers vides laissés ont également été supprimés',
+    },
   },
 
   fileOps: {

@@ -349,6 +349,10 @@ export const pt: TranslationDict = {
       generic_one: 'Não foi possível descartar automaticamente {{count}} ficheiro órfão',
       generic_other: 'Não foi possível descartar automaticamente {{count}} ficheiros órfãos',
     },
+    directoriesRemoved: {
+      generic_one: 'Também foi eliminada {{count}} pasta vazia que ficou',
+      generic_other: 'Também foram eliminadas {{count}} pastas vazias que ficaram',
+    },
   },
 
   fileOps: {

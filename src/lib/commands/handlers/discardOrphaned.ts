@@ -21,13 +21,16 @@
  * `CommandResult.skipped` / `skippedPaths`.
  */
 
-import type { Command, CommandResult, DiscardOrphanedParams, LocalFile } from '../types'
+import type { Command, CommandContext, CommandResult, DiscardOrphanedParams, LocalFile } from '../types'
 import { getFilesInFolder } from '../types'
 import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
+import { getOrphanedDirectoryCandidates } from '../../orphanedDirectories'
+import { getRelativePath } from '../../utils'
+import { usePDMStore } from '@/stores/pdmStore'
 
 /**
  * Per vault, the files the last automatic run left on disk, as a stable signature.
@@ -97,6 +100,117 @@ function logDiscardOrphaned(
   context: Record<string, unknown>,
 ) {
   log[level]('[DiscardOrphaned]', message, context)
+}
+
+/**
+ * A relative folder path, then each of its ancestors, deepest first, ending at ''
+ * (the vault root). Used only to walk `currentFolder` upward when relocating it -
+ * see `relocateCurrentFolderIfRemoved` below.
+ */
+function ancestorChain(relativeFolderPath: string): string[] {
+  const normalized = relativeFolderPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!normalized) return ['']
+  const segments = normalized.split('/')
+  const chain: string[] = []
+  for (let i = segments.length; i >= 0; i--) {
+    chain.push(segments.slice(0, i).join('/'))
+  }
+  return chain
+}
+
+/**
+ * If the folder the user is currently viewing was itself removed, or sits under one
+ * that was, move the view to the nearest surviving ancestor. Otherwise the user is
+ * left looking at a folder that no longer exists on disk or in the store.
+ */
+function relocateCurrentFolderIfRemoved(removedAbsolutePaths: string[], vaultPath: string): void {
+  if (removedAbsolutePaths.length === 0) return
+
+  const { currentFolder, setCurrentFolder } = usePDMStore.getState()
+  if (!currentFolder) return // already at the vault root, which is never removed
+
+  const removedRelative = new Set(
+    removedAbsolutePaths.map((path) =>
+      getRelativePath(path, vaultPath).replace(/\\/g, '/').toLowerCase(),
+    ),
+  )
+
+  const chain = ancestorChain(currentFolder)
+  const affected = chain.some((folder) => folder !== '' && removedRelative.has(folder.toLowerCase()))
+  if (!affected) return
+
+  // The root ('') is never a removal candidate, so this walk always terminates.
+  const target = chain.find((folder) => folder === '' || !removedRelative.has(folder.toLowerCase()))
+  if (target !== undefined && target !== currentFolder) {
+    setCurrentFolder(target)
+  }
+}
+
+/**
+ * Recycle the directories left empty by a discard batch, deriving the candidates from
+ * the batch itself - see `src/lib/orphanedDirectories.ts` for why. Called from inside
+ * `execute` below, downstream of every guard that already applies to the file batch
+ * (`shouldSkipAutoDiscardForOrphans`, `isAutomaticDiscardCoolingDown`,
+ * `runAutoDiscardForOrphans`'s re-entrancy guard) so that all three apply to
+ * directories for free. There is deliberately no second call site for this outside
+ * `execute` - see the plan's "Blast-radius guard" section.
+ */
+async function removeOrphanedDirectories(
+  ctx: CommandContext,
+  filesToDiscard: LocalFile[],
+  deletedPaths: string[],
+): Promise<{ directoriesRemoved: number; directoriesKept: number }> {
+  const vaultPath = ctx.vaultPath
+  if (!vaultPath) return { directoriesRemoved: 0, directoriesKept: 0 }
+
+  const relativeByPath = new Map(filesToDiscard.map((f) => [f.path, f.relativePath]))
+  const deletedSet = new Set(deletedPaths)
+  const succeededRelativePaths = deletedPaths
+    .map((path) => relativeByPath.get(path))
+    .filter((path): path is string => path !== undefined)
+  const keptRelativePaths = filesToDiscard
+    .filter((f) => !deletedSet.has(f.path))
+    .map((f) => f.relativePath)
+
+  const { serverFolderPaths } = usePDMStore.getState()
+  const candidates = getOrphanedDirectoryCandidates({
+    succeededRelativePaths,
+    keptRelativePaths,
+    serverFolderPaths,
+    vaultPath,
+  })
+
+  if (candidates.length === 0) return { directoriesRemoved: 0, directoriesKept: 0 }
+
+  if (!window.electronAPI?.trashEmptyDirs) {
+    logDiscardOrphaned('warn', 'No trashEmptyDirs bridge available - leaving directories on disk', {
+      candidateCount: candidates.length,
+    })
+    return { directoriesRemoved: 0, directoriesKept: candidates.length }
+  }
+
+  let dirResult: {
+    results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+  }
+  try {
+    dirResult = await window.electronAPI.trashEmptyDirs(candidates)
+  } catch (error) {
+    logDiscardOrphaned('warn', 'Failed to recycle orphaned directories', {
+      error: String(error),
+      candidateCount: candidates.length,
+    })
+    return { directoriesRemoved: 0, directoriesKept: candidates.length }
+  }
+
+  const removedDirectories = dirResult.results.filter((r) => r.success).map((r) => r.path)
+  const directoriesKept = dirResult.results.length - removedDirectories.length
+
+  if (removedDirectories.length > 0) {
+    ctx.removeFilesFromStore(removedDirectories)
+    relocateCurrentFolderIfRemoved(removedDirectories, vaultPath)
+  }
+
+  return { directoriesRemoved: removedDirectories.length, directoriesKept }
 }
 
 /**
@@ -260,6 +374,23 @@ export const discardOrphanedCommand: Command<DiscardOrphanedParams> = {
         }
       }
 
+      // Recycle any directory the deletions above just emptied. Deliberately still
+      // inside the watcher-suppression window and the processing-folder bookkeeping
+      // opened for the file batch, and deliberately the only call site for this - see
+      // removeOrphanedDirectories's doc comment.
+      const { directoriesRemoved, directoriesKept } = await removeOrphanedDirectories(
+        ctx,
+        filesToDiscard,
+        deletedPaths,
+      )
+      if (directoriesRemoved > 0 || directoriesKept > 0) {
+        logDiscardOrphaned('info', 'Orphaned directory cleanup', {
+          operationId,
+          directoriesRemoved,
+          directoriesKept,
+        })
+      }
+
       // Clear processing state
       ctx.removeProcessingFolders(pathsBeingProcessed)
       ctx.setLastOperationCompletedAt(Date.now())
@@ -396,6 +527,8 @@ export const discardOrphanedCommand: Command<DiscardOrphanedParams> = {
         succeeded,
         failed,
         skipped: skippedPaths.length,
+        directoriesRemoved,
+        directoriesKept,
         durationMs: Math.round(performance.now() - operationStart),
       })
 
@@ -412,6 +545,8 @@ export const discardOrphanedCommand: Command<DiscardOrphanedParams> = {
         failed,
         skipped: skippedPaths.length > 0 ? skippedPaths.length : undefined,
         skippedPaths: skippedPaths.length > 0 ? skippedPaths : undefined,
+        directoriesRemoved: directoriesRemoved > 0 ? directoriesRemoved : undefined,
+        directoriesKept: directoriesKept > 0 ? directoriesKept : undefined,
         errors: errors.length > 0 ? errors : undefined,
         duration: batchResult.summary.duration,
       }

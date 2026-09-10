@@ -20,6 +20,12 @@
  * English fallback, so — unlike `newKeys.test.ts` — this file also asserts each
  * non-English locale differs from English, to catch a locale file that was accidentally
  * left untouched.
+ *
+ * `autoDiscard.directoriesRemoved.*` (4.3.2) follows the same convention: the empty
+ * directories a discard batch recycles alongside its files get their own `_one`/
+ * `_other` pair, folded into the same toast rather than a second one - see
+ * `src/lib/orphanedDirectories.ts` and
+ * `.cursor/plans/release-4.3.2-empty-folders.plan.md`.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -40,6 +46,7 @@ const KEY_PAIRS = [
   ['autoDiscard.removed.generic_one', 'autoDiscard.removed.generic_other'],
   ['autoDiscard.removed.fromFolder_one', 'autoDiscard.removed.fromFolder_other'],
   ['autoDiscard.failed.generic_one', 'autoDiscard.failed.generic_other'],
+  ['autoDiscard.directoriesRemoved.generic_one', 'autoDiscard.directoriesRemoved.generic_other'],
 ] as const
 
 describe('autoDiscard.removed keys', () => {
@@ -171,6 +178,8 @@ describe('autoDiscard plural-form structure across all seven locales', () => {
   it('exposes exactly the same autoDiscard key set in every locale', () => {
     const expected = keySetFor('en')
     expect(expected).toEqual([
+      'directoriesRemoved.generic_one',
+      'directoriesRemoved.generic_other',
       'failed.generic_one',
       'failed.generic_other',
       'removed.fromFolder_one',

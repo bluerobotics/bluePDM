@@ -48,12 +48,14 @@ import {
 } from '@/types/pdm'
 import {
   computeLocalScanFingerprint,
+  computeServerFolderFingerprint,
   consumeSupersededLoad,
   getLastMergedState,
   isLoadFilesInFlight,
   markLoadSuperseded,
   runExclusiveLoad,
   setLastMergedState,
+  shouldSkipMerge,
 } from './loadFilesCoordination'
 import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
 
@@ -683,31 +685,35 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           count: localResult.files.length,
         })
 
-        // Skip the merge when none of its three inputs moved.
-        //
-        // Server: cacheHit with a zero-row delta means the watermark query found no
-        // changes. Disk: an identical scan fingerprint means no path, size or mtime
-        // changed. Store: an unchanged file count means no other operation added or
-        // removed entries since we last committed. With all three unchanged the merge
+        // Skip the merge when none of its four inputs moved - see `shouldSkipMerge`
+        // for what each signal covers. The folder fingerprint is what makes an
+        // empty-folder deletion (which moves no file) still force the merge that the
+        // `folders` realtime subscription schedules; the other three signals alone
         // would recompute the same result over ~25k rows and rewrite the entire sync
-        // index for nothing.
+        // index for nothing on a pass where nothing actually needs it.
         //
         // Restricted to silent refreshes (the watcher path this exists for) and to
         // vaults already merged once, so explicit user refreshes and the first load of
         // a vault always take the full path.
         const localScanFingerprint = computeLocalScanFingerprint(localResult.files)
+        const serverFolderFingerprint = computeServerFolderFingerprint(
+          (serverFoldersResult.folders || []).map((folder) => folder.folder_path),
+        )
         const lastMerged = getLastMergedState(loadingForVaultId)
         const storeState = usePDMStore.getState()
-        const canSkipMerge =
-          silent &&
-          !forceHashComputation &&
-          serverResultWithCache.cacheHit &&
-          serverResultWithCache.deltaCount === 0 &&
-          lastMerged !== undefined &&
-          lastMerged.scanFingerprint === localScanFingerprint &&
-          lastMerged.storeFileCount === storeState.files.length &&
-          storeState.filesLoaded &&
-          !isVaultStale()
+        const canSkipMerge = shouldSkipMerge({
+          silent,
+          forceHashComputation,
+          serverCacheHit: serverResultWithCache.cacheHit,
+          serverDeltaCount: serverResultWithCache.deltaCount,
+          serverFoldersErrored: Boolean(serverFoldersResult.error),
+          lastMerged,
+          localScanFingerprint,
+          storeFileCount: storeState.files.length,
+          serverFolderFingerprint,
+          filesLoaded: storeState.filesLoaded,
+          vaultStale: isVaultStale(),
+        })
 
         if (canSkipMerge) {
           window.electronAPI?.log(
@@ -2000,6 +2006,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
         setLastMergedState(loadingForVaultId, {
           scanFingerprint: localScanFingerprint,
           storeFileCount: localFiles.length,
+          folderFingerprint: serverFolderFingerprint,
         })
         const totalFiles = localFiles.filter((f) => !f.isDirectory).length
         const syncedCount = localFiles.filter((f) => !f.isDirectory && f.pdmData).length
@@ -2583,10 +2590,27 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                   isAutomatic: true,
                 })
                 if (result.succeeded > 0) {
-                  addToast(
-                    'info',
-                    buildAutoDiscardToastMessage(result.succeeded, commonOrphanFolderName(files)),
+                  // Directories emptied by this same batch are recycled inside
+                  // discard-orphaned itself (see src/lib/orphanedDirectories.ts), so
+                  // folding their count into this one toast rather than raising a
+                  // second is a display choice, not a second discovery.
+                  let message = buildAutoDiscardToastMessage(
+                    result.succeeded,
+                    commonOrphanFolderName(files),
                   )
+                  if (result.directoriesRemoved) {
+                    const suffix = result.directoriesRemoved === 1 ? '_one' : '_other'
+                    message += ` ${t(`autoDiscard.directoriesRemoved.generic${suffix}`, {
+                      count: result.directoriesRemoved,
+                    })}`
+                  }
+                  addToast('info', message)
+                }
+                if (result.directoriesRemoved || result.directoriesKept) {
+                  window.electronAPI?.log('info', '[AutoDiscard] Orphaned directory cleanup', {
+                    directoriesRemoved: result.directoriesRemoved,
+                    directoriesKept: result.directoriesKept,
+                  })
                 }
                 if (result.skipped) {
                   window.electronAPI?.log('warn', '[AutoDiscard] Kept files that could not recycle', {

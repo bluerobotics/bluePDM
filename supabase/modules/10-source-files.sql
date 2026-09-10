@@ -3416,6 +3416,15 @@ ALTER TABLE user_workflow_roles REPLICA IDENTITY FULL;
 ALTER TABLE file_metadata_columns REPLICA IDENTITY FULL;
 ALTER TABLE backup_config REPLICA IDENTITY FULL;
 ALTER TABLE backup_machines REPLICA IDENTITY FULL;
+-- v101: folders carries deleted_at/deleted_by like files does, and
+-- deleteFolderByPath soft-deletes through them, but the table was never
+-- published or given a full replica identity, so a folder deletion with no
+-- files in it never reached another client. REPLICA IDENTITY FULL is the
+-- load-bearing half - without it an UPDATE's old record on the wire carries
+-- only the primary key, so a deleted_at null-to-set transition is
+-- undetectable. See check_release_residue() in core.sql for the verification
+-- this schema_release_manifest() cannot express for either statement.
+ALTER TABLE folders REPLICA IDENTITY FULL;
 
 DO $$
 BEGIN
@@ -3432,6 +3441,7 @@ BEGIN
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE file_metadata_columns; EXCEPTION WHEN duplicate_object THEN NULL; END;
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE backup_config; EXCEPTION WHEN duplicate_object THEN NULL; END;
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE backup_machines; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE folders; EXCEPTION WHEN duplicate_object THEN NULL; END;
 END $$;
 
 -- ===========================================

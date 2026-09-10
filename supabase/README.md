@@ -94,7 +94,7 @@ against this schema.
 The app reads `schema_version.version` on startup and warns if it does not match
 `EXPECTED_SCHEMA_VERSION` in `src/lib/schemaVersion.ts`.
 
-- Current schema version: **100** (keep in sync with `schema_release_version()` in `core.sql`)
+- Current schema version: **101** (keep in sync with `schema_release_version()` in `core.sql`)
 - The number is written by **verification only**: `verify_and_stamp_schema()` checks the
   release manifest in `core.sql`, and every security check, and stamps the version only if
   all of it holds.

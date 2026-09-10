@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { classifyDeletionUpdate, createOrphanDiscardRefreshScheduler } from './useRealtimeSubscriptions'
+import {
+  classifyDeletionUpdate,
+  classifyFolderDeletionUpdate,
+  createOrphanDiscardRefreshScheduler,
+} from './useRealtimeSubscriptions'
 
 /**
  * `classifyDeletionUpdate` is what turns a soft-deleted server row (trash sets
@@ -80,6 +84,60 @@ describe('classifyDeletionUpdate', () => {
     })
 
     expect(result).toEqual({ type: 'not-a-deletion' })
+  })
+})
+
+/**
+ * `classifyFolderDeletionUpdate` is the small mirror of `classifyDeletionUpdate`
+ * used for `folders` rows (schema v101). It has no local-copy or
+ * pending-metadata concept - see the comment on the function itself - so these
+ * tests only exercise the one transition that matters: `deleted_at` moving from
+ * unset to set.
+ */
+describe('classifyFolderDeletionUpdate', () => {
+  it('is not a deletion when deleted_at was already set (an ordinary metadata update)', () => {
+    const result = classifyFolderDeletionUpdate({
+      oldDeletedAt: '2026-01-01T00:00:00Z',
+      newDeletedAt: '2026-01-01T00:00:00Z',
+    })
+
+    expect(result).toEqual({ type: 'not-a-deletion' })
+  })
+
+  it('is not a deletion when deleted_at is being cleared (a restore)', () => {
+    const result = classifyFolderDeletionUpdate({
+      oldDeletedAt: '2026-01-01T00:00:00Z',
+      newDeletedAt: null,
+    })
+
+    expect(result).toEqual({ type: 'not-a-deletion' })
+  })
+
+  it('is not a deletion when deleted_at was never set on either side', () => {
+    const result = classifyFolderDeletionUpdate({
+      oldDeletedAt: null,
+      newDeletedAt: null,
+    })
+
+    expect(result).toEqual({ type: 'not-a-deletion' })
+  })
+
+  it('classifies the null -> set transition as a deletion', () => {
+    const result = classifyFolderDeletionUpdate({
+      oldDeletedAt: null,
+      newDeletedAt: '2026-01-01T00:00:00Z',
+    })
+
+    expect(result).toEqual({ type: 'deleted' })
+  })
+
+  it('classifies the undefined -> set transition as a deletion (old record can omit the field)', () => {
+    const result = classifyFolderDeletionUpdate({
+      oldDeletedAt: undefined,
+      newDeletedAt: '2026-01-01T00:00:00Z',
+    })
+
+    expect(result).toEqual({ type: 'deleted' })
   })
 })
 

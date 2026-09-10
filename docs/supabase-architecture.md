@@ -1435,6 +1435,7 @@ flowchart LR
 | Function | Channel | Events | Purpose |
 |----------|---------|--------|---------|
 | `subscribeToFiles(orgId)` | `files:{orgId}` | `*` | Checkout locks, versions |
+| `subscribeToFolders(orgId)` | `folders:{orgId}` | `*` | Empty-folder deletes |
 | `subscribeToActivity(orgId)` | `activity:{orgId}` | `INSERT` | Activity feed |
 | `subscribeToOrganization(orgId)` | `organization:{orgId}` | `UPDATE` | Settings sync |
 | `subscribeToVaults(orgId)` | `vaults:{orgId}` | `*` | Vault CRUD |
@@ -1618,7 +1619,7 @@ Database and app versions must match to prevent compatibility issues.
 SELECT version FROM schema_version;  -- e.g., 100
 
 -- App expected version
-EXPECTED_SCHEMA_VERSION = 100  -- src/lib/schemaVersion.ts
+EXPECTED_SCHEMA_VERSION = 101  -- src/lib/schemaVersion.ts
 ```
 
 ### Version Mismatch Handling

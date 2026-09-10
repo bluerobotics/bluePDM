@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** Ordered record of the calls whose relative order the fix depends on. */
@@ -33,6 +36,22 @@ vi.mock('../../fileOperationTracker', () => ({
 const removeFromSyncIndex = vi.fn(() => Promise.resolve())
 vi.mock('../../cache/localSyncIndex', () => ({ removeFromSyncIndex }))
 
+/**
+ * Mutable store fixture for the pieces `discardOrphaned.ts` reads directly via
+ * `usePDMStore.getState()`: `serverFolderPaths` for the ping-pong guard and
+ * `currentFolder`/`setCurrentFolder` for the relocation behaviour. Reset in
+ * `beforeEach` below so tests cannot see each other's state.
+ */
+let storeState: {
+  serverFolderPaths: Set<string>
+  currentFolder: string
+  setCurrentFolder: ReturnType<typeof vi.fn>
+}
+
+vi.mock('@/stores/pdmStore', () => ({
+  usePDMStore: { getState: () => storeState },
+}))
+
 const { discardOrphanedCommand, resetAutomaticSkipNotices, isAutomaticDiscardCoolingDown } =
   await import('./discardOrphaned')
 
@@ -53,10 +72,11 @@ function synced(name: string): LocalFile {
   return { ...orphan(name), diffStatus: undefined }
 }
 
-function makeContext(files: LocalFile[]) {
+function makeContext(files: LocalFile[], overrides: Partial<CommandContext> = {}) {
   return {
     files,
     activeVaultId: 'vault-1',
+    vaultPath: null,
     addProcessingFoldersSync: vi.fn(),
     removeProcessingFolders: vi.fn(),
     addProgressToast: vi.fn(),
@@ -65,6 +85,7 @@ function makeContext(files: LocalFile[]) {
     addToast: vi.fn(),
     removeFilesFromStore: vi.fn(),
     setLastOperationCompletedAt: vi.fn(),
+    ...overrides,
   } as unknown as CommandContext & {
     removeFilesFromStore: ReturnType<typeof vi.fn>
     removeProcessingFolders: ReturnType<typeof vi.fn>
@@ -110,6 +131,29 @@ function batchResult(paths: string[], failures: string[] = [], skipped: string[]
 }
 
 let deleteBatch: ReturnType<typeof vi.fn>
+let trashEmptyDirs: ReturnType<typeof vi.fn>
+
+/** A trashEmptyDirs response where every listed path was recycled. */
+function dirBatchResult(paths: string[], skipped: string[] = []) {
+  const results = paths.map((path) => ({
+    path,
+    success: !skipped.includes(path),
+    error: skipped.includes(path) ? 'Directory is not empty' : undefined,
+    skipped: skipped.includes(path) ? true : undefined,
+  }))
+  const succeeded = results.filter((r) => r.success).length
+  return {
+    success: skipped.length === 0,
+    results,
+    summary: {
+      total: paths.length,
+      succeeded,
+      failed: paths.length - succeeded,
+      skipped: skipped.length,
+      duration: 2,
+    },
+  }
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -118,12 +162,24 @@ beforeEach(() => {
   // so it has to be cleared between tests the way a fresh session would start.
   resetAutomaticSkipNotices()
 
+  storeState = {
+    serverFolderPaths: new Set(),
+    currentFolder: '',
+    setCurrentFolder: vi.fn((folder: string) => {
+      storeState.currentFolder = folder
+    }),
+  }
+
   deleteBatch = vi.fn((paths: string[]) => {
     callOrder.push('deleteBatch')
     return Promise.resolve(batchResult(paths))
   })
+  trashEmptyDirs = vi.fn((paths: string[]) => {
+    callOrder.push('trashEmptyDirs')
+    return Promise.resolve(dirBatchResult(paths))
+  })
 
-  vi.stubGlobal('window', { electronAPI: { deleteBatch, log: vi.fn() } })
+  vi.stubGlobal('window', { electronAPI: { deleteBatch, trashEmptyDirs, log: vi.fn() } })
 })
 
 describe('discard-orphaned watcher suppression', () => {
@@ -607,5 +663,227 @@ describe('discard-orphaned all-skipped cooldown', () => {
     } finally {
       dateNowSpy.mockRestore()
     }
+  })
+})
+
+// 4.3.2: directories left empty by this same batch are derived from the batch and
+// recycled through `window.electronAPI.trashEmptyDirs` - see
+// `src/lib/orphanedDirectories.ts`. Every test below sets `vaultPath` because that is
+// exactly the switch `removeOrphanedDirectories` uses to decide whether there is a
+// vault to build absolute candidate paths against; every test elsewhere in this file
+// leaves it unset (`null`, from `makeContext`'s default) specifically so this whole
+// step is a no-op for them, which is itself covered below.
+describe('discard-orphaned directory cleanup', () => {
+  it('does nothing when the context has no vaultPath, regardless of the batch shape', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    const ctx = makeContext(files) // vaultPath left at makeContext's default of null
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(trashEmptyDirs).not.toHaveBeenCalled()
+  })
+
+  it('trashes the directory a fully-deleted file leaves behind', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    const result = await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(trashEmptyDirs).toHaveBeenCalledWith(['C:/vault/folder'])
+    expect(ctx.removeFilesFromStore).toHaveBeenCalledWith(['C:/vault/folder'])
+    expect(result.directoriesRemoved).toBe(1)
+    expect(result.directoriesKept).toBeUndefined()
+  })
+
+  it('never sends a candidate whose file was actually kept (skipped or failed)', async () => {
+    const files = [orphan('folder/kept.sldprt'), orphan('other/gone.sldprt')]
+    deleteBatch.mockImplementationOnce((paths: string[]) =>
+      Promise.resolve(batchResult(paths, [], ['C:/vault/folder/kept.sldprt'])),
+    )
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    // 'folder' held a kept file and must never even be offered to trashEmptyDirs -
+    // this is the optimisation described in orphanedDirectories.ts, not merely
+    // something the main process would also have refused.
+    expect(trashEmptyDirs).toHaveBeenCalledWith(['C:/vault/other'])
+  })
+
+  it('never sends a candidate the server still asserts exists (the ping-pong guard)', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    storeState.serverFolderPaths = new Set(['folder'])
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(trashEmptyDirs).not.toHaveBeenCalled()
+  })
+
+  it('does not call trashEmptyDirs when nothing was actually deleted', async () => {
+    const files = [orphan('folder/locked.sldprt')]
+    deleteBatch.mockImplementationOnce((paths: string[]) =>
+      Promise.resolve(batchResult(paths, paths)),
+    )
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(trashEmptyDirs).not.toHaveBeenCalled()
+  })
+
+  it('reports a directory the handler left on disk as kept, not as a file failure', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    trashEmptyDirs.mockImplementationOnce((paths: string[]) =>
+      Promise.resolve(dirBatchResult(paths, paths)),
+    )
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    const result = await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(result.directoriesKept).toBe(1)
+    expect(result.directoriesRemoved).toBeUndefined()
+    // A kept directory must not appear in the store removal call, nor affect the
+    // file-level failure count.
+    expect(ctx.removeFilesFromStore).not.toHaveBeenCalledWith(expect.arrayContaining(['C:/vault/folder']))
+    expect(result.failed).toBe(0)
+  })
+
+  it('does not remove a directory the main process refused, even though the derivation offered it', async () => {
+    const files = [orphan('a/b/gone.sldprt')]
+    // The main process would refuse 'a/b' too since 'a' is deepest-first before it,
+    // but here it is 'a/b' itself that fails while 'a' would otherwise be offered.
+    trashEmptyDirs.mockImplementationOnce((paths: string[]) =>
+      Promise.resolve(dirBatchResult(paths, ['C:/vault/a/b'])),
+    )
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    const result = await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(ctx.removeFilesFromStore).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['C:/vault/a/b']),
+    )
+    expect(result.directoriesKept).toBeGreaterThan(0)
+  })
+
+  it('runs inside the same watcher-suppression window as the file batch', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    // One suppression window covers both the file batch and the directory batch -
+    // there is no second beginWatcherSuppression call for directories.
+    expect(beginWatcherSuppression).toHaveBeenCalledTimes(1)
+    expect(callOrder).toEqual(['suppress', 'deleteBatch', 'trashEmptyDirs', 'release'])
+  })
+
+  it('folds the failed trashEmptyDirs call into a kept count rather than throwing', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    trashEmptyDirs.mockRejectedValueOnce(new Error('IPC unavailable'))
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    const result = await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(result.success).toBe(true) // the file batch itself still succeeded
+    expect(result.directoriesKept).toBe(1)
+    expect(ctx.removeFilesFromStore).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['C:/vault/folder']),
+    )
+  })
+})
+
+// "Do not add a separate folder-removal call beside the file one in useLoadFiles.ts" -
+// the blast-radius guard (shouldSkipAutoDiscardForOrphans, already proven to decline a
+// zero-server-row pass in useLoadFiles.test.ts), the all-skipped cooldown, and
+// runAutoDiscardForOrphans's re-entrancy guard all live upstream of
+// executeCommand('discard-orphaned', ...) and decide whether this command runs at all.
+// Directory removal happens only as a step inside `execute`, so a guard that declines
+// the file batch declines the directory batch too, for free, *provided* there is no
+// second call site. That second half is what this suite checks, at the source level
+// rather than by re-deriving the guard's own boolean: if `trashEmptyDirs` is reachable
+// from anywhere in useLoadFiles.ts, a decline there would no longer protect
+// directories, no matter what this file's own tests show.
+describe('discard-orphaned directory removal shares the file guard', () => {
+  it('has no second call site for trashEmptyDirs outside this command', () => {
+    const useLoadFilesSource = readFileSync(
+      resolve(__dirname, '../../../hooks/useLoadFiles.ts'),
+      'utf8',
+    )
+
+    // useLoadFiles.ts is allowed to read the *result* fields this command returns
+    // (directoriesRemoved/directoriesKept, for the toast and the log) - it must never
+    // call the IPC bridge itself. If it ever does, a guard decline there (zero server
+    // rows, the orphan-fraction cap, the cooldown, the re-entrancy lock) would no
+    // longer apply to directories, because it would sit around this call rather than
+    // behind it.
+    expect(useLoadFilesSource).not.toMatch(/electronAPI\??\.trashEmptyDirs/)
+  })
+
+  it('removes both the files and their directory in the same run once the guard passes', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    const result = await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(result.succeeded).toBe(1)
+    expect(result.directoriesRemoved).toBe(1)
+  })
+})
+
+describe('discard-orphaned current-folder relocation', () => {
+  it('moves the view to the nearest surviving ancestor when the current folder is removed', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    storeState.currentFolder = 'folder'
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(storeState.setCurrentFolder).toHaveBeenCalledWith('')
+  })
+
+  it('moves up past a removed ancestor to the nearest surviving one, not straight to root', async () => {
+    // 'a/b' and 'a' are both removed (deepest-first), but 'a' is a sibling branch's
+    // ancestor too in real usage - here it is simply the last survivor before root.
+    const files = [orphan('a/b/gone.sldprt')]
+    storeState.currentFolder = 'a/b'
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(storeState.setCurrentFolder).toHaveBeenCalledWith('')
+  })
+
+  it('does not move the view when the removed directory is unrelated to the current folder', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    storeState.currentFolder = 'unrelated'
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(storeState.setCurrentFolder).not.toHaveBeenCalled()
+  })
+
+  it('does not call setCurrentFolder when already at the vault root', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    storeState.currentFolder = ''
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(storeState.setCurrentFolder).not.toHaveBeenCalled()
+  })
+
+  it('does not relocate when a directory is left on disk instead of removed', async () => {
+    const files = [orphan('folder/gone.sldprt')]
+    trashEmptyDirs.mockImplementationOnce((paths: string[]) =>
+      Promise.resolve(dirBatchResult(paths, paths)),
+    )
+    storeState.currentFolder = 'folder'
+    const ctx = makeContext(files, { vaultPath: 'C:/vault' })
+
+    await discardOrphanedCommand.execute({ files, isAutomatic: true }, ctx)
+
+    expect(storeState.setCurrentFolder).not.toHaveBeenCalled()
   })
 })

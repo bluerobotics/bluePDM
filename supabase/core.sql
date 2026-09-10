@@ -113,42 +113,31 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 100 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 101 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'Three items deferred out of v99 for being unrelated to the row-count work that release '
-  'was actually about. First, the case-insensitive file lookup v99 gave folders never '
-  'reached files, which had carried the same defect in two different shapes since '
-  'idx_files_vault_path_unique_active went case-insensitive at v54: syncFile''s own '
-  'existence check stayed byte-exact for speed and only found a differently-cased row '
-  'through the 23505 it caught on insert, which works but only after paying for the failed '
-  'write, while getFileByPath had no case-insensitive path at all and simply could not see '
-  'one. getFileByPath now calls get_active_file_by_path(vault_id, file_path), a new RPC '
-  'shaped to match the index exactly - vault_id and LOWER(file_path) as equality '
-  'predicates, deleted_at IS NULL as a literal rather than a caller-supplied toggle - so '
-  'the match is provably index-backed rather than merely usually fast. syncFile''s primary '
-  'existence check stays byte-exact and off this RPC on purpose - it runs once per file at '
-  'high concurrency during a first check-in of a whole vault, and a case-insensitive lookup '
-  'on every file would slow down the path that never collides - so it reaches the same RPC '
-  'only from its 23505 catch, once the exception itself has already proven a collision '
-  'exists. Second, check_release_residue() went in at v93 pairing every remediation with a '
-  'clause proving its work stays done, but v99''s remediate_case_colliding_folders() was '
-  'added without the clause this file''s own doctrine calls for beside it - so a folders '
-  'index dropped and rebuilt without UNIQUE after v99 applied would carry the exact defect '
-  'v99 closed while verification read clean. The clause is now there, reporting the same '
-  'group shape the remediation clears. Third, get_user_module_defaults existed as two '
-  'overloads in production: this file''s own no-argument version, and a p_user_id one from '
-  'before the schema.sql to core.sql split that no DROP by exact signature had ever '
-  'reached, so it outlived every release since with neither overload authorized to answer '
-  'for somebody else - a caller could pass any p_user_id and read that user''s effective '
-  'module configuration with no membership check at all. Call sites decided which shape '
-  'survives rather than which looked newer: the no-argument form''s only caller is never '
-  'invoked from the UI, while the p_user_id form is what the admin impersonation feature '
-  'calls, and is also the shape this schema''s own history shows the function was written '
-  'with from the start. They are one function now, argument optional and defaulting to '
-  'auth.uid(), gated with require_same_org_user the same way get_user_vault_access and '
-  'get_user_permissions already gate exactly this shape of question'
+  'Closes the realtime gap 4.3.1 left in place: deleting a folder that holds no files '
+  'reached no other client at all. folders has carried deleted_at since v49 and '
+  'deleteFolderByPath soft-deletes through it the same way file deletion does, but the '
+  'table was never added to supabase_realtime and never given REPLICA IDENTITY FULL, so a '
+  'folder-only delete produced zero events on the wire - the files fix in 4.3.1 propagates '
+  'because it is the files table''s own UPDATE that carries the deleted_at transition, and '
+  'an empty folder''s deletion never touches that table at all. REPLICA IDENTITY FULL is the '
+  'load-bearing half of the two: without it, an UPDATE''s old record on the wire carries '
+  'only the primary key, so a client cannot tell a deleted_at null-to-set transition from '
+  'any other change to the row, which is the same fact that made the files fix work in the '
+  'first place. folders now joins the publication and gets REPLICA IDENTITY FULL alongside '
+  'the thirteen tables that already carry both. check_release_residue() gained a matching '
+  'clause reporting when folders is absent from supabase_realtime or its relreplident is '
+  'not ''f'', guarded so a database without module 10 is never asked about a table it does '
+  'not have; publication membership and replica identity are neither a table nor a '
+  'function, so schema_release_manifest() - which only understands those two kinds - still '
+  'cannot see this directly, the same as the other thirteen publication lines beside it. '
+  'subscribeToFolders in src/lib/realtime.ts and the folder handling it drives in '
+  'useRealtimeSubscriptions.ts turn the new event into a scheduled refresh through the '
+  'existing debounced orphan-discard scheduler, the same one a burst of file deletions '
+  'already used.'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -2374,6 +2363,49 @@ BEGIN
              || 'it and run: SELECT remediate_case_colliding_folders();';
       RETURN NEXT;
     END LOOP;
+  END IF;
+
+  -- ---------------------------------------------------------------------
+  -- `folders` missing from the realtime publication, or missing REPLICA
+  -- IDENTITY FULL - the two v101 statements that make a folder deletion
+  -- reach another client at all.
+  --
+  -- Neither is a table nor a function, so schema_release_manifest() cannot
+  -- see either one, and the thirteen tables that got the same two
+  -- statements in the same DO block of 10-source-files.sql are equally
+  -- unverified there. This clause exists anyway, for the reason v101 is the
+  -- first of the fourteen to get one instead of joining that silence: it
+  -- changes what the database must look like for the reported bug to stay
+  -- fixed, and this file's own doctrine a few hundred lines up is that a
+  -- release which does that should not be stampable while the database does
+  -- not look like that yet. Guarded on to_regclass so a database without
+  -- module 10 - which is where `folders` is created - is never asked about
+  -- a table it does not have.
+  -- ---------------------------------------------------------------------
+  IF to_regclass('public.folders') IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+       WHERE pubname = 'supabase_realtime'
+         AND schemaname = 'public'
+         AND tablename = 'folders'
+    ) THEN
+      residue := 'folders_not_published';
+      identity := 'publication supabase_realtime';
+      detail := 'folders is not a member of the supabase_realtime publication, so a '
+             || 'folder deletion never reaches another client. Run: '
+             || 'ALTER PUBLICATION supabase_realtime ADD TABLE folders;';
+      RETURN NEXT;
+    END IF;
+
+    IF (SELECT relreplident FROM pg_class WHERE oid = 'public.folders'::regclass) <> 'f' THEN
+      residue := 'folders_not_replica_identity_full';
+      identity := 'pg_class.relreplident for public.folders';
+      detail := 'folders does not have REPLICA IDENTITY FULL, so an UPDATE''s old '
+             || 'record on the wire carries only the primary key and a deleted_at '
+             || 'null-to-set transition is undetectable. Run: '
+             || 'ALTER TABLE folders REPLICA IDENTITY FULL;';
+      RETURN NEXT;
+    END IF;
   END IF;
 END;
 $$;

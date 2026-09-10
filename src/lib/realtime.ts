@@ -51,6 +51,27 @@ type VaultChangeCallback = (
   oldVault?: { id: string; name: string; slug: string; org_id: string; is_default: boolean | null },
 ) => void
 
+// folders has no dedicated domain type in src/types/pdm.ts (unlike files/PDMFile) -
+// it exists only to persist empty-folder structure, see supabase/modules/10-source-files.sql.
+// This mirrors the row shape schema 101 publishes, the same way VaultChangeCallback
+// above declares its row shape inline rather than importing the generated one.
+export interface FolderRealtimeRow {
+  id: string
+  org_id: string
+  vault_id: string
+  folder_path: string
+  created_at: string | null
+  created_by: string | null
+  deleted_at: string | null
+  deleted_by: string | null
+}
+
+type FolderChangeCallback = (
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+  folder: FolderRealtimeRow,
+  oldFolder?: FolderRealtimeRow,
+) => void
+
 let filesChannel: RealtimeChannel | null = null
 let activityChannel: RealtimeChannel | null = null
 let organizationChannel: RealtimeChannel | null = null
@@ -58,6 +79,7 @@ let colorSwatchesChannel: RealtimeChannel | null = null
 let permissionsChannel: RealtimeChannel | null = null
 let vaultsChannel: RealtimeChannel | null = null
 let memberChangesChannel: RealtimeChannel | null = null
+let foldersChannel: RealtimeChannel | null = null
 
 // Callback type for permission/access changes
 type PermissionChangeCallback = (
@@ -119,6 +141,57 @@ export function subscribeToFiles(orgId: string, onFileChange: FileChangeCallback
     if (filesChannel) {
       filesChannel.unsubscribe()
       filesChannel = null
+    }
+  }
+}
+
+/**
+ * Subscribe to real-time folder changes for an organization
+ *
+ * `folders` only persists explicit records for otherwise-empty directories
+ * (schema v49) - most folders are implied by file paths and generate no rows
+ * here at all. The case this exists for: a folder deleted while it held no
+ * files produces zero `files` events, so this is the only realtime signal
+ * that reaches another client at all (schema v101 - see
+ * supabase/modules/10-source-files.sql REALTIME section for the
+ * REPLICA IDENTITY FULL + publication membership this depends on).
+ *
+ * Like `subscribeToFiles`, this is org-wide: it delivers events for every
+ * vault in the organization, so callers must filter by vault themselves.
+ */
+export function subscribeToFolders(
+  orgId: string,
+  onFolderChange: FolderChangeCallback,
+): () => void {
+  // Unsubscribe from previous channel if exists
+  if (foldersChannel) {
+    foldersChannel.unsubscribe()
+  }
+
+  foldersChannel = supabase
+    .channel(`folders:${orgId}`)
+    .on<FolderRealtimeRow>(
+      'postgres_changes',
+      {
+        event: '*', // INSERT, UPDATE, DELETE
+        schema: 'public',
+        table: 'folders',
+        filter: `org_id=eq.${orgId}`,
+      },
+      (payload: RealtimePostgresChangesPayload<FolderRealtimeRow>) => {
+        const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE'
+        const newFolder = payload.new as FolderRealtimeRow
+        const oldFolder = payload.old as FolderRealtimeRow | undefined
+        onFolderChange(eventType, newFolder, oldFolder)
+      },
+    )
+    .subscribe()
+
+  // Return unsubscribe function
+  return () => {
+    if (foldersChannel) {
+      foldersChannel.unsubscribe()
+      foldersChannel = null
     }
   }
 }
@@ -623,6 +696,10 @@ export function unsubscribeAll() {
   if (memberChangesChannel) {
     memberChangesChannel.unsubscribe()
     memberChangesChannel = null
+  }
+  if (foldersChannel) {
+    foldersChannel.unsubscribe()
+    foldersChannel = null
   }
 }
 

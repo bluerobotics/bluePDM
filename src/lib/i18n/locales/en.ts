@@ -379,6 +379,10 @@ export const en: TranslationDict = {
       generic_one: 'Could not automatically discard {{count}} orphaned file',
       generic_other: 'Could not automatically discard {{count}} orphaned files',
     },
+    directoriesRemoved: {
+      generic_one: 'Also removed {{count}} empty folder left behind',
+      generic_other: 'Also removed {{count}} empty folders left behind',
+    },
   },
 
   fileOps: {

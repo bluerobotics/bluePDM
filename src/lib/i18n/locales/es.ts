@@ -352,6 +352,10 @@ export const es: TranslationDict = {
       generic_one: 'No fue posible descartar automáticamente {{count}} archivo huérfano',
       generic_other: 'No fue posible descartar automáticamente {{count}} archivos huérfanos',
     },
+    directoriesRemoved: {
+      generic_one: 'También se eliminó {{count}} carpeta vacía que quedó',
+      generic_other: 'También se eliminaron {{count}} carpetas vacías que quedaron',
+    },
   },
 
   fileOps: {

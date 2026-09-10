@@ -434,6 +434,27 @@ declare global {
           duration: number
         }
       }>
+      /**
+       * Trash directories that are genuinely empty on disk - re-checked in the main
+       * process, immediately before each one's own trash call, with no filtering of
+       * any kind (see `electron/handlers/emptyDirs.ts`). A directory that is not
+       * empty, is outside the working directory, or that `shell.trashItem` rejects
+       * comes back with `skipped: true` and is left exactly where it is. There is no
+       * `isAutomatic` parameter - unlike `deleteBatch`/`trashBatch`, this handler has
+       * no permanent-delete fallback to switch, so it always behaves like the
+       * automatic path.
+       */
+      trashEmptyDirs: (paths: string[]) => Promise<{
+        success: boolean
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          skipped: number
+          duration: number
+        }
+      }>
       isDirEmpty: (path: string) => Promise<{ success: boolean; empty?: boolean; error?: string }>
       isDirectory: (
         path: string,

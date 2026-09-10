@@ -336,6 +336,11 @@ export const zhTW: TranslationDict = {
       fromFolder_one: '已從 {{folder}} 移除 {{count}} 個檔案（已從保險庫刪除）',
       fromFolder_other: '已從 {{folder}} 移除 {{count}} 個檔案（已從保險庫刪除）',
     },
+    directoriesRemoved: {
+      // Chinese has no plural inflection - see the note above.
+      generic_one: '也移除了 {{count}} 個遺留的空資料夾',
+      generic_other: '也移除了 {{count}} 個遺留的空資料夾',
+    },
     failed: {
       generic_one: '無法自動捨棄 {{count}} 個孤立檔案',
       generic_other: '無法自動捨棄 {{count}} 個孤立檔案',

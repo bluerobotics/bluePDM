@@ -336,6 +336,11 @@ export const zhCN: TranslationDict = {
       fromFolder_one: '已从 {{folder}} 移除 {{count}} 个文件（已从保险库删除）',
       fromFolder_other: '已从 {{folder}} 移除 {{count}} 个文件（已从保险库删除）',
     },
+    directoriesRemoved: {
+      // Chinese has no plural inflection - see the note above.
+      generic_one: '也移除了 {{count}} 个遗留的空文件夹',
+      generic_other: '也移除了 {{count}} 个遗留的空文件夹',
+    },
     failed: {
       generic_one: '无法自动丢弃 {{count}} 个孤立文件',
       generic_other: '无法自动丢弃 {{count}} 个孤立文件',

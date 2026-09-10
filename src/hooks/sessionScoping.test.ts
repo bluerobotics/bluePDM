@@ -212,7 +212,11 @@ describe('session-scoped load coordination', () => {
       authenticatedUserId: 'user-a',
       sessionGeneration: 1,
     })
-    setLastMergedState(VAULT_ID, { scanFingerprint: 'old', storeFileCount: 1 })
+    setLastMergedState(VAULT_ID, {
+      scanFingerprint: 'old',
+      storeFileCount: 1,
+      folderFingerprint: '0:0',
+    })
     expect(getLastMergedState(VAULT_ID)).toBeDefined()
 
     setLoadFilesSessionContext({

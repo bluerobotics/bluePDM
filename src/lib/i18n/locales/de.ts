@@ -355,6 +355,10 @@ export const de: TranslationDict = {
       generic_one: 'Automatisches Verwerfen für {{count}} verwaiste Datei fehlgeschlagen',
       generic_other: 'Automatisches Verwerfen für {{count}} verwaiste Dateien fehlgeschlagen',
     },
+    directoriesRemoved: {
+      generic_one: 'Außerdem {{count}} leeren, zurückgebliebenen Ordner entfernt',
+      generic_other: 'Außerdem {{count}} leere, zurückgebliebene Ordner entfernt',
+    },
   },
 
   fileOps: {

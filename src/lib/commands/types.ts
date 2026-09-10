@@ -180,6 +180,21 @@ export interface CommandResult {
   /** Relative paths of the files counted in `skipped`, for surfacing to the user. */
   skippedPaths?: string[]
 
+  /**
+   * Count of directories `discard-orphaned` recycled after the file batch above,
+   * derived from the batch itself rather than classified - see
+   * `src/lib/orphanedDirectories.ts` and
+   * `.cursor/plans/release-4.3.2-empty-folders.plan.md`. Undefined for every other
+   * command and for a run that removed none.
+   */
+  directoriesRemoved?: number
+  /**
+   * Count of directory candidates left on disk on purpose - not empty (something the
+   * renderer's filtered view could not see, e.g. a `~$` lock file) or `shell.trashItem`
+   * could not recycle them. Mirrors `skipped` above, one register down.
+   */
+  directoriesKept?: number
+
   // Optional details
   details?: string[]
   errors?: string[]

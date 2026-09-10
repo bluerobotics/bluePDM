@@ -7,13 +7,18 @@ API. The renderer lives in `src/`, the Electron main process in `electron/`, the
 
 ## Active plan
 
-Nothing in flight. 4.3.1 (schema 100) shipped: `getFileByPath` and, only on `syncFile`'s `23505`
-collision fallback, `syncFile` itself now call `get_active_file_by_path` for a case-insensitive
-path match; the folders case-collision remediation from v99 gained the residue-check clause it
-was missing; `get_user_module_defaults` is one function instead of two competing overloads;
-realtime now propagates a same-machine-invisible delete promptly instead of waiting for the next
-full load; automatic discard no longer asks before a batch above ten and never falls back to a
-permanent delete when it cannot recycle a file.
+Nothing in flight. 4.3.2 (schema 101) shipped: a new main-process handler
+(`electron/handlers/emptyDirs.ts`, `fs:trash-empty-dirs`) recycles a directory only after
+re-confirming with an unfiltered `readdirSync` that it is provably empty, deepest-first, with no
+permanent-delete fallback on any path; `discard-orphaned` derives the directories a batch of file
+removals just emptied and recycles them inside the existing 4.3.1 blast-radius guard, cooldown,
+and re-entrancy guard, relocating the current folder to its nearest surviving ancestor if the one
+being viewed was removed; `folders` gained `REPLICA IDENTITY FULL` and joined the
+`supabase_realtime` publication so a folder deleted while it held no files reaches other machines
+too (previously it produced no realtime event at all), driven by a new `subscribeToFolders`
+client subscription; and `canSkipMerge` (now `shouldSkipMerge` in `loadFilesCoordination.ts`)
+gained the folder-side signal it was missing, so the merge that subscription schedules actually
+runs instead of being short-circuited by three inputs a folder-only change never moves.
 
 `syncFile`'s primary existence check stays byte-exact and off `get_active_file_by_path` on
 purpose — that was a deliberate scope decision for 4.3.1, not an oversight, and paying for a

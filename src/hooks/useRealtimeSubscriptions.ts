@@ -2,12 +2,14 @@ import { useEffect, useRef } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import {
   subscribeToFiles,
+  subscribeToFolders,
   subscribeToActivity,
   subscribeToOrganization,
   subscribeToColorSwatches,
   subscribeToPermissions,
   subscribeToVaults,
   unsubscribeAll,
+  type FolderRealtimeRow,
 } from '@/lib/realtime'
 import { buildFullPath } from '@/lib/commands/types'
 import { log } from '@/lib/logger'
@@ -102,6 +104,27 @@ export function classifyDeletionUpdate(params: {
   return params.hasLocalCopy
     ? { type: 'became-orphaned-locally' }
     : { type: 'removed-cloud-only' }
+}
+
+export type FolderDeletionOutcome = { type: 'not-a-deletion' } | { type: 'deleted' }
+
+/**
+ * Decide what an incoming `folders` UPDATE means for realtime deletion propagation.
+ *
+ * A much smaller mirror of `classifyDeletionUpdate` above, not an extension of it:
+ * `folders` has no local-sync-index or pending-metadata concept to guard against
+ * (see the plan's "classification gap" section - a directory has no durable synced
+ * record to compare against at all), and the caller does nothing with the result
+ * beyond scheduling a refresh, so there is no "local copy" branch to classify into.
+ * Exported standalone (no store access) so this is unit testable without mounting
+ * the hook, the same reason `classifyDeletionUpdate` is.
+ */
+export function classifyFolderDeletionUpdate(params: {
+  oldDeletedAt: string | null | undefined
+  newDeletedAt: string | null | undefined
+}): FolderDeletionOutcome {
+  const wasJustDeleted = !params.oldDeletedAt && !!params.newDeletedAt
+  return wasJustDeleted ? { type: 'deleted' } : { type: 'not-a-deletion' }
 }
 
 /**
@@ -679,6 +702,57 @@ export function useRealtimeSubscriptions(
       }
     })
 
+    // Subscribe to folder changes. `folders` only carries explicit rows for
+    // otherwise-empty directories (schema v49); most folders are implied by
+    // file paths and never appear here. The case this exists for: a folder
+    // deleted while it held no files produces zero `files` events above, so
+    // this is the only realtime signal that reaches another client at all
+    // (schema v101 - see supabase/modules/10-source-files.sql REALTIME section).
+    const unsubscribeFolders = subscribeToFolders(
+      organization.id,
+      (eventType, newFolder: FolderRealtimeRow, oldFolder?: FolderRealtimeRow) => {
+        const { activeVaultId } = usePDMStore.getState()
+
+        // The folders subscription is org-wide like the files one above, so it
+        // delivers events for every vault in the organization. Drop events for
+        // a different vault than the one currently open, for the same reason
+        // the files handler does.
+        const eventVaultId = newFolder?.vault_id ?? oldFolder?.vault_id
+        if (eventVaultId && activeVaultId && eventVaultId !== activeVaultId) {
+          log.debug('[Realtime]', 'SKIP: folder event for other vault', {
+            eventType,
+            eventVaultId,
+            activeVaultId,
+            folderId: newFolder?.id ?? oldFolder?.id,
+          })
+          return
+        }
+
+        // Trash is a soft delete (sets deleted_at) here too; a hard row delete
+        // never happens (deleteFolderByPath only ever updates), so only the
+        // UPDATE case is meaningful.
+        if (eventType !== 'UPDATE') return
+
+        const deletion = classifyFolderDeletionUpdate({
+          oldDeletedAt: oldFolder?.deleted_at,
+          newDeletedAt: newFolder?.deleted_at,
+        })
+
+        if (deletion.type === 'deleted') {
+          log.info('[Realtime]', 'Folder deleted from vault (soft delete)', {
+            folderId: newFolder?.id,
+          })
+          // Nothing on disk has changed and there is nothing further to do here
+          // - this schedules the same debounced silent refresh a burst of file
+          // deletions already uses, which is what lets the merge see the folder
+          // is gone. Removing the now-empty directory from disk happens inside
+          // discard-orphaned, reached through its own guards once that refresh
+          // completes.
+          scheduleOrphanDiscardRefresh()
+        }
+      },
+    )
+
     // Subscribe to activity feed for additional notifications
     const unsubscribeActivity = subscribeToActivity(organization.id, (_activity) => {
       // Activity notifications are handled by the file subscription above
@@ -1002,6 +1076,7 @@ export function useRealtimeSubscriptions(
       // unmounting, so firing it after teardown would call into a torn-down state.
       orphanDiscardRefreshScheduler.cancel()
       unsubscribeFiles()
+      unsubscribeFolders()
       unsubscribeActivity()
       unsubscribeOrg()
       unsubscribeColorSwatches()

@@ -4,6 +4,26 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [4.3.2] - 2026-09-10
+
+**This release requires a database update to schema release 101.** See **Schema** at the end of
+this entry. Apply the schema _before_ installing 4.3.2 — a 4.3.2 client against schema 100
+degrades gracefully: the new folder subscription this release adds simply receives nothing,
+because `folders` is not yet in the realtime publication, so a folder deleted while it holds no
+files goes on being invisible to other machines exactly as it was before this release, rather
+than erroring. The reverse order is safe: a 4.3.1 client against schema 101 shows one dismissible
+"App update available" notice and otherwise works normally.
+
+### Fixed
+
+- **Deleting a folder no longer leaves an empty directory behind on every other machine.** 4.3.1 made a file deletion propagate between machines by recycling the file itself wherever a copy exists; deleting the folder that contained those files recycled them the same way, but the directory itself, now provably empty, was left standing everywhere except the machine the delete was made from. Automatic discard now works out which directories a batch of file removals just emptied and recycles those too — re-confirming each one is genuinely empty immediately before touching it, working from the deepest folder outward, and, like every automatic delete since 4.3.1, never falling back to a permanent delete: a directory it cannot recycle is left exactly where it is rather than removed outright. If the folder you had open is one of the ones removed, the view moves up to the nearest surviving ancestor.
+- **A folder deleted while it holds no files at all now reaches other machines, where before it reached none.** Such a delete touches only the `folders` table, and that table had never been added to Supabase's realtime feed — so it produced no event of any kind, and nothing short of a full reload could ever notice the folder was gone. `folders` now joins the realtime publication the same way `files` already does, and a refresh that used to hold itself back whenever nothing about the files looked different now also checks whether the folder list changed, because a folder-only delete is exactly the case where only that had.
+
+### Schema
+
+- Bumped to schema version **101** (`EXPECTED_SCHEMA_VERSION`). Apply the latest `supabase/core.sql` together with `modules/10-source-files.sql`.
+- **`folders` gains `REPLICA IDENTITY FULL` and joins the `supabase_realtime` publication**, the same combination `files` has carried since realtime shipped — without both, a client cannot tell a folder's `deleted_at` transition from any other change to the row. `check_release_residue()` gained a matching clause, so a database that has bumped its recorded version but not yet run `10-source-files.sql`'s `ALTER` statements is refused the version-101 stamp rather than reporting itself current while the realtime change has not actually taken effect.
+
 ## [4.3.1] - 2026-09-10
 
 **This release requires a database update to schema release 100.** See **Schema** at the end of

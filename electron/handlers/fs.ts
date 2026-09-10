@@ -19,6 +19,7 @@ import {
   type VaultWatcher,
   type WatcherScanCache,
 } from './fsWatcher'
+import { registerEmptyDirHandlers } from './emptyDirs'
 import type { LocalFileInfo } from '../types'
 
 const execAsync = promisify(exec)
@@ -722,6 +723,16 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
   isFileBeingThumbnailed = deps.isFileBeingThumbnailed
   thumbnailsInProgress = deps.thumbnailsInProgress
   restoreMainWindowFocus = deps.restoreMainWindowFocus
+
+  // Empty-directory recycling lives entirely in emptyDirs.ts (release 4.3.2) - this
+  // registration call and its import above are the only things that belong here.
+  registerEmptyDirHandlers({
+    getWorkingDirectory: () => workingDirectory,
+    stopWatcher: stopFileWatcher,
+    startWatcher: startFileWatcher,
+    forgetScanCacheEntry,
+    log: (message, data) => log(message, data),
+  })
 
   // Working directory handlers
   ipcMain.handle('working-dir:select', async () => {

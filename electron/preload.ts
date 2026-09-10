@@ -349,6 +349,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteBatch: (paths: string[], useTrash?: boolean, isAutomatic?: boolean) =>
     ipcRenderer.invoke('fs:delete-batch', paths, useTrash ?? true, isAutomatic ?? false),
   trashBatch: (paths: string[]) => ipcRenderer.invoke('fs:trash-batch', paths),
+  // No `isAutomatic` argument here, on purpose - see the doc comment on
+  // `trashEmptyDirs` in src/electron.d.ts.
+  trashEmptyDirs: (paths: string[]) => ipcRenderer.invoke('fs:trash-empty-dirs', paths),
   isDirEmpty: (path: string) => ipcRenderer.invoke('fs:is-dir-empty', path),
   isDirectory: (path: string) => ipcRenderer.invoke('fs:is-directory', path),
   renameItem: (oldPath: string, newPath: string) =>
@@ -1269,6 +1272,17 @@ declare global {
         }
       }>
       trashBatch: (paths: string[]) => Promise<{
+        success: boolean
+        results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
+        summary: {
+          total: number
+          succeeded: number
+          failed: number
+          skipped: number
+          duration: number
+        }
+      }>
+      trashEmptyDirs: (paths: string[]) => Promise<{
         success: boolean
         results: Array<{ path: string; success: boolean; error?: string; skipped?: boolean }>
         summary: {
